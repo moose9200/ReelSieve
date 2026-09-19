@@ -38,8 +38,8 @@ def parse_results(page_html):
 def search(location,checkin=None,checkout=None,adults=2,offset=0):
     q=f'adults={int(adults or 2)}'+(f'&checkin={checkin}&checkout={checkout}' if checkin and checkout else '')+(f'&items_offset={int(offset)}' if offset else '')
     slug=re.sub(r'\s*,\s*','--',location.strip());slug=re.sub(r'\s+','-',slug);url=f'{BASE}/s/{quote(slug)}/homes?{q}';r=httpx.get(url,headers=UA,follow_redirects=True,timeout=40)
-    r.raise_for_status();items=parse_results(r.text)
+    r.raise_for_status();items=parse_results(r.text);diag={'status':r.status_code,'bytes':len(r.text),'deferred_state':'data-deferred-state' in r.text,'title':(re.search(r'<title>([^<]{0,80})',r.text) or [None,None])[1],'final_url':str(r.url)}
     items.sort(key=lambda x:(-(x['reviews'] or 0)*(x['rating'] or 0),-(x['photos'] or 0)))
-    return {'query':{'location':location,'checkin':checkin,'checkout':checkout,'adults':adults,'offset':offset},'search_url':str(r.url),'count':len(items),'items':items}
+    return {'query':{'location':location,'checkin':checkin,'checkout':checkout,'adults':adults,'offset':offset},'search_url':str(r.url),'count':len(items),'items':items,'diag':diag}
 if __name__=='__main__':
     import sys;print(json.dumps(search(*sys.argv[1:]),indent=1,ensure_ascii=False)[:3000])
