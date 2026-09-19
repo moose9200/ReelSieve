@@ -10,13 +10,27 @@
 </section>
 
 <section class="card">
-  <div class="section-head"><h2>Login</h2><span class="pill pill-done">Signed in as {{ request.state.user if request and request.state and request.state.user else "admin" }}</span></div>
+  <div class="section-head"><h2>Your account</h2><span class="pill pill-done">{{ request.state.user }}</span></div>
   <div class="grid-2">
     <div class="field"><label for="pw-current">Current password</label><input type="password" id="pw-current" autocomplete="current-password"></div>
     <div class="field"><label for="pw-new">New password (min 8)</label><input type="password" id="pw-new" autocomplete="new-password"></div>
   </div>
   <div class="actions"><button type="button" class="btn btn-secondary" id="pw-btn">Change password</button><a class="btn btn-secondary" href="/logout">Log out</a><span class="form-status" id="pw-status"></span></div>
 </section>
+
+{% if is_admin %}
+<section class="card" id="users-card">
+  <div class="section-head"><h2>Users</h2><span class="pill pill-skipped">Admin</span></div>
+  <p class="hint">People who can sign in to this BNBsieve. Admins can add or remove users and reset passwords.</p>
+  <ul class="user-list" id="user-list"></ul>
+  <div class="grid-3">
+    <div class="field"><label for="nu-email">Email</label><input type="email" id="nu-email" placeholder="name@company.com" autocomplete="off"></div>
+    <div class="field"><label for="nu-pass">Temporary password</label><input type="text" id="nu-pass" placeholder="min 8 characters" autocomplete="off"></div>
+    <div class="field"><label for="nu-role">Role</label><select id="nu-role"><option value="member">Member</option><option value="admin">Admin</option></select></div>
+  </div>
+  <div class="actions"><button type="button" class="btn btn-primary" id="nu-btn">Add user</button><span class="form-status" id="nu-status"></span></div>
+</section>
+{% endif %}
 
 <section class="card">
   <div class="section-head">
@@ -61,6 +75,7 @@
 </section>
 
 <form method="post" action="/settings" class="settings-form" autocomplete="off">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
   <section class="card">
     <div class="section-head"><h2>Google OAuth client</h2></div>
     <div class="grid-2">

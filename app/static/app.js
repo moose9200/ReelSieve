@@ -419,6 +419,36 @@
       postJSON("/api/airbnb/disconnect").then(function (d) { setAirbnb(d); aStatus.textContent = "Disconnected."; }).catch(function (err) { aStatus.textContent = err.message; });
     });
   }
+  Array.prototype.forEach.call(document.querySelectorAll(".pw-toggle"), function (t) {
+    t.addEventListener("click", function () { var inp = document.getElementById(t.getAttribute("data-for")); var show = inp.type === "password"; inp.type = show ? "text" : "password"; t.textContent = show ? "Hide" : "Show"; t.setAttribute("aria-label", show ? "Hide password" : "Show password"); });
+  });
+  var userList = document.getElementById("user-list");
+  if (userList) {
+    var nuStatus = document.getElementById("nu-status");
+    function renderUsers(d) {
+      userList.innerHTML = "";
+      (d.users || []).forEach(function (u) {
+        var li = document.createElement("li"); li.className = "user-row";
+        li.innerHTML = "<span class=\"u-mail\"></span><span class=\"badge\"></span><span class=\"u-actions\"></span>";
+        li.querySelector(".u-mail").textContent = u.user + (u.user === d.me ? " (you)" : ""); li.querySelector(".badge").textContent = u.role;
+        var acts = li.querySelector(".u-actions");
+        var rp = document.createElement("button"); rp.type = "button"; rp.className = "btn btn-secondary btn-sm"; rp.textContent = "Reset password";
+        rp.addEventListener("click", function () { var np = prompt("New password for " + u.user + " (min 8):"); if (!np) return; postJSON("/api/users/password", { user: u.user, password: np }).then(function () { nuStatus.textContent = "Password set for " + u.user; }).catch(function (e) { nuStatus.textContent = e.message; }); });
+        acts.appendChild(rp);
+        if (u.user !== d.me) { var rm = document.createElement("button"); rm.type = "button"; rm.className = "btn btn-secondary btn-sm"; rm.textContent = "Remove";
+          rm.addEventListener("click", function () { if (!confirm("Remove " + u.user + "?")) return; postJSON("/api/users/delete", { user: u.user }).then(function (dd) { renderUsers({ users: dd.users, me: d.me }); }).catch(function (e) { nuStatus.textContent = e.message; }); });
+          acts.appendChild(rm); }
+        userList.appendChild(li);
+      });
+    }
+    getJSON("/api/users").then(renderUsers).catch(function () {});
+    document.getElementById("nu-btn").addEventListener("click", function () {
+      nuStatus.className = "form-status";
+      postJSON("/api/users", { user: document.getElementById("nu-email").value, password: document.getElementById("nu-pass").value, role: document.getElementById("nu-role").value })
+        .then(function (dd) { getJSON("/api/users").then(renderUsers); nuStatus.textContent = "User added."; document.getElementById("nu-email").value = ""; document.getElementById("nu-pass").value = ""; })
+        .catch(function (e) { nuStatus.textContent = e.message; nuStatus.classList.add("is-error"); });
+    });
+  }
   var pwBtn = document.getElementById("pw-btn");
   if (pwBtn) pwBtn.addEventListener("click", function () {
     var out = document.getElementById("pw-status"); out.className = "form-status";

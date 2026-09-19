@@ -15,52 +15,91 @@ from app import pipeline,hostmsg,search as listing_search,gdrive,auth
 app=FastAPI(title='BNBsieve by Braivex');app.mount('/static',StaticFiles(directory=HERE/'static'),name='static')
 tpl=Jinja2Templates(directory=HERE/'templates');tpl.env.autoescape=True
 from starlette.middleware.base import BaseHTTPMiddleware
-PUBLIC_PREFIXES=('/static/','/media/','/login','/setup','/logout','/oauth/google/callback','/favicon.ico','/healthz')
+PUBLIC_PREFIXES=('/static/','/media/','/oauth/google/callback','/favicon.ico')
+PUBLIC_EXACT=('/login','/setup','/logout','/forgot','/healthz')
 class LoginGate(BaseHTTPMiddleware):
     async def dispatch(self,request,call_next):
-        path=request.url.path
-        if path.startswith(PUBLIC_PREFIXES) or path in ('/login','/setup','/logout','/healthz'):return await call_next(request)
-        if not auth.has_account():return RedirectResponse('/setup',status_code=303)
+        path=request.url.path;request.state.user=None
+        if path.startswith(PUBLIC_PREFIXES) or path in PUBLIC_EXACT:
+            request.state.user=auth.check(request.cookies.get(auth.COOKIE,''));return await call_next(request)
         user=auth.check(request.cookies.get(auth.COOKIE,''))
         if not user:
             if path.startswith('/api/'):return JSONResponse({'detail':'Sign in required'},status_code=401)
-            from urllib.parse import quote as _q;return RedirectResponse('/login?next='+_q(str(request.url.path)+('?'+str(request.url.query) if request.url.query else '')),status_code=303)
+            from urllib.parse import quote as _q;target='/login' if auth.has_account() else '/setup'
+            return RedirectResponse(target+'?next='+_q(str(request.url.path)+('?'+str(request.url.query) if request.url.query else '')),status_code=303)
+        if request.method in ('POST','PUT','DELETE') and not path.startswith('/api/'):
+            form=await request.form()
+            if not auth.csrf_ok(request.cookies.get(auth.COOKIE,''),form.get('csrf')):return HTMLResponse('Invalid or expired form token — reload and try again',status_code=403)
         request.state.user=user;return await call_next(request)
 app.add_middleware(LoginGate)
-def _secure(request):return request.url.scheme=='https' or 'railway.app' in request.headers.get('host','')
+def _secure(request):return request.url.scheme=='https' or 'railway.app' in request.headers.get('host','') or 'https' in request.headers.get('x-forwarded-proto','')
+def _ip(request):return (request.headers.get('x-forwarded-for','').split(',')[0].strip() or (request.client.host if request.client else '?'))
+def _login_ctx(request,**kw):
+    tok=request.cookies.get(auth.COOKIE,'');return {'csrf':auth.csrf_token(tok),'allow_setup':not auth.has_account(),**kw}
+def _set_session(resp,request,user,long=True):
+    tok,ttl=auth.issue(user,long);resp.set_cookie(auth.COOKIE,tok,max_age=ttl,httponly=True,samesite='lax',secure=_secure(request));return resp
 @app.get('/healthz')
 def healthz():return {'ok':True}
 @app.get('/setup',response_class=HTMLResponse)
-def setup_page(request:Request):
-    if auth.has_account():return RedirectResponse('/login',status_code=303)
-    return tpl.TemplateResponse(request,'login.html',{'setup':True,'user':'admin'})
+def setup_page(request:Request,next:str='/'):
+    if auth.has_account():return RedirectResponse('/login?notice=exists',status_code=303)
+    return tpl.TemplateResponse(request,'login.html',_login_ctx(request,setup=True,next=next))
 @app.post('/setup')
 async def setup_post(request:Request):
     if auth.has_account():return RedirectResponse('/login',status_code=303)
-    f=await request.form();u=(f.get('user') or 'admin').strip();p1=f.get('password') or '';p2=f.get('password2') or ''
-    if p1!=p2:return tpl.TemplateResponse(request,'login.html',{'setup':True,'user':u,'error':'Passwords do not match'})
-    try:auth.create_account(u,p1)
-    except ValueError as e:return tpl.TemplateResponse(request,'login.html',{'setup':True,'user':u,'error':str(e)})
-    r=RedirectResponse('/',status_code=303);r.set_cookie(auth.COOKIE,auth.issue(u),max_age=auth.TTL,httponly=True,samesite='lax',secure=_secure(request));return r
+    f=await request.form();u=(f.get('user') or '').strip();p1=f.get('password') or '';p2=f.get('password2') or '';nxt=f.get('next') or '/'
+    if not auth.csrf_ok(request.cookies.get(auth.COOKIE,''),f.get('csrf')):return tpl.TemplateResponse(request,'login.html',_login_ctx(request,setup=True,user=u,error='Form expired — try again'),status_code=400)
+    if p1!=p2:return tpl.TemplateResponse(request,'login.html',_login_ctx(request,setup=True,user=u,error='Passwords do not match'),status_code=400)
+    try:auth.create_user(u,p1,'admin')
+    except ValueError as e:return tpl.TemplateResponse(request,'login.html',_login_ctx(request,setup=True,user=u,error=str(e)),status_code=400)
+    return _set_session(RedirectResponse(nxt if nxt.startswith('/') else '/',status_code=303),request,u,True)
 @app.get('/login',response_class=HTMLResponse)
-def login_page(request:Request,next:str='/'):
+def login_page(request:Request,next:str='/',notice:str=''):
     if not auth.has_account():return RedirectResponse('/setup',status_code=303)
-    return tpl.TemplateResponse(request,'login.html',{'setup':False,'next':next,'user':auth.username()})
+    if request.state.user:return RedirectResponse(next if next.startswith('/') else '/',status_code=303)
+    msg={'exists':'An account already exists — sign in.','out':'You have been signed out.','created':'Account created — sign in.'}.get(notice,'')
+    return tpl.TemplateResponse(request,'login.html',_login_ctx(request,setup=False,next=next,notice=msg))
 @app.post('/login')
 async def login_post(request:Request):
-    f=await request.form();u=(f.get('user') or '').strip();p=f.get('password') or '';nxt=f.get('next') or '/'
+    f=await request.form();u=(f.get('user') or '').strip();p=f.get('password') or '';nxt=f.get('next') or '/';remember=f.get('remember')=='1';ip=_ip(request)
     if not nxt.startswith('/'):nxt='/'
+    if not auth.csrf_ok(request.cookies.get(auth.COOKIE,''),f.get('csrf')):return tpl.TemplateResponse(request,'login.html',_login_ctx(request,setup=False,next=nxt,user=u,error='Form expired — try again'),status_code=400)
+    if auth.too_many(ip):return tpl.TemplateResponse(request,'login.html',_login_ctx(request,setup=False,next=nxt,user=u,error='Too many attempts — wait 10 minutes'),status_code=429)
     if not auth.verify(u,p):
-        time.sleep(0.8);return tpl.TemplateResponse(request,'login.html',{'setup':False,'next':nxt,'user':u,'error':'Wrong username or password'},status_code=401)
-    r=RedirectResponse(nxt,status_code=303);r.set_cookie(auth.COOKIE,auth.issue(u),max_age=auth.TTL,httponly=True,samesite='lax',secure=_secure(request));return r
+        auth.record_fail(ip);time.sleep(0.6);return tpl.TemplateResponse(request,'login.html',_login_ctx(request,setup=False,next=nxt,user=u,error='Wrong email or password'),status_code=401)
+    auth.clear_fails(ip);return _set_session(RedirectResponse(nxt,status_code=303),request,u,remember)
 @app.get('/logout')
 def logout():
-    r=RedirectResponse('/login',status_code=303);r.delete_cookie(auth.COOKIE);return r
+    r=RedirectResponse('/login?notice=out',status_code=303);r.delete_cookie(auth.COOKIE);return r
+@app.get('/forgot',response_class=HTMLResponse)
+def forgot(request:Request):return tpl.TemplateResponse(request,'forgot.html',{})
 @app.post('/api/account/password')
 async def change_password(request:Request):
     b=await request.json();cur=b.get('current') or '';new=b.get('new') or ''
-    if not auth.verify(auth.username(),cur):raise HTTPException(400,'Current password is wrong')
-    try:auth.change_password(new)
+    if not auth.verify(request.state.user,cur):raise HTTPException(400,'Current password is wrong')
+    try:auth.set_password(request.state.user,new)
+    except ValueError as e:raise HTTPException(400,str(e))
+    return {'ok':True}
+def _require_admin(request):
+    if auth.role(request.state.user)!='admin':raise HTTPException(403,'Admin only')
+@app.get('/api/users')
+def api_users(request:Request):_require_admin(request);return {'users':auth.users(),'me':request.state.user}
+@app.post('/api/users')
+async def api_users_add(request:Request):
+    _require_admin(request);b=await request.json()
+    try:auth.create_user(b.get('user',''),b.get('password',''),'admin' if b.get('role')=='admin' else 'member')
+    except ValueError as e:raise HTTPException(400,str(e))
+    return {'users':auth.users()}
+@app.post('/api/users/delete')
+async def api_users_del(request:Request):
+    _require_admin(request);b=await request.json()
+    try:auth.delete_user(b.get('user',''),request.state.user)
+    except ValueError as e:raise HTTPException(400,str(e))
+    return {'users':auth.users()}
+@app.post('/api/users/password')
+async def api_users_pw(request:Request):
+    _require_admin(request);b=await request.json()
+    try:auth.set_password(b.get('user',''),b.get('password',''))
     except ValueError as e:raise HTTPException(400,str(e))
     return {'ok':True}
 SECRET_KEYS=['HF_KEY','GOOGLE_CLIENT_SECRET'];SETTING_KEYS=['HF_KEY','PUBLIC_BASE_URL','DEFAULT_MESSAGE','GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','GDRIVE_FOLDER']
@@ -307,7 +346,7 @@ def media(jid:str,name:str):
     if not p.is_file() or JOBS not in p.parents or p.suffix not in ('.mp4','.jpg'):raise HTTPException(404)
     return FileResponse(p,media_type='image/jpeg' if p.suffix=='.jpg' else 'video/mp4',filename=None if p.suffix=='.jpg' else name)
 @app.get('/settings',response_class=HTMLResponse)
-def settings(request:Request,saved:int=0,flash:str=''):return tpl.TemplateResponse(request,'settings.html',{'s':settings_view(),'saved':bool(saved),'flash':flash})
+def settings(request:Request,saved:int=0,flash:str=''):return tpl.TemplateResponse(request,'settings.html',{'s':settings_view(),'saved':bool(saved),'flash':flash,'csrf':auth.csrf_token(request.cookies.get(auth.COOKIE,'')),'is_admin':auth.role(request.state.user)=='admin'})
 @app.post('/settings')
 async def settings_post(request:Request):
     form=await request.form();save_settings(dict(form));return RedirectResponse('/settings?saved=1',status_code=303)

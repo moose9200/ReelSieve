@@ -1,19 +1,35 @@
 {% extends "base.html" %}
-{% block title %}{{ "Create your login" if setup else "Sign in" }}{% endblock %}
+{% block title %}{{ "Create admin account" if setup else "Sign in" }}{% endblock %}
 {% block content %}
-<section class="hero login-hero">
-  <p class="eyebrow">{{ "First run" if setup else "Private" }}</p>
-  <h1>{{ "Create the BNBsieve login" if setup else "Sign in to BNBsieve" }}</h1>
-  <p class="sub">{{ "This app is private. Set the username and password you'll use from now on." if setup else "Listing reels, host messages and Drive uploads are behind this login." }}</p>
-</section>
-<section class="card form-card login-card">
-  <form method="post" action="{{ '/setup' if setup else '/login' }}" autocomplete="on">
-    <input type="hidden" name="next" value="{{ next or '/' }}">
-    <div class="field"><label for="user">Username</label><input type="text" id="user" name="user" value="{{ user or '' }}" autocomplete="username" required></div>
-    <div class="field"><label for="password">Password</label><input type="password" id="password" name="password" autocomplete="{{ 'new-password' if setup else 'current-password' }}" required minlength="{{ 8 if setup else 1 }}"></div>
-    {% if setup %}<div class="field"><label for="password2">Repeat password</label><input type="password" id="password2" name="password2" autocomplete="new-password" required minlength="8"></div>{% endif %}
-    {% if error %}<p class="hint hint-warn">{{ error }}</p>{% endif %}
-    <div class="actions"><button type="submit" class="btn btn-primary">{{ "Create login" if setup else "Sign in" }}</button></div>
-  </form>
+<section class="login-wrap">
+  <section class="card login-card">
+    <p class="eyebrow">{{ "First run" if setup else "Welcome back" }}</p>
+    <h1 class="login-title">{{ "Create the admin account" if setup else "Sign in to BNBsieve" }}</h1>
+    <p class="sub">{{ "No accounts exist on this installation yet. This first account becomes the admin." if setup else "Use the email and password you set up." }}</p>
+    {% if notice %}<p class="hint hint-ok" role="status">{{ notice }}</p>{% endif %}
+    <form method="post" action="{{ '/setup' if setup else '/login' }}" autocomplete="on" novalidate>
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="next" value="{{ next or '/' }}">
+      <div class="field"><label for="user">Email</label><input type="email" id="user" name="user" value="{{ user or '' }}" autocomplete="{{ 'email' if setup else 'username' }}" inputmode="email" required autofocus></div>
+      <div class="field">
+        <label for="password">Password</label>
+        <div class="pw-row"><input type="password" id="password" name="password" autocomplete="{{ 'new-password' if setup else 'current-password' }}" required minlength="{{ 8 if setup else 1 }}"><button type="button" class="pw-toggle" data-for="password" aria-label="Show password">Show</button></div>
+        {% if setup %}<p class="hint">At least 8 characters.</p>{% endif %}
+      </div>
+      {% if setup %}
+      <div class="field"><label for="password2">Repeat password</label><div class="pw-row"><input type="password" id="password2" name="password2" autocomplete="new-password" required minlength="8"><button type="button" class="pw-toggle" data-for="password2" aria-label="Show password">Show</button></div></div>
+      {% else %}
+      <div class="field field-check login-opts">
+        <label class="check"><input type="checkbox" name="remember" value="1" checked><span>Keep me signed in for 30 days</span></label>
+        <a class="link-muted" href="/forgot">Forgot password?</a>
+      </div>
+      {% endif %}
+      {% if error %}<p class="hint hint-warn" role="alert">{{ error }}</p>{% endif %}
+      <div class="actions"><button type="submit" class="btn btn-primary btn-wide">{{ "Create account & sign in" if setup else "Sign in" }}</button></div>
+    </form>
+    <p class="login-foot">
+      {% if setup %}Already have an account? <a href="/login">Sign in</a>{% else %}{% if allow_setup %}First time here? <a href="/setup">Create the admin account</a>{% else %}Need access? Ask an admin to add you in Settings → Users.{% endif %}{% endif %}
+    </p>
+  </section>
 </section>
 {% endblock %}
