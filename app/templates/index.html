@@ -11,7 +11,7 @@
   <p class="eyebrow">Find a listing</p>
   <form id="search-form" novalidate>
     <div class="grid-search">
-      <div class="field"><label for="s-location">Location</label><input type="text" id="s-location" name="location" placeholder="Bournemouth, UK" autocomplete="off"></div>
+      <div class="field ac-wrap"><label for="s-location">Location</label><input type="text" id="s-location" name="location" placeholder="Start typing a town or city…" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="s-suggest"><ul class="ac-list hidden" id="s-suggest" role="listbox"></ul></div>
       <div class="field"><label for="s-checkin">Check-in</label><input type="date" id="s-checkin" name="checkin"></div>
       <div class="field"><label for="s-checkout">Check-out</label><input type="date" id="s-checkout" name="checkout"></div>
       <div class="field"><label for="s-adults">Guests</label><input type="number" id="s-adults" name="adults" min="1" max="16" value="2"></div>

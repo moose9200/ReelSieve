@@ -443,3 +443,11 @@ select { width: 100%; color: var(--ink); background: var(--surface); border: 0; 
 .result.is-selected { outline: 2px solid var(--accent); outline-offset: 2px; }
 .results .empty { color: var(--muted); font-size: 13px; grid-column: 1 / -1; }
 @media (max-width: 720px) { .grid-search { grid-template-columns: 1fr 1fr; } .results { grid-template-columns: 1fr; } }
+
+/* location autocomplete */
+.ac-wrap { position: relative; }
+.ac-list { position: absolute; left: 0; right: 0; top: 100%; margin: 6px 0 0; padding: 6px; list-style: none; background: var(--surface); border-radius: var(--radius-card); box-shadow: var(--raise); z-index: 20; max-height: 300px; overflow: auto; }
+.ac-list li { padding: 12px 12px; min-height: 44px; border-radius: var(--radius-control); cursor: pointer; font-size: 14px; display: flex; flex-direction: column; justify-content: center; }
+.ac-list li small { color: var(--muted); font-size: 12px; }
+.ac-list li:hover, .ac-list li.is-active { background: var(--accent-soft); color: var(--accent-text); }
+.ac-list.hidden { display: none; }

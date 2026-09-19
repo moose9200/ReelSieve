@@ -67,6 +67,42 @@
         sres.appendChild(el);
       });
     }
+    // location autocomplete (Photon via /api/places), debounced, keyboard-navigable
+    var locIn = document.getElementById("s-location"), sug = document.getElementById("s-suggest");
+    if (locIn && sug) {
+      var acTimer = null, acItems = [], acIdx = -1, lastQ = "";
+      function hideAc() { sug.classList.add("hidden"); sug.innerHTML = ""; acIdx = -1; locIn.setAttribute("aria-expanded", "false"); }
+      function chooseAc(i) { var it = acItems[i]; if (!it) return; locIn.value = it.value; hideAc(); }
+      function showAc(items) {
+        acItems = items || []; sug.innerHTML = "";
+        if (!acItems.length) { hideAc(); return; }
+        acItems.forEach(function (it, i) {
+          var li = document.createElement("li"); li.setAttribute("role", "option"); li.setAttribute("data-i", i);
+          var main = it.value.split(",")[0]; li.innerHTML = "<span>" + esc(main) + "</span><small>" + esc(it.label) + "</small>";
+          li.addEventListener("mousedown", function (e) { e.preventDefault(); chooseAc(i); });
+          sug.appendChild(li);
+        });
+        sug.classList.remove("hidden"); locIn.setAttribute("aria-expanded", "true"); acIdx = -1;
+      }
+      locIn.addEventListener("input", function () {
+        var q = locIn.value.trim(); clearTimeout(acTimer);
+        if (q.length < 2) { hideAc(); return; }
+        acTimer = setTimeout(function () {
+          lastQ = q;
+          getJSON("/api/places?q=" + encodeURIComponent(q)).then(function (d) { if (locIn.value.trim() === lastQ) showAc(d.items); }).catch(function () { hideAc(); });
+        }, 220);
+      });
+      locIn.addEventListener("keydown", function (e) {
+        if (sug.classList.contains("hidden")) return;
+        var lis = sug.querySelectorAll("li");
+        if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+          e.preventDefault(); acIdx = e.key === "ArrowDown" ? Math.min(acIdx + 1, lis.length - 1) : Math.max(acIdx - 1, 0);
+          Array.prototype.forEach.call(lis, function (li, i) { li.classList.toggle("is-active", i === acIdx); });
+        } else if (e.key === "Enter" && acIdx >= 0) { e.preventDefault(); chooseAc(acIdx); }
+        else if (e.key === "Escape") { hideAc(); }
+      });
+      locIn.addEventListener("blur", function () { setTimeout(hideAc, 150); });
+    }
     sform.addEventListener("submit", function (ev) {
       ev.preventDefault();
       var loc = sform.location.value.trim();

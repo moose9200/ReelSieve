@@ -125,6 +125,26 @@ async def opened_in_browser(jid:str,request:Request):
     upd=dict(host_status='draft',host_error='opened in your browser — paste and press Send',message=msg)
     if jid in _jobs:_jobs[jid].update(upd);persist(_jobs[jid]);return enrich(job_public(_jobs[jid]))
     j.update(upd);(JOBS/jid/'job.json').write_text(json.dumps(j,indent=1));return enrich(j)
+_places_cache={}
+@app.get('/api/places')
+def api_places(q:str=''):
+    """Location autocomplete for the picker (Photon / OpenStreetMap, no key). Returns 'City, Country' values Airbnb's search accepts."""
+    import httpx as _hx
+    q=q.strip()
+    if len(q)<2:return {'items':[]}
+    if q.lower() in _places_cache:return _places_cache[q.lower()]
+    try:
+        r=_hx.get('https://photon.komoot.io/api/',params={'q':q,'limit':10,'lang':'en','osm_tag':'place'},headers={'User-Agent':'ListingReel/1.0 (braivex.com)'},timeout=8);feats=r.json().get('features',[])
+    except Exception:return {'items':[]}
+    out=[];seen=set()
+    for f in feats:
+        pr=f.get('properties',{});name=pr.get('name');country=pr.get('country');region=pr.get('state') or pr.get('county') or ''
+        if not name or not country or pr.get('osm_value') not in ('city','town','village','suburb','borough','quarter','neighbourhood','island','county','state','municipality'):continue
+        value=f'{name}, {country}';label=', '.join(x for x in [name,region if region and region!=name else '',country] if x)
+        if value.lower() in seen:continue
+        seen.add(value.lower());c=f.get('geometry',{}).get('coordinates') or [None,None];out.append({'label':label,'value':value,'lat':c[1],'lng':c[0]})
+        if len(out)>=6:break
+    res={'items':out};_places_cache[q.lower()]=res;return res
 @app.get('/api/search')
 def api_search(location:str,checkin:str='',checkout:str='',adults:int=2,offset:int=0):
     """In-app listing picker: public Airbnb search results (no login)."""
