@@ -32,7 +32,7 @@ def save_settings(form):
     """Merge into .env.local (0600). Blank secret = keep existing. Values never logged or rendered."""
     cur=dotenv_values(ENV) if ENV.exists() else {}
     for k in SETTING_KEYS:
-        v=(form.get(k.lower()) or '').strip()
+        v=(form.get(k.lower()) or '').strip().strip('\'"')
         if k in SECRET_KEYS:
             if v:
                 if k=='HF_KEY' and not re.fullmatch(r'[A-Za-z0-9_-]{8,}:[A-Za-z0-9_-]{8,}',v):raise HTTPException(400,'HF_KEY must be key-id:key-secret')
@@ -179,7 +179,8 @@ def google_start(request:Request):
 def google_callback(request:Request,code:str='',state:str='',error:str=''):
     if error or not code:return RedirectResponse('/settings?flash='+(error or 'Google sign-in cancelled'),status_code=303)
     try:gdrive.exchange(code,state,_redirect_uri(request))
-    except Exception as e:return RedirectResponse('/settings?flash=Google+Drive+connect+failed:+'+str(e)[:80].replace(' ','+'),status_code=303)
+    except Exception as e:
+        from urllib.parse import quote as _q;return RedirectResponse('/settings?flash='+_q('Google Drive connect failed: '+str(e)[:300]),status_code=303)
     return RedirectResponse('/settings?saved=1',status_code=303)
 @app.get('/api/gdrive/status')
 def gdrive_status():return gdrive.status()

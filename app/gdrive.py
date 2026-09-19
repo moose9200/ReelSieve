@@ -26,7 +26,14 @@ def auth_url(redirect_uri):
     return AUTH+'?'+urlencode({'client_id':os.environ['GOOGLE_CLIENT_ID'],'redirect_uri':redirect_uri,'response_type':'code','scope':SCOPES,'access_type':'offline','prompt':'consent','include_granted_scopes':'true','state':state})
 def exchange(code,state,redirect_uri):
     if state not in _pending_state or time.time()-_pending_state.pop(state)>900:raise ValueError('OAuth state mismatch or expired — try Connect again')
-    r=httpx.post(TOKEN,data={'code':code,'client_id':os.environ['GOOGLE_CLIENT_ID'],'client_secret':os.environ['GOOGLE_CLIENT_SECRET'],'redirect_uri':redirect_uri,'grant_type':'authorization_code'},timeout=30);r.raise_for_status();tok=r.json()
+    r=httpx.post(TOKEN,data={'code':code,'client_id':os.environ['GOOGLE_CLIENT_ID'],'client_secret':os.environ['GOOGLE_CLIENT_SECRET'],'redirect_uri':redirect_uri,'grant_type':'authorization_code'},timeout=30)
+    if r.status_code!=200:
+        try:e=r.json()
+        except Exception:e={}
+        err=e.get('error','');desc=e.get('error_description','')
+        hint={'invalid_client':'the Client ID / Client secret pair is wrong (re-copy the secret from Google Cloud Console → Credentials; it starts with GOCSPX-)','redirect_uri_mismatch':f'add {redirect_uri} to the OAuth client\'s authorised redirect URIs','invalid_grant':'the code expired or was reused — click Connect again'}.get(err,'')
+        raise RuntimeError(f'Google token exchange failed ({r.status_code} {err}): {desc}. {hint}'.strip())
+    tok=r.json()
     if not tok.get('refresh_token'):
         old=_load() or {};tok['refresh_token']=old.get('refresh_token')
     tok['expires_at']=time.time()+int(tok.get('expires_in',3600))-60
