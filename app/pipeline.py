@@ -288,7 +288,6 @@ def email_html(d,link,dur):
 <p style="color:#8a8a8a;font-size:12px">A 720p copy is attached when under 20 MB. Made with ReelSieve, a Braivex product · braivex.com</p></div>"""
 # ---------------- orchestration ----------------
 def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer='v2'):
-    if ai_motion:renderer='v3'   # AI-motion assembly = hard cuts in the full-bleed renderer
     out_dir=Path(out_dir);out_dir.mkdir(parents=True,exist_ok=True);work=out_dir/'work';work.mkdir(exist_ok=True)
     d=scrape_listing(url,cb);revs=scrape_reviews(url,cb);(out_dir/'listing.json').write_text(json.dumps({**d,'reviews':revs},indent=1))
     imgdir=work/'images';download_photos(d,imgdir,cb)   # every photo, so selection is on quality not on Airbnb's order
