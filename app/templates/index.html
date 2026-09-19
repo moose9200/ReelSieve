@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}New reel{% endblock %}
+{% block content %}
+<section class="hero">
+  <p class="eyebrow">Airbnb → 30-second reel → the host</p>
+  <h1>Paste a listing. Send the host a cinematic reel.</h1>
+  <p class="sub">We pull the photos and reviews, build a 30-second walkthrough with captions and music, and prepare an Airbnb message to the host with the reel link. You press Send.</p>
+</section>
+
+<section class="card form-card">
+  <form id="reel-form" method="post" action="/api/jobs" novalidate>
+    <div class="field">
+      <label for="url">Airbnb listing URL</label>
+      <input type="url" id="url" name="url" required inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://www.airbnb.co.uk/rooms/…">
+    </div>
+    <div class="field field-check">
+      <label class="check">
+        <input type="checkbox" id="send_to_host" name="send_to_host" checked>
+        <span>Prepare an Airbnb message to the host with the reel link</span>
+      </label>
+      <p class="hint">Opens the host's Airbnb contact form in this browser with the message copied — you paste and press Send.</p>
+      {% if not public_url_ok %}
+      <p class="hint hint-warn">No public link yet — start the tunnel or set a public URL in <a href="/settings">Settings</a> so the host can open the reel.</p>
+      {% endif %}
+    </div>
+    <div class="field">
+      <label for="message">Message to the host</label>
+      <textarea id="message" name="message" rows="4">{{ default_message }}</textarea>
+      <p class="hint">The reel link is inserted where <code>{reel_link}</code> appears. Sent from your own Airbnb inbox in this browser, after you review it.</p>
+    </div>
+    <div class="field">
+      <label for="style">Reel style</label>
+      <select id="style" name="style">
+        <option value="cinematic" selected>Cinematic 16:9 — intro, trust card, review card, outro (default)</option>
+        <option value="tutorial">Tutorial-style 9:16 — full-bleed, continuous camera, kinetic captions</option>
+      </select>
+    </div>
+    <div class="field field-check">
+      <label class="check{% if not hf_configured %} is-disabled{% endif %}">
+        <input type="checkbox" id="ai_motion" name="ai_motion"{% if not hf_configured %} disabled{% endif %}>
+        <span>AI camera motion via Higgsfield Seedance 2.5 (uses API credits)</span>
+      </label>
+      {% if not hf_configured %}
+      <p class="hint">Add a Higgsfield API key in <a href="/settings">Settings</a> to enable AI motion.</p>
+      {% endif %}
+    </div>
+    <div class="actions">
+      <button type="submit" class="btn btn-primary" id="submit-btn">Generate reel</button>
+      <span class="form-status" id="form-status" role="status" aria-live="polite"></span>
+    </div>
+  </form>
+</section>
+
+<section class="recent">
+  <p class="eyebrow">Recent reels</p>
+  {% if jobs %}
+  <ul class="job-list">
+    {% for j in jobs %}
+    <li class="job-row">
+      <a class="job-link" href="/jobs/{{ j.id }}">
+        <span class="job-title">{{ j.title or "Untitled listing" }}</span>
+        <span class="job-meta">{{ j.location or "" }}{% if j.location and j.created %} · {% endif %}{{ j.created or "" }}</span>
+      </a>
+      <span class="pill pill-{{ j.status }}">{{ j.status }}</span>
+      {% if j.video_url %}
+      <a class="job-video" href="{{ j.video_url }}" title="Open video">▶</a>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="empty">No reels yet. Paste a listing above to make the first one.</p>
+  {% endif %}
+</section>
+{% endblock %}

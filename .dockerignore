@@ -1,0 +1,9 @@
+.venv
+jobs
+output
+logs
+swiss-home
+.listing-reel
+.git
+*.mp4
+**/__pycache__

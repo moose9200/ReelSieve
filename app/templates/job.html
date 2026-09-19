@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %}{{ job.listing.title or "Reel" }}{% endblock %}
+{% block content %}
+<section class="job-page" id="job" data-job-id="{{ job.id }}" data-status="{{ job.status }}">
+  <div class="job-head">
+    <p class="eyebrow">Reel</p>
+    <h1 id="listing-title">{{ job.listing.title or "Fetching listing…" }}</h1>
+    <p class="sub" id="listing-meta">
+      <span id="listing-location">{{ job.listing.location or "" }}</span>
+      {% if job.listing.rating %}<span class="dot">·</span><span id="listing-rating">★ {{ job.listing.rating }}{% if job.listing.count %} ({{ job.listing.count }}){% endif %}</span>{% endif %}
+      {% if job.listing.url %}<span class="dot">·</span><a href="{{ job.listing.url }}" target="_blank" rel="noopener">Open listing</a>{% endif %}
+    </p>
+  </div>
+
+  <div class="card progress-card">
+    <div class="progress-top">
+      <span class="pill pill-{{ job.status }}" id="status-pill">{{ job.status }}</span>
+      <span class="step" id="step">{{ job.step or "" }}</span>
+      <span class="pct" id="pct">{{ job.progress or 0 }}%</span>
+    </div>
+    <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ job.progress or 0 }}" id="progress">
+      <div class="progress-fill" id="progress-fill" style="width: {{ job.progress or 0 }}%"></div>
+    </div>
+    <p class="error{% if not job.error %} hidden{% endif %}" id="error">{{ job.error or "" }}</p>
+  </div>
+
+  <div class="card video-card{% if job.status != 'done' %} hidden{% endif %}" id="video-card">
+    <div class="video-frame">
+      <video id="video" controls playsinline preload="metadata"{% if job.video_url %} src="{{ job.video_url }}"{% endif %}></video>
+    </div>
+    <div class="video-actions">
+      <a class="btn btn-primary" id="download-btn" href="{{ job.video_url or '#' }}" download>Download reel</a>
+      <span class="email-line">
+        <span class="eyebrow inline">Host message</span>
+        <span class="pill pill-email" id="host-pill" data-status="{{ job.host_status or '' }}">{{ job.host_status or "—" }}</span>
+      </span>
+    </div>
+  </div>
+
+  <div class="card host-card{% if job.status != 'done' %} hidden{% endif %}" id="host-card">
+    <div class="section-head"><h2>Send to the host on Airbnb</h2></div>
+    <div class="field">
+      <label for="reel-link">Public reel link</label>
+      <div class="copy-row">
+        <input type="text" id="reel-link" readonly value="{{ job.reel_link or '' }}" placeholder="No public link — start the tunnel in Settings">
+        <button type="button" class="btn btn-secondary" id="copy-link-btn">Copy</button>
+      </div>
+    </div>
+    <div class="field">
+      <label for="host-message">Message</label>
+      <textarea id="host-message" rows="5">{{ job.message_final or job.message or '' }}</textarea>
+      <p class="hint">"Message host on Airbnb" copies this message and opens the host's contact form in a new tab of <strong>this browser</strong>, where you're already logged in. Paste (⌘V) and press <strong>Send message</strong>. Nothing is sent automatically.</p>
+    </div>
+    <div class="actions">
+      <a class="btn btn-primary" id="contact-link" href="{{ job.contact_url or '#' }}" target="_blank" rel="noopener">Message host on Airbnb</a>
+      <button type="button" class="btn btn-secondary" id="send-host-btn" title="Advanced: uses the separate Airbnb session from Settings">Pre-fill via helper window</button>
+      <span class="form-status" id="host-status" role="status" aria-live="polite">{{ job.host_error or '' }}</span>
+    </div>
+  </div>
+
+  <div class="card log-card">
+    <p class="eyebrow">Log</p>
+    <pre class="log" id="log" aria-live="polite">{% for line in job.log %}{{ line }}
+{% endfor %}</pre>
+  </div>
+</section>
+{% endblock %}

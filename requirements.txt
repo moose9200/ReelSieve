@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+jinja2
+python-multipart
+python-dotenv
+httpx
+pillow
+numpy
+opencv-python-headless
+torch
+torchvision
+transformers
+huggingface_hub
+playwright
+higgsfield-client

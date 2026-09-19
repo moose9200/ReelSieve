@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<section class="settings-head">
+  <p class="eyebrow">Settings</p>
+  <h1>Keys, Airbnb account and public link</h1>
+  <p class="sub">Everything here is written to <code>.env.local</code> or <code>.listing-reel/</code> on this machine. Secrets are never sent back to the browser.</p>
+  {% if saved %}<span class="pill pill-done">Saved</span>{% endif %}
+  {% if flash %}<p class="flash">{{ flash }}</p>{% endif %}
+</section>
+
+<section class="card">
+  <div class="section-head">
+    <h2>Airbnb account</h2>
+    <span class="pill {{ 'pill-done' if s.airbnb_connected else 'pill-skipped' }}" id="airbnb-pill">{{ 'Helper connected' if s.airbnb_connected else 'Uses this browser' }}</span>
+  </div>
+  <p class="hint">By default the host message opens in <strong>this browser</strong> (a new tab on airbnb.co.uk, where you're already logged in) with the message copied to your clipboard. Nothing to connect. <a href="https://www.airbnb.co.uk/login" target="_blank" rel="noopener">Check your Airbnb login</a>.</p>
+  <p class="hint">Optional helper: "Connect" opens a separate Chrome window kept in <code>.listing-reel/airbnb-profile</code>; the job page can then pre-fill the form for you. You still press Send.</p>
+  <div class="actions">
+    <button type="button" class="btn btn-secondary" id="connect-airbnb-btn">Connect helper window</button>
+    <button type="button" class="btn btn-secondary" id="disconnect-airbnb-btn">Disconnect</button>
+    <span class="form-status" id="airbnb-status" role="status" aria-live="polite"></span>
+  </div>
+</section>
+
+<section class="card">
+  <div class="section-head">
+    <h2>Public link for the reel</h2>
+    <span class="pill {{ 'pill-done' if s.tunnel.running else 'pill-neg' }}" id="tunnel-pill">{{ 'Tunnel live' if s.tunnel.running else 'No tunnel' }}</span>
+  </div>
+  <p class="hint">Airbnb messages cannot carry a video file, so the reel is shared as a link. Either serve this app on a public URL, or start a temporary tunnel (cloudflared quick tunnel; the link stays live while this app runs).</p>
+  <p class="hint" id="tunnel-url">{% if s.tunnel.url %}Tunnel URL: <a href="{{ s.tunnel.url }}" target="_blank" rel="noopener">{{ s.tunnel.url }}</a>{% endif %}</p>
+  <div class="actions">
+    <button type="button" class="btn btn-secondary" id="tunnel-start-btn"{% if not s.tunnel.installed %} disabled{% endif %}>Start tunnel</button>
+    <button type="button" class="btn btn-secondary" id="tunnel-stop-btn">Stop tunnel</button>
+    <span class="form-status" id="tunnel-status" role="status" aria-live="polite">{% if not s.tunnel.installed %}cloudflared not installed — brew install cloudflared{% endif %}</span>
+  </div>
+</section>
+
+<form method="post" action="/settings" class="settings-form" autocomplete="off">
+  <section class="card">
+    <div class="section-head"><h2>Public base URL (optional)</h2></div>
+    <div class="field">
+      <label for="public_base_url">Public URL where this app is reachable</label>
+      <input type="text" id="public_base_url" name="public_base_url" value="{{ s.public_base_url.value }}" placeholder="https://reels.yourdomain.com — leave blank to use the tunnel">
+      {% if s.public_base_url.hint %}<p class="hint">{{ s.public_base_url.hint }}</p>{% endif %}
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="section-head"><h2>Message template</h2></div>
+    <div class="field">
+      <label for="default_message">Default message to the host</label>
+      <textarea id="default_message" name="default_message" rows="5">{{ s.default_message.value }}</textarea>
+      <p class="hint">Use <code>{reel_link}</code> where the public reel link should go.</p>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="section-head">
+      <h2>Higgsfield API</h2>
+      <span class="pill {{ 'pill-done' if s.hf_key.configured else 'pill-neg' }}">{{ 'Configured' if s.hf_key.configured else 'Not set' }}</span>
+    </div>
+    <div class="field">
+      <label for="hf_key">API key</label>
+      <input type="password" id="hf_key" name="hf_key" value="" autocomplete="new-password" placeholder="{{ 'configured — leave blank to keep' if s.hf_key.configured else 'not set' }}">
+      <p class="hint">Format key-id:key-secret. Stored in .env.local on this machine, never displayed. Enables AI camera motion (Seedance 2.5, billable).</p>
+    </div>
+    <div class="actions">
+      <button type="submit" class="btn btn-primary">Save settings</button>
+    </div>
+  </section>
+</form>
+{% endblock %}
