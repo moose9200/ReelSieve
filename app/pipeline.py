@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Listing Reel pipeline: Airbnb URL -> facts + photos + reviews -> 30 s cinematic reel (-> optional Seedance clips) -> email.
+"""BNBsieve pipeline: Airbnb URL -> facts + photos + reviews -> 30 s cinematic reel (-> optional Seedance clips) -> email.
 CLI: python app/pipeline.py <airbnb_url> <out_dir> [--email x@y] [--ai-motion]"""
 import re,os,sys,json,html,subprocess,shutil,time,smtplib,base64,mimetypes
 from pathlib import Path
@@ -251,7 +251,7 @@ def render(m,workdir,out,cb=None,renderer='v2'):
     log(cb,f'Rendered {dur:.1f}s reel');return dur,small
 # ---------------- email ----------------
 def send_email(to,subject,body_html,attach=None,link=None,cb=None):
-    frm=os.getenv('FROM_EMAIL');name=os.getenv('FROM_NAME','Braivex Listing Reel');sg=os.getenv('SENDGRID_API_KEY')
+    frm=os.getenv('FROM_EMAIL');name=os.getenv('FROM_NAME','Braivex BNBsieve');sg=os.getenv('SENDGRID_API_KEY')
     if not frm:return 'skipped','FROM_EMAIL not set'
     if sg:
         payload={'personalizations':[{'to':[{'email':to}]}],'from':{'email':frm,'name':name},'subject':subject,'content':[{'type':'text/html','value':body_html}]}
@@ -274,7 +274,7 @@ def email_html(d,link,dur):
     return f"""<div style="font-family:Assistant,system-ui,sans-serif;background:#070606;color:#fff;padding:32px"><p style="letter-spacing:.12em;font-size:11px;color:#8a8a8a;margin:0 0 8px">BRAIVEX · LISTING REEL</p>
 <h1 style="margin:0 0 12px;font-size:24px">{html.escape(d['title'])}</h1><p style="color:#b3b3b3;margin:0 0 20px">{html.escape(d.get('city',''))} · {d.get('rating','')}★ from {d.get('count','')} reviews · {dur:.0f}s reel</p>
 {'<p><a href="'+link+'" style="background:#00f0ff;color:#04070a;padding:12px 18px;border-radius:10px;font-weight:700;text-decoration:none">Watch the 1080p reel</a></p>' if link else ''}
-<p style="color:#8a8a8a;font-size:12px">A 720p copy is attached when under 20 MB. Made with Listing Reel, a Braivex product · braivex.com</p></div>"""
+<p style="color:#8a8a8a;font-size:12px">A 720p copy is attached when under 20 MB. Made with BNBsieve, a Braivex product · braivex.com</p></div>"""
 # ---------------- orchestration ----------------
 def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer='v2'):
     out_dir=Path(out_dir);out_dir.mkdir(parents=True,exist_ok=True);work=out_dir/'work';work.mkdir(exist_ok=True)

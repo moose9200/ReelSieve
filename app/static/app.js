@@ -1,4 +1,4 @@
-/* Listing Reel — small vanilla JS: theme toggle, job submit, job polling, host message, settings actions. */
+/* BNBsieve — small vanilla JS: theme toggle, job submit, job polling, host message, settings actions. */
 (function () {
   "use strict";
 
@@ -419,6 +419,13 @@
       postJSON("/api/airbnb/disconnect").then(function (d) { setAirbnb(d); aStatus.textContent = "Disconnected."; }).catch(function (err) { aStatus.textContent = err.message; });
     });
   }
+  var pwBtn = document.getElementById("pw-btn");
+  if (pwBtn) pwBtn.addEventListener("click", function () {
+    var out = document.getElementById("pw-status"); out.className = "form-status";
+    postJSON("/api/account/password", { current: document.getElementById("pw-current").value, new: document.getElementById("pw-new").value })
+      .then(function () { out.textContent = "Password changed."; document.getElementById("pw-current").value = ""; document.getElementById("pw-new").value = ""; })
+      .catch(function (err) { out.textContent = err.message; out.classList.add("is-error"); });
+  });
   var gdDisc = document.getElementById("gdrive-disconnect");
   if (gdDisc) gdDisc.addEventListener("click", function () {
     postJSON("/api/gdrive/disconnect").then(function (d) { var p = document.getElementById("gdrive-pill"); p.className = "pill pill-neg"; p.textContent = "Not connected"; document.getElementById("gdrive-status").textContent = "Disconnected."; }).catch(function (err) { document.getElementById("gdrive-status").textContent = err.message; });

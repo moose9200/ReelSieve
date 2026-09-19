@@ -531,3 +531,6 @@ select { width: 100%; color: var(--ink); background: var(--surface); border: 0; 
 
 .video-frame iframe { width: 100%; aspect-ratio: 16/9; border: 0; border-radius: var(--radius-control); background: #000; display: block; }
 .video-frame iframe.hidden, .video-frame video.hidden { display: none; }
+
+.login-card { max-width: 480px; }
+.login-hero h1 { font-size: 26px; }

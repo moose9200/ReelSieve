@@ -1,4 +1,4 @@
-# Listing Reel — by Braivex
+# BNBsieve — by Braivex
 
 Paste an Airbnb listing URL → a ~30 s cinematic 16:9 reel (intro, trust card, depth-parallax walkthrough, real review card, outro "by Braivex.com") → handed to the **listing host through Airbnb messaging** (pre-filled from your own Airbnb account; you press Send).
 

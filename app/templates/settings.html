@@ -10,6 +10,15 @@
 </section>
 
 <section class="card">
+  <div class="section-head"><h2>Login</h2><span class="pill pill-done">Signed in as {{ request.state.user if request and request.state and request.state.user else "admin" }}</span></div>
+  <div class="grid-2">
+    <div class="field"><label for="pw-current">Current password</label><input type="password" id="pw-current" autocomplete="current-password"></div>
+    <div class="field"><label for="pw-new">New password (min 8)</label><input type="password" id="pw-new" autocomplete="new-password"></div>
+  </div>
+  <div class="actions"><button type="button" class="btn btn-secondary" id="pw-btn">Change password</button><a class="btn btn-secondary" href="/logout">Log out</a><span class="form-status" id="pw-status"></span></div>
+</section>
+
+<section class="card">
   <div class="section-head">
     <h2>Airbnb account</h2>
     <span class="pill {{ 'pill-done' if s.airbnb_connected else 'pill-skipped' }}" id="airbnb-pill">{{ 'Helper connected' if s.airbnb_connected else 'Uses this browser' }}</span>
@@ -57,7 +66,7 @@
     <div class="grid-2">
       <div class="field"><label for="google_client_id">Client ID</label><input type="text" id="google_client_id" name="google_client_id" value="{{ s.google_client_id.value }}" placeholder="…apps.googleusercontent.com"></div>
       <div class="field"><label for="google_client_secret">Client secret</label><input type="password" id="google_client_secret" name="google_client_secret" value="" autocomplete="new-password" placeholder="{{ 'configured — leave blank to keep' if s.google_client_secret.configured else 'not set' }}"></div>
-      <div class="field"><label for="gdrive_folder">Drive folder name</label><input type="text" id="gdrive_folder" name="gdrive_folder" value="{{ s.gdrive_folder.value }}" placeholder="Listing Reels"></div>
+      <div class="field"><label for="gdrive_folder">Drive folder name</label><input type="text" id="gdrive_folder" name="gdrive_folder" value="{{ s.gdrive_folder.value }}" placeholder="BNBsieves"></div>
     </div>
   </section>
   <section class="card">

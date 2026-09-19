@@ -11,9 +11,58 @@ from dotenv import load_dotenv,dotenv_values
 HERE=Path(__file__).resolve().parent;ROOT=HERE.parent;ENV=ROOT/'.env.local';JOBS=Path(os.getenv('JOBS_DIR') or (ROOT/'jobs'));JOBS.mkdir(parents=True,exist_ok=True);PORT=int(os.getenv('PORT','8787'))
 load_dotenv(ENV)
 if not os.getenv('PUBLIC_BASE_URL') and os.getenv('RAILWAY_PUBLIC_DOMAIN'):os.environ['PUBLIC_BASE_URL']='https://'+os.environ['RAILWAY_PUBLIC_DOMAIN']
-from app import pipeline,hostmsg,search as listing_search,gdrive
-app=FastAPI(title='Listing Reel by Braivex');app.mount('/static',StaticFiles(directory=HERE/'static'),name='static')
+from app import pipeline,hostmsg,search as listing_search,gdrive,auth
+app=FastAPI(title='BNBsieve by Braivex');app.mount('/static',StaticFiles(directory=HERE/'static'),name='static')
 tpl=Jinja2Templates(directory=HERE/'templates');tpl.env.autoescape=True
+from starlette.middleware.base import BaseHTTPMiddleware
+PUBLIC_PREFIXES=('/static/','/media/','/login','/setup','/logout','/oauth/google/callback','/favicon.ico','/healthz')
+class LoginGate(BaseHTTPMiddleware):
+    async def dispatch(self,request,call_next):
+        path=request.url.path
+        if path.startswith(PUBLIC_PREFIXES) or path in ('/login','/setup','/logout','/healthz'):return await call_next(request)
+        if not auth.has_account():return RedirectResponse('/setup',status_code=303)
+        user=auth.check(request.cookies.get(auth.COOKIE,''))
+        if not user:
+            if path.startswith('/api/'):return JSONResponse({'detail':'Sign in required'},status_code=401)
+            from urllib.parse import quote as _q;return RedirectResponse('/login?next='+_q(str(request.url.path)+('?'+str(request.url.query) if request.url.query else '')),status_code=303)
+        request.state.user=user;return await call_next(request)
+app.add_middleware(LoginGate)
+def _secure(request):return request.url.scheme=='https' or 'railway.app' in request.headers.get('host','')
+@app.get('/healthz')
+def healthz():return {'ok':True}
+@app.get('/setup',response_class=HTMLResponse)
+def setup_page(request:Request):
+    if auth.has_account():return RedirectResponse('/login',status_code=303)
+    return tpl.TemplateResponse(request,'login.html',{'setup':True,'user':'admin'})
+@app.post('/setup')
+async def setup_post(request:Request):
+    if auth.has_account():return RedirectResponse('/login',status_code=303)
+    f=await request.form();u=(f.get('user') or 'admin').strip();p1=f.get('password') or '';p2=f.get('password2') or ''
+    if p1!=p2:return tpl.TemplateResponse(request,'login.html',{'setup':True,'user':u,'error':'Passwords do not match'})
+    try:auth.create_account(u,p1)
+    except ValueError as e:return tpl.TemplateResponse(request,'login.html',{'setup':True,'user':u,'error':str(e)})
+    r=RedirectResponse('/',status_code=303);r.set_cookie(auth.COOKIE,auth.issue(u),max_age=auth.TTL,httponly=True,samesite='lax',secure=_secure(request));return r
+@app.get('/login',response_class=HTMLResponse)
+def login_page(request:Request,next:str='/'):
+    if not auth.has_account():return RedirectResponse('/setup',status_code=303)
+    return tpl.TemplateResponse(request,'login.html',{'setup':False,'next':next,'user':auth.username()})
+@app.post('/login')
+async def login_post(request:Request):
+    f=await request.form();u=(f.get('user') or '').strip();p=f.get('password') or '';nxt=f.get('next') or '/'
+    if not nxt.startswith('/'):nxt='/'
+    if not auth.verify(u,p):
+        time.sleep(0.8);return tpl.TemplateResponse(request,'login.html',{'setup':False,'next':nxt,'user':u,'error':'Wrong username or password'},status_code=401)
+    r=RedirectResponse(nxt,status_code=303);r.set_cookie(auth.COOKIE,auth.issue(u),max_age=auth.TTL,httponly=True,samesite='lax',secure=_secure(request));return r
+@app.get('/logout')
+def logout():
+    r=RedirectResponse('/login',status_code=303);r.delete_cookie(auth.COOKIE);return r
+@app.post('/api/account/password')
+async def change_password(request:Request):
+    b=await request.json();cur=b.get('current') or '';new=b.get('new') or ''
+    if not auth.verify(auth.username(),cur):raise HTTPException(400,'Current password is wrong')
+    try:auth.change_password(new)
+    except ValueError as e:raise HTTPException(400,str(e))
+    return {'ok':True}
 SECRET_KEYS=['HF_KEY','GOOGLE_CLIENT_SECRET'];SETTING_KEYS=['HF_KEY','PUBLIC_BASE_URL','DEFAULT_MESSAGE','GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','GDRIVE_FOLDER']
 HINTS={'HF_KEY':'Higgsfield API key, key-id:key-secret','PUBLIC_BASE_URL':'Where this app is reachable from the internet (optional; tunnel is used otherwise)','DEFAULT_MESSAGE':'Template for the Airbnb message; {reel_link} is replaced','GOOGLE_CLIENT_ID':'OAuth client ID from Google Cloud Console (Web application)','GOOGLE_CLIENT_SECRET':'OAuth client secret','GDRIVE_FOLDER':'Drive folder name for uploads (default: Listing Reels)'}
 _jobs={};_lock=threading.Lock();_airbnb_cache={'t':0,'v':{'connected':False}}
