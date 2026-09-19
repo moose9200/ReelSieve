@@ -287,7 +287,22 @@
       if (s === "failed") return "Failed" + (job.host_error ? " — " + job.host_error : "");
       return s || "—";
     }
+    function renderDrive(job) {
+      var dp = el("drive-pill"), dl2 = el("drive-link"), ub = el("drive-upload-btn"); if (!dp) return;
+      var st = job.drive_status || "";
+      dp.className = "pill pill-email pill-" + (st === "uploaded" ? "done" : st === "failed" ? "failed" : "skipped");
+      dp.textContent = st === "uploaded" ? "Uploaded" + (job.drive_name ? " · " + job.drive_name : "") : st === "failed" ? "Failed — " + (job.drive_error || "") : st === "skipped" ? "Not uploaded — " + (job.drive_error || "") : "—";
+      if (dl2) { dl2.classList.toggle("hidden", !job.drive_link); if (job.drive_link) dl2.href = job.drive_link; }
+      if (ub) ub.classList.toggle("hidden", st === "uploaded");
+    }
+    var driveBtn = el("drive-upload-btn");
+    if (driveBtn) driveBtn.addEventListener("click", function () {
+      driveBtn.disabled = true; driveBtn.textContent = "Uploading…";
+      postJSON("/api/jobs/" + encodeURIComponent(jobId) + "/upload-drive").then(function (d) { renderDrive(d.job || d); renderHost(d.job || d); })
+        .catch(function (err) { alert(err.message || "Upload failed"); }).then(function () { driveBtn.disabled = false; driveBtn.textContent = "Upload to Drive"; });
+    });
     function renderHost(job) {
+      renderDrive(job);
       if (hostPill) {
         hostPill.setAttribute("data-status", job.host_status || "");
         hostPill.className = "pill pill-email pill-" + (job.host_status === "sent" || job.host_status === "draft" ? "done" : (job.host_status === "failed" ? "failed" : "skipped"));
@@ -394,6 +409,10 @@
       postJSON("/api/airbnb/disconnect").then(function (d) { setAirbnb(d); aStatus.textContent = "Disconnected."; }).catch(function (err) { aStatus.textContent = err.message; });
     });
   }
+  var gdDisc = document.getElementById("gdrive-disconnect");
+  if (gdDisc) gdDisc.addEventListener("click", function () {
+    postJSON("/api/gdrive/disconnect").then(function (d) { var p = document.getElementById("gdrive-pill"); p.className = "pill pill-neg"; p.textContent = "Not connected"; document.getElementById("gdrive-status").textContent = "Disconnected."; }).catch(function (err) { document.getElementById("gdrive-status").textContent = err.message; });
+  });
   var tStart = document.getElementById("tunnel-start-btn");
   if (tStart) {
     var tPill = document.getElementById("tunnel-pill"), tUrl = document.getElementById("tunnel-url"), tStatus = document.getElementById("tunnel-status"), tStop = document.getElementById("tunnel-stop-btn");

@@ -31,6 +31,12 @@
     <div class="video-actions">
       <a class="btn btn-primary" id="download-btn" href="{{ job.video_url or '#' }}" download>Download reel</a>
       <span class="email-line">
+        <span class="eyebrow inline">Google Drive</span>
+        <span class="pill pill-email" id="drive-pill">{{ job.drive_status or '—' }}</span>
+        <a id="drive-link" class="{% if not job.drive_link %}hidden{% endif %}" href="{{ job.drive_link or '#' }}" target="_blank" rel="noopener">Open in Drive ↗</a>
+        <button type="button" class="btn btn-secondary btn-sm{% if job.drive_status == 'uploaded' %} hidden{% endif %}" id="drive-upload-btn">Upload to Drive</button>
+      </span>
+      <span class="email-line">
         <span class="eyebrow inline">Host message</span>
         <span class="pill pill-email" id="host-pill" data-status="{{ job.host_status or '' }}">{{ job.host_status or "—" }}</span>
       </span>

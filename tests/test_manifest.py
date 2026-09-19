@@ -46,3 +46,8 @@ def test_search_parser_reads_public_results():
     first=items[0]
     assert first['id'].isdigit() and first['url'].startswith('https://www.airbnb.co.uk/rooms/')
     assert first['photo'] and first['title'] and first['rating'] is not None
+
+def test_drive_filename_is_listing_url():
+    from app import gdrive
+    assert gdrive.safe_name('https://www.airbnb.co.uk/rooms/1673857257882928402?adults=1&check_in=2026-10-04')=='https://www.airbnb.co.uk/rooms/1673857257882928402.mp4'
+    assert gdrive.status()['folder']=='Listing Reels'

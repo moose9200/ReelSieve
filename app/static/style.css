@@ -503,3 +503,8 @@ select { width: 100%; color: var(--ink); background: var(--surface); border: 0; 
 .result .rbtns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
 .result .rbtns .btn { margin-top: 0; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; text-decoration: none; white-space: nowrap; }
 .result .rn { cursor: pointer; } .result .rn:hover { color: var(--accent-text); }
+
+.btn-sm { padding: 8px 12px; min-height: 36px; }
+.btn.is-disabled { pointer-events: none; opacity: .5; }
+.email-line a { color: var(--accent-text); font-size: 12px; font-weight: 700; text-decoration: none; }
+.email-line a.hidden { display: none; }
