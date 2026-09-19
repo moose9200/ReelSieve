@@ -39,8 +39,8 @@
   <div class="results-head hidden" id="sort-wrap">
     <label for="sort" class="sort-label">Sort by</label>
     <select id="sort" name="sort">
-      <option value="recommended" selected>Recommended</option>
-      <option value="price_desc">Price: high to low</option>
+      <option value="price_desc" selected>Price: high to low</option>
+      <option value="recommended">Recommended</option>
       <option value="price_asc">Price: low to high</option>
       <option value="rating">Rating</option>
       <option value="reviews">Most reviews</option>
@@ -48,6 +48,7 @@
     </select>
   </div>
   <div class="results" id="search-results" aria-live="polite"></div>
+  <div class="actions load-more hidden" id="load-more-wrap"><button type="button" class="btn btn-secondary" id="load-more-btn">Load more listings</button><span class="form-status" id="load-more-status"></span></div>
 </section>
 
 <section class="card form-card" id="reel-card">

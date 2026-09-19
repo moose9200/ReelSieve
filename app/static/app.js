@@ -204,6 +204,21 @@
       });
       renderField();
     }
+    var lmWrap = document.getElementById("load-more-wrap"), lmBtn = document.getElementById("load-more-btn"), lmStatus = document.getElementById("load-more-status");
+    var lastQuery = "", nextPage = 1, pagesTotal = 1;
+    function updateLoadMore() {
+      if (!lmWrap) return; var have = lastData && lastData.items ? lastData.items.length : 0;
+      lmWrap.classList.toggle("hidden", !(have && nextPage < pagesTotal));
+      if (lmStatus) lmStatus.textContent = have ? have + " listings shown" + (nextPage < pagesTotal ? " · more available" : " · that's all Airbnb returns") : "";
+    }
+    if (lmBtn) lmBtn.addEventListener("click", function () {
+      lmBtn.disabled = true; lmStatus.textContent = "Loading page " + (nextPage + 1) + "…";
+      getJSON("/api/search/more?" + lastQuery + "&page=" + nextPage).then(function (d) {
+        var ids = {}; lastData.items.forEach(function (i) { ids[i.id] = 1; });
+        (d.items || []).forEach(function (i) { if (!ids[i.id]) { ids[i.id] = 1; lastData.items.push(i); } });
+        nextPage += 1; pagesTotal = d.pages_total || pagesTotal; renderResults(lastData); sstatus.textContent = lastData.items.length + " listings";
+      }).catch(function (err) { lmStatus.textContent = err.message || "Load more failed."; }).then(function () { lmBtn.disabled = false; updateLoadMore(); });
+    });
     sform.addEventListener("submit", function (ev) {
       ev.preventDefault();
       var loc = sform.location.value.trim();
@@ -211,7 +226,8 @@
       if (!loc) { sstatus.textContent = "Enter a location."; sstatus.classList.add("is-error"); sform.location.focus(); return; }
       var q = "location=" + encodeURIComponent(loc) + "&checkin=" + encodeURIComponent(sform.checkin.value || "") + "&checkout=" + encodeURIComponent(sform.checkout.value || "") + "&adults=" + encodeURIComponent(sform.adults.value || "2");
       sbtn.disabled = true; sstatus.textContent = "Searching Airbnb…"; sres.innerHTML = "";
-      getJSON("/api/search?" + q).then(function (data) { renderResults(data); sstatus.textContent = data.count + " listings"; })
+      lastQuery = q;
+      getJSON("/api/search?" + q + "&pages=3").then(function (data) { nextPage = data.pages_loaded || 1; pagesTotal = data.pages_total || 1; renderResults(data); sstatus.textContent = data.count + " listings"; updateLoadMore(); })
         .catch(function (err) { sstatus.textContent = err.message || "Search failed."; sstatus.classList.add("is-error"); })
         .then(function () { sbtn.disabled = false; });
     });

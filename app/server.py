@@ -146,11 +146,15 @@ def api_places(q:str=''):
         if len(out)>=6:break
     res={'items':out};_places_cache[q.lower()]=res;return res
 @app.get('/api/search')
-def api_search(location:str,checkin:str='',checkout:str='',adults:int=2,offset:int=0):
+def api_search(location:str,checkin:str='',checkout:str='',adults:int=2,offset:int=0,pages:int=3):
     """In-app listing picker: public Airbnb search results (no login)."""
     if not location.strip():raise HTTPException(400,'Enter a location')
-    try:return listing_search.search(location,checkin or None,checkout or None,adults,offset)
+    try:return listing_search.search(location,checkin or None,checkout or None,adults,offset,min(max(pages,1),5))
     except Exception as e:raise HTTPException(502,f'Search failed: {type(e).__name__}: {str(e)[:120]}')
+@app.get('/api/search/more')
+def api_search_more(location:str,page:int,checkin:str='',checkout:str='',adults:int=2):
+    try:return listing_search.search_page(location,checkin or None,checkout or None,adults,page)
+    except Exception as e:raise HTTPException(502,f'Load more failed: {type(e).__name__}: {str(e)[:120]}')
 @app.get('/media/{jid}/{name}')
 def media(jid:str,name:str):
     p=(JOBS/jid/name).resolve()

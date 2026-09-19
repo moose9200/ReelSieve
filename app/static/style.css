@@ -496,3 +496,6 @@ select { width: 100%; color: var(--ink); background: var(--surface); border: 0; 
 .results-head.hidden { display: none; }
 .results-head select { width: auto; min-width: 200px; min-height: 44px; }
 .sort-label { font-size: 12px; color: var(--muted); font-weight: 600; }
+
+.load-more { justify-content: center; margin-top: 14px; }
+.load-more.hidden { display: none; }
