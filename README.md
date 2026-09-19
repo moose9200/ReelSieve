@@ -60,3 +60,9 @@ Host message: "Message host on Airbnb" copies the message and opens the contact 
 ## Prompt-set mode (no Airbnb listing)
 `swiss-home/` — 10-image chained prompt set (exterior → living → open-plan → dining/stairs → kitchen → island → living hero → lanai → rear lawn → drone). Images generated in Gemini (free) with each result as the next reference; `prompts.json` holds the prompts. Then `depth.py images depth` + `render_v3.py manifest.json out/…mp4`. Higgsfield had 0 credits/no unlimited allowance, so Gemini was used.
 Gemini download quirk: the "Download full-sized image" button only fires when the image is scrolled into view and hovered first.
+
+## Deployment
+- GitHub: https://github.com/moose9200/listing-reel (private, commits by Hemant Kumar Sain)
+- Railway: project `listing-reel` in workspace "Hemant Kumar Sain's Projects", service `listing-reel`, volume `/data` (jobs + HF model cache), public URL https://listing-reel-production.up.railway.app
+- Env vars on Railway: `HF_KEY`, `JOBS_DIR=/data/jobs`, `HF_HOME=/data/hf-cache`; `PUBLIC_BASE_URL` derives from `RAILWAY_PUBLIC_DOMAIN` so reel links are public without a tunnel.
+- Deploy: `railway up --detach --ci` from this folder (Dockerfile build, ~10 min: CPU torch + Chromium). Encoding uses libx264 off macOS.
