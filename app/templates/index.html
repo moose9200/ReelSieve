@@ -12,8 +12,23 @@
   <form id="search-form" novalidate>
     <div class="grid-search">
       <div class="field ac-wrap"><label for="s-location">Location</label><input type="text" id="s-location" name="location" placeholder="Start typing a town or city…" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="s-suggest"><ul class="ac-list hidden" id="s-suggest" role="listbox"></ul></div>
-      <div class="field"><label for="s-checkin">Check-in</label><input type="date" id="s-checkin" name="checkin"></div>
-      <div class="field"><label for="s-checkout">Check-out</label><input type="date" id="s-checkout" name="checkout"></div>
+      <div class="field dp-wrap">
+        <label for="s-dates">Dates <span class="hint-inline">(optional)</span></label>
+        <button type="button" class="dp-trigger" id="s-dates" aria-haspopup="dialog" aria-expanded="false"><span class="dp-text" id="dp-text">Add dates</span><span class="dp-nights" id="dp-nights"></span></button>
+        <input type="hidden" id="s-checkin" name="checkin"><input type="hidden" id="s-checkout" name="checkout">
+        <div class="dp-pop hidden" id="dp-pop" role="dialog" aria-label="Choose dates">
+          <div class="dp-presets" id="dp-presets">
+            <button type="button" class="chip" data-preset="weekend">This weekend</button>
+            <button type="button" class="chip" data-preset="nextweekend">Next weekend</button>
+            <button type="button" class="chip" data-preset="week">A week from Sat</button>
+          </div>
+          <div class="dp-months" id="dp-months"></div>
+          <div class="dp-foot">
+            <span class="dp-summary" id="dp-summary">Select a check-in date</span>
+            <span class="dp-actions"><button type="button" class="btn btn-secondary" id="dp-clear">Clear</button><button type="button" class="btn btn-primary" id="dp-done">Done</button></span>
+          </div>
+        </div>
+      </div>
       <div class="field"><label for="s-adults">Guests</label><input type="number" id="s-adults" name="adults" min="1" max="16" value="2"></div>
     </div>
     <div class="actions">
@@ -21,6 +36,17 @@
       <span class="form-status" id="search-status" role="status" aria-live="polite"></span>
     </div>
   </form>
+  <div class="results-head hidden" id="sort-wrap">
+    <label for="sort" class="sort-label">Sort by</label>
+    <select id="sort" name="sort">
+      <option value="recommended" selected>Recommended</option>
+      <option value="price_desc">Price: high to low</option>
+      <option value="price_asc">Price: low to high</option>
+      <option value="rating">Rating</option>
+      <option value="reviews">Most reviews</option>
+      <option value="photos">Most photos</option>
+    </select>
+  </div>
   <div class="results" id="search-results" aria-live="polite"></div>
 </section>
 

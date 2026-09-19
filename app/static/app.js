@@ -49,8 +49,25 @@
       var card = document.getElementById("reel-card"); if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
       var fs = document.getElementById("form-status"); if (fs) { fs.className = "form-status"; fs.textContent = "Selected: " + (item.name || item.title) + " — press Generate reel."; }
     }
+    var lastData = null, sortSel = document.getElementById("sort");
+    function priceNum(p) { var m = String(p || "").replace(/,/g, "").match(/([\d.]+)/); return m ? parseFloat(m[1]) : null; }
+    function sortItems(items, mode) {
+      var a = items.slice();
+      var cmp = {
+        recommended: function (x, y) { return ((y.reviews || 0) * (y.rating || 0)) - ((x.reviews || 0) * (x.rating || 0)); },
+        price_desc: function (x, y) { return (priceNum(y.price) || -1) - (priceNum(x.price) || -1); },
+        price_asc: function (x, y) { return (priceNum(x.price) == null ? 1e12 : priceNum(x.price)) - (priceNum(y.price) == null ? 1e12 : priceNum(y.price)); },
+        rating: function (x, y) { return (y.rating || 0) - (x.rating || 0) || (y.reviews || 0) - (x.reviews || 0); },
+        reviews: function (x, y) { return (y.reviews || 0) - (x.reviews || 0); },
+        photos: function (x, y) { return (y.photos || 0) - (x.photos || 0); }
+      }[mode] || null;
+      if (cmp) a.sort(cmp); return a;
+    }
+    if (sortSel) sortSel.addEventListener("change", function () { if (lastData) renderResults(lastData); });
     function renderResults(data) {
-      sres.innerHTML = "";
+      lastData = data; sres.innerHTML = "";
+      var sortWrap = document.getElementById("sort-wrap"); if (sortWrap) sortWrap.classList.toggle("hidden", !(data.items && data.items.length));
+      if (data.items && data.items.length && sortSel) data = { items: sortItems(data.items, sortSel.value) };
       if (!data.items || !data.items.length) { sres.innerHTML = '<p class="empty">No listings found for that search. Try a nearby town or different dates.</p>'; return; }
       data.items.forEach(function (it) {
         var el = document.createElement("article"); el.className = "result"; el.setAttribute("data-id", it.id);
@@ -102,6 +119,90 @@
         else if (e.key === "Escape") { hideAc(); }
       });
       locIn.addEventListener("blur", function () { setTimeout(hideAc, 150); });
+    }
+    // date range picker (single popover, click start then end, presets, nights)
+    var dpTrig = document.getElementById("s-dates"), dpPop = document.getElementById("dp-pop");
+    if (dpTrig && dpPop) {
+      var ci = document.getElementById("s-checkin"), co = document.getElementById("s-checkout"), dpText = document.getElementById("dp-text"),
+          dpNights = document.getElementById("dp-nights"), dpMonths = document.getElementById("dp-months"), dpSum = document.getElementById("dp-summary");
+      var today = new Date(); today.setHours(0, 0, 0, 0);
+      var view = new Date(today.getFullYear(), today.getMonth(), 1), start = null, end = null, hover = null;
+      var MON = ["January","February","March","April","May","June","July","August","September","October","November","December"], SH = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+      function iso(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+      function fmt(d) { return d.getDate() + " " + SH[d.getMonth()]; }
+      function days(a, b) { return Math.round((b - a) / 86400000); }
+      function same(a, b) { return a && b && a.getTime() === b.getTime(); }
+      function renderField() {
+        if (start && end) { dpText.textContent = fmt(start) + " – " + fmt(end); dpText.classList.remove("is-empty"); var n = days(start, end); dpNights.textContent = n + (n === 1 ? " night" : " nights"); ci.value = iso(start); co.value = iso(end); }
+        else if (start) { dpText.textContent = fmt(start) + " – ?"; dpText.classList.remove("is-empty"); dpNights.textContent = ""; ci.value = iso(start); co.value = ""; }
+        else { dpText.textContent = "Add dates"; dpText.classList.add("is-empty"); dpNights.textContent = ""; ci.value = ""; co.value = ""; }
+        dpSum.textContent = start && end ? fmt(start) + " to " + fmt(end) + " · " + days(start, end) + " nights" : start ? "Now pick a check-out date" : "Select a check-in date";
+      }
+      function monthEl(y, m, second) {
+        var wrap = document.createElement("div"); wrap.className = "dp-month" + (second ? " second" : "");
+        var head = document.createElement("div"); head.className = "dp-mhead";
+        var prev = document.createElement("button"); prev.type = "button"; prev.className = "dp-nav"; prev.textContent = "‹"; prev.setAttribute("aria-label", "Previous month"); prev.style.visibility = second ? "hidden" : "visible";
+        prev.disabled = (y === today.getFullYear() && m === today.getMonth());
+        var next = document.createElement("button"); next.type = "button"; next.className = "dp-nav"; next.textContent = "›"; next.setAttribute("aria-label", "Next month"); next.style.visibility = second || window.innerWidth <= 720 ? "visible" : "hidden";
+        if (second) next.style.visibility = "visible";
+        var title = document.createElement("span"); title.textContent = MON[m] + " " + y;
+        head.appendChild(prev); head.appendChild(title); head.appendChild(next); wrap.appendChild(head);
+        prev.addEventListener("click", function () { view = new Date(view.getFullYear(), view.getMonth() - 1, 1); renderMonths(); });
+        next.addEventListener("click", function () { view = new Date(view.getFullYear(), view.getMonth() + 1, 1); renderMonths(); });
+        var grid = document.createElement("div"); grid.className = "dp-grid";
+        ["Mo","Tu","We","Th","Fr","Sa","Su"].forEach(function (d) { var e = document.createElement("div"); e.className = "dp-dow"; e.textContent = d; grid.appendChild(e); });
+        var first = new Date(y, m, 1), lead = (first.getDay() + 6) % 7, count = new Date(y, m + 1, 0).getDate();
+        for (var i = 0; i < lead; i++) { var e0 = document.createElement("button"); e0.type = "button"; e0.className = "dp-day empty"; e0.tabIndex = -1; grid.appendChild(e0); }
+        for (var d = 1; d <= count; d++) {
+          (function (d) {
+            var date = new Date(y, m, d), b = document.createElement("button"); b.type = "button"; b.className = "dp-day"; b.textContent = d; b.setAttribute("aria-label", fmt(date) + " " + y);
+            if (date < today) b.disabled = true;
+            if (same(date, today)) b.classList.add("is-today");
+            var s2 = start, e2 = end || (start && hover && hover > start ? hover : null);
+            if (s2 && same(date, s2)) b.classList.add("is-start");
+            if (e2 && same(date, e2)) b.classList.add("is-end");
+            if (s2 && e2 && date > s2 && date < e2) b.classList.add("in-range");
+            b.addEventListener("click", function () {
+              if (!start || (start && end)) { start = date; end = null; }
+              else if (date <= start) { start = date; end = null; }
+              else { end = date; }
+              renderField(); renderMonths();
+              if (start && end) setTimeout(closeDp, 250);
+            });
+            b.addEventListener("mouseenter", function () { if (start && !end) { hover = date; paintHover(); } });
+            grid.appendChild(b);
+          })(d);
+        }
+        wrap.appendChild(grid); return wrap;
+      }
+      function paintHover() {
+        var s2 = start, e2 = hover; if (!s2 || !e2 || e2 <= s2) return;
+        Array.prototype.forEach.call(dpMonths.querySelectorAll(".dp-day:not(.empty)"), function (b) {
+          var lab = b.getAttribute("aria-label"); if (!lab) return; b.classList.remove("in-range", "is-end");
+          var parts = lab.split(" "), dt = new Date(parts[2], SH.indexOf(parts[1]), parseInt(parts[0], 10));
+          if (dt > s2 && dt < e2) b.classList.add("in-range"); if (same(dt, e2)) b.classList.add("is-end");
+        });
+      }
+      function renderMonths() {
+        dpMonths.innerHTML = ""; dpMonths.appendChild(monthEl(view.getFullYear(), view.getMonth(), false));
+        var v2 = new Date(view.getFullYear(), view.getMonth() + 1, 1); dpMonths.appendChild(monthEl(v2.getFullYear(), v2.getMonth(), true));
+      }
+      function openDp() { renderMonths(); renderField(); dpPop.classList.remove("hidden"); dpTrig.setAttribute("aria-expanded", "true"); }
+      function closeDp() { dpPop.classList.add("hidden"); dpTrig.setAttribute("aria-expanded", "false"); }
+      dpTrig.addEventListener("click", function () { dpPop.classList.contains("hidden") ? openDp() : closeDp(); });
+      document.getElementById("dp-done").addEventListener("click", closeDp);
+      document.getElementById("dp-clear").addEventListener("click", function () { start = end = hover = null; renderField(); renderMonths(); });
+      document.addEventListener("click", function (e) { var path = e.composedPath ? e.composedPath() : []; if (!dpPop.classList.contains("hidden") && path.indexOf(dpPop) === -1 && path.indexOf(dpTrig) === -1) closeDp(); });
+      document.addEventListener("keydown", function (e) { if (e.key === "Escape") closeDp(); });
+      function nextDow(from, dow, minDays) { var d = new Date(from); d.setDate(d.getDate() + (minDays || 0)); while (d.getDay() !== dow) d.setDate(d.getDate() + 1); return d; }
+      document.getElementById("dp-presets").addEventListener("click", function (e) {
+        var p = e.target.getAttribute("data-preset"); if (!p) return;
+        var fri = nextDow(today, 5, 0); if (p === "nextweekend") fri = nextDow(fri, 5, 1);
+        if (p === "week") { start = nextDow(today, 6, 0); end = new Date(start); end.setDate(end.getDate() + 7); }
+        else { start = fri; end = new Date(fri); end.setDate(end.getDate() + 2); }
+        view = new Date(start.getFullYear(), start.getMonth(), 1); renderField(); renderMonths();
+      });
+      renderField();
     }
     sform.addEventListener("submit", function (ev) {
       ev.preventDefault();
