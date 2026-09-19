@@ -528,3 +528,6 @@ select { width: 100%; color: var(--ink); background: var(--surface); border: 0; 
   .rg-head { flex-direction: column; } .rg-poster img { width: 100%; }
   .reel-row { grid-template-columns: 1fr 1fr; } .reel-actions { grid-column: 1 / -1; }
 }
+
+.video-frame iframe { width: 100%; aspect-ratio: 16/9; border: 0; border-radius: var(--radius-control); background: #000; display: block; }
+.video-frame iframe.hidden, .video-frame video.hidden { display: none; }

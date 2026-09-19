@@ -344,9 +344,16 @@
         if (atBottom) log.scrollTop = log.scrollHeight;
         lastLogLen = lines.length;
       }
-      if (st === "done" && job.video_url) {
-        if (video.getAttribute("src") !== job.video_url) { video.src = job.video_url; video.load(); }
-        dl.href = job.video_url;
+      if (st === "done" && (job.video_url || job.drive_embed)) {
+        var frame = el("drive-frame"), note = el("local-note");
+        if (job.video_url) {
+          if (video.getAttribute("src") !== job.video_url) { video.src = job.video_url; video.load(); }
+          video.classList.remove("hidden"); if (frame) frame.classList.add("hidden"); dl.href = job.video_url; dl.setAttribute("download", "");
+        } else if (frame) {
+          if (frame.getAttribute("src") !== job.drive_embed) frame.src = job.drive_embed;
+          frame.classList.remove("hidden"); video.classList.add("hidden"); video.removeAttribute("src"); dl.href = job.drive_download || job.drive_link; dl.removeAttribute("download");
+        }
+        if (note) note.classList.toggle("hidden", !job.local_deleted);
         videoCard.classList.remove("hidden");
         if (hostCard) hostCard.classList.remove("hidden");
         renderHost(job);

@@ -26,10 +26,12 @@
 
   <div class="card video-card{% if job.status != 'done' %} hidden{% endif %}" id="video-card">
     <div class="video-frame">
-      <video id="video" controls playsinline preload="metadata"{% if job.video_url %} src="{{ job.video_url }}"{% endif %}></video>
+      <video id="video" controls playsinline preload="metadata"{% if job.video_url %} src="{{ job.video_url }}"{% endif %}{% if not job.video_url and job.drive_embed %} class="hidden"{% endif %}></video>
+      <iframe id="drive-frame" class="{% if not (job.drive_embed and not job.video_url) %}hidden{% endif %}" src="{{ job.drive_embed if (job.drive_embed and not job.video_url) else '' }}" allow="autoplay; fullscreen" allowfullscreen title="Reel on Google Drive"></iframe>
     </div>
+    <p class="hint{% if not job.local_deleted %} hidden{% endif %}" id="local-note">Stored in Google Drive only — nothing is kept on the server.</p>
     <div class="video-actions">
-      <a class="btn btn-primary" id="download-btn" href="{{ job.video_url or '#' }}" download>Download reel</a>
+      <a class="btn btn-primary" id="download-btn" href="{{ job.drive_download if (job.local_deleted and job.drive_download) else (job.video_url or '#') }}"{% if not job.local_deleted %} download{% endif %}>Download reel</a>
       <span class="email-line">
         <span class="eyebrow inline">Google Drive</span>
         <span class="pill pill-email" id="drive-pill">{{ job.drive_status or '—' }}</span>

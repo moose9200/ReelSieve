@@ -42,6 +42,21 @@ def save_settings(form):
     for k,v in cur.items():
         if v:os.environ[k]=v.replace('\\n','\n')
         elif k in os.environ and k not in SECRET_KEYS:del os.environ[k]
+KEEP_LOCAL=os.getenv('KEEP_LOCAL_AFTER_UPLOAD','0').lower() in ('1','true','yes')
+def purge_local(jid):
+    """After a successful Drive upload: remove every video/render artefact from this server. Keeps job.json + listing.json only."""
+    import shutil;d=JOBS/jid;freed=0
+    for pth in list(d.iterdir()):
+        if pth.name in ('job.json','listing.json','result.json'):continue
+        try:
+            if pth.is_dir():freed+=sum(f.stat().st_size for f in pth.rglob('*') if f.is_file());shutil.rmtree(pth,ignore_errors=True)
+            else:freed+=pth.stat().st_size;pth.unlink()
+        except Exception:pass
+    return freed
+def drive_fields(j):
+    fid=j.get('drive_id')
+    if not fid:return {}
+    return {'drive_embed':f'https://drive.google.com/file/d/{fid}/preview','drive_download':f'https://drive.google.com/uc?export=download&id={fid}','drive_thumb':f'https://drive.google.com/thumbnail?id={fid}&sz=w640'}
 def job_public(j):return {k:v for k,v in j.items() if k!='thread'}
 def persist(j):(JOBS/j['id']/'job.json').write_text(json.dumps(job_public(j),indent=1))
 def load_jobs():
@@ -53,6 +68,7 @@ def load_jobs():
             except Exception:pass
     return out
 def reel_link_for(j):
+    if j.get('drive_link') and (j.get('local_deleted') or not j.get('video_url')):return j['drive_link']
     base=hostmsg.public_base()
     if base and j.get('video_url'):return f"{base}{j['video_url']}"
     return j.get('drive_link') or None
@@ -62,7 +78,7 @@ def finalize_message(j):
 def enrich(j):
     """Derived, non-persisted fields for the UI."""
     j=dict(j);lid=(j.get('listing') or {}).get('id') or (re.search(r'/rooms/(\d+)',j.get('url','')) or [None,None])[1]
-    j['contact_url']=hostmsg.contact_url(lid) if lid else None;j['reel_link']=reel_link_for(j);j['message_final']=finalize_message(j);return j
+    j.update(drive_fields(j));j['contact_url']=hostmsg.contact_url(lid) if lid else None;j['reel_link']=reel_link_for(j);j['message_final']=finalize_message(j);return j
 def run_job(jid,url,ai_motion,renderer='v2'):
     j=_jobs[jid];steps=['Fetching','Reviews','Downloaded','Seedance','Estimating depth','Rendering','Rendered','Uploading']
     def cb(msg):
@@ -86,6 +102,10 @@ def run_job(jid,url,ai_motion,renderer='v2'):
                 cb('Uploading to Google Drive');info=gdrive.upload(res['video'],(res['listing'].get('url') or url),description=f"{res['listing'].get('title','')} · {res['listing'].get('city','')} · Listing Reel by Braivex")
                 with _lock:j.update(drive_status='uploaded',drive_link=info.get('webViewLink'),drive_name=info.get('name'),drive_id=info.get('id'))
                 cb(f"Google Drive: uploaded as {info.get('name')}")
+                if info.get('id') and not KEEP_LOCAL:
+                    freed=purge_local(jid)
+                    with _lock:j.update(local_deleted=True,video_url=None)
+                    cb(f'Removed local copy from this server ({freed/1e6:.0f} MB freed) — the reel now lives in Google Drive')
             except Exception as e:
                 with _lock:j.update(drive_status='failed',drive_error=f'{type(e).__name__}: {str(e)[:160]}')
                 cb(f'Google Drive upload failed: {type(e).__name__}: {str(e)[:120]}')
@@ -195,13 +215,15 @@ def upload_drive(jid:str):
     try:info=gdrive.upload(vid,(j.get('listing') or {}).get('url') or j['url'],description=(j.get('listing') or {}).get('title',''))
     except Exception as e:raise HTTPException(502,f'Upload failed: {type(e).__name__}: {str(e)[:160]}')
     upd=dict(drive_status='uploaded',drive_link=info.get('webViewLink'),drive_name=info.get('name'),drive_id=info.get('id'))
+    if info.get('id') and not KEEP_LOCAL:purge_local(jid);upd.update(local_deleted=True,video_url=None)
     if jid in _jobs:_jobs[jid].update(upd);persist(_jobs[jid]);return enrich(job_public(_jobs[jid]))
     j.update(upd);(JOBS/jid/'job.json').write_text(json.dumps(j,indent=1));return enrich(j)
 def listing_id_of(j):
     return (j.get('listing') or {}).get('id') or (re.search(r'/rooms/(\d+)',j.get('url','')) or [None,None])[1]
 def poster_for(j):
     """First-frame poster (2 s in) generated once per finished reel; served from /media."""
-    if j.get('status')!='done' or not j.get('video_url'):return None
+    if j.get('status')!='done':return None
+    if not j.get('video_url'):return drive_fields(j).get('drive_thumb')
     d=JOBS/j['id'];vid=d/Path(j['video_url']).name;pos=d/'poster.jpg'
     if not pos.exists() and vid.exists():
         import subprocess;subprocess.run(['ffmpeg','-y','-v','error','-ss','2','-i',str(vid),'-frames:v','1','-vf','scale=640:-2',str(pos)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
@@ -217,14 +239,18 @@ def library():
         if not g['poster']:g['poster']=poster_for(j)
     return [groups[k] for k in order]
 @app.get('/reels',response_class=HTMLResponse)
-def reels_page(request:Request):return tpl.TemplateResponse(request,'reels.html',{'groups':library()})
+def reels_page(request:Request):
+    groups=library()
+    for g in groups:
+        for j in g['jobs']:j.update(drive_fields(j))
+    return tpl.TemplateResponse(request,'reels.html',{'groups':groups})
 @app.get('/api/reels/index')
 def reels_index():
     """listing id → reels (for the search results 'Reel ready' marker)."""
     out={}
     for j in load_jobs():
         lid=listing_id_of(j)
-        if lid and j.get('status')=='done':out.setdefault(lid,[]).append({'id':j['id'],'created':j.get('created'),'video_url':j.get('video_url'),'drive_link':j.get('drive_link')})
+        if lid and j.get('status')=='done':out.setdefault(lid,[]).append({'id':j['id'],'created':j.get('created'),'video_url':j.get('video_url'),'drive_link':j.get('drive_link'),**drive_fields(j)})
     return out
 @app.get('/media/{jid}/{name}')
 def media(jid:str,name:str):
