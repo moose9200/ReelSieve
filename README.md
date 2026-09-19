@@ -73,3 +73,11 @@ Gemini download quirk: the "Download full-sized image" button only fires when th
 ## Login (19 Sep 2026)
 The whole app is gated. First visit → `/setup` creates the admin login (stored salted PBKDF2 in `.listing-reel/auth.json`, `/data/auth.json` on Railway). Session = HMAC-signed cookie, 30 days. `/logout`, change password in Settings. Env override: `APP_USER` / `APP_PASSWORD` / `SESSION_SECRET`. Public paths: `/static`, `/media` (shared reel files), `/healthz`, OAuth callback.
 Local service: LaunchAgent `com.braivex.bnbsieve`.
+
+## AI camera motion (property-video-ai method, 19 Sep 2026)
+`app/aimotion.py` — audit → author → generate → assemble.
+- **Audit (free, always runs):** photo count, single-shoot colour consistency (mean-RGB spread), depth-axis strength per frame (from the depth maps), wide living space. Verdict PASS / WEAK / REJECT shown on the job page; REJECT skips paid generation.
+- **Author:** one labelled prompt per shot — SHOT / MOTION FEEL / FIDELITY / LOOK / NEGATIVE — using the four tested rig moves: DOLLY (interiors), AXIS-LOCK (hallways, must name the far end), CRANE (closer, needs a ceiling), ORBIT (island/table; anti-reversal + "final frame must not resemble the opening frame"). No drone.
+- **Generate:** Higgsfield API `bytedance/seedance-2.0/image-to-video`, 5 s, single start frame, no audio, 720p (≈22.5 cr) or 1080p (≈45 cr). Estimate is shown before spending. Never auto-retries an unknown submission.
+- **Assemble:** frame-difference motion profile per clip → keep the best 3 s window, drop frozen clips, flag dying tails and orbit reversals; hard cuts (no dissolves) in the full-bleed renderer; captions/CTA overlays ride on the clips.
+Unverified end-to-end: the Higgsfield account had 0 credits, so generation returned `not_enough_credits` and every shot fell back to parallax (logged per shot).

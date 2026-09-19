@@ -254,7 +254,7 @@
       if (!url) { status.textContent = "Paste an Airbnb listing URL."; status.classList.add("is-error"); form.url.focus(); return; }
       btn.disabled = true;
       status.textContent = "Starting…";
-      postJSON("/api/jobs", { url: url, send_to_host: sendToHost, message: message, ai_motion: aiMotion, style: style })
+      postJSON("/api/jobs", { url: url, send_to_host: sendToHost, message: message, ai_motion: aiMotion, style: style, ai_resolution: (form.ai_resolution ? form.ai_resolution.value : "1080p") })
         .then(function (data) {
           var id = data && (data.id || data.job_id || (data.job && data.job.id));
           if (!id) throw new Error("Server did not return a job id.");

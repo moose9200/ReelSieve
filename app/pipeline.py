@@ -204,7 +204,7 @@ def lint_manifest(m,min_images=6):
     total=float(m.get('intro_seconds',5))+float(m.get('outro_seconds',6.5))+len(m['scenes'])*float(m.get('scene_seconds',4.5))+float((m.get('trust') or {}).get('seconds',0))+float((m.get('reviews') or {}).get('seconds',0))
     segs=2+len(m['scenes'])+(1 if m.get('trust') else 0)+len((m.get('reviews') or {}).get('items',[]));total-=0.6*(segs-1)
     if float(m.get('scene_seconds',4.5))<3.5:probs.append('scene_seconds under 3.5 s — images change too fast')
-    total=len(m['scenes'])*float(m.get('scene_seconds',4.5))
+    total=sum(float(x.get('seconds') or m.get('scene_seconds',4.5)) for x in m['scenes'])
     if not 27<=total<=150:probs.append(f'reel would be {total:.1f}s (expected 27–150 s, scaled by photo count)')
     if len(m['scenes'])<6:probs.append('fewer than 6 walkthrough scenes')
     rk=[s.get('room') for s in m['scenes'] if s.get('room') and s.get('room')!='other'];ordr=[k for k,_ in ROUTE]
@@ -278,19 +278,47 @@ def email_html(d,link,dur):
 <p style="color:#8a8a8a;font-size:12px">A 720p copy is attached when under 20 MB. Made with BNBsieve, a Braivex product · braivex.com</p></div>"""
 # ---------------- orchestration ----------------
 def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer='v2'):
+    if ai_motion:renderer='v3'   # AI-motion assembly = hard cuts in the full-bleed renderer
     out_dir=Path(out_dir);out_dir.mkdir(parents=True,exist_ok=True);work=out_dir/'work';work.mkdir(exist_ok=True)
     d=scrape_listing(url,cb);revs=scrape_reviews(url,cb);(out_dir/'listing.json').write_text(json.dumps({**d,'reviews':revs},indent=1))
     imgdir=work/'images';m=build_manifest(d,revs,imgdir,work/'depth')
     need=sorted({Path(s['image']).name for s in m['scenes']}|{Path(m['intro']['image']).name,Path(m['outro']['image']).name}|{Path(x).name for x in m.get('reviews',{}).get('bg',[])}|({Path(m['trust']['image']).name} if 'trust' in m else set()))
     download_photos(d,imgdir,cb,needed=[p['url'] for p in d['photos'] if Path(p['url']).name in need])
+    # --- audit (free): is this photo set video-worthy? ---
+    from app import aimotion
+    try:
+        depth_dir=work/'depth';sel=work/'sel';sel.mkdir(exist_ok=True)
+        for sc in m['scenes']:shutil.copy(sc['image'],sel/Path(sc['image']).name)
+        subprocess.run([PY,str(HERE/'depth.py'),str(sel),str(depth_dir)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        aud=aimotion.audit([sc['image'] for sc in m['scenes']],depth_dir,{Path(sc['image']).name:sc.get('room') for sc in m['scenes']});m['audit']=aud
+        log(cb,f"Audit: {aud['verdict']} ({aud['score']}/100) — "+'; '.join(aud['reasons']))
+    except Exception as e:log(cb,f'Audit skipped ({type(e).__name__})')
     if ai_motion:
-        if os.getenv('HF_KEY'):seedance_clips(m,work,cb)
-        else:log(cb,'AI motion requested but HF_KEY not configured — using parallax')
+        # the method wants ~6 frames with the strongest depth axis, not every photo — cap paid shots (AI_MAX_SHOTS, default 6), route order kept
+        cap=int(os.getenv('AI_MAX_SHOTS','6'));ds=(m.get('audit') or {}).get('depth_scores') or {}
+        if len(m['scenes'])>cap and ds:
+            ranked=sorted(range(len(m['scenes'])),key=lambda i:-(ds.get(Path(m['scenes'][i]['image']).name) or 0))[:cap];keep=sorted(ranked)
+            log(cb,f"AI motion: keeping {cap} of {len(m['scenes'])} frames with the strongest depth axis (route order kept)");m['scenes']=[m['scenes'][i] for i in keep]
+        res_=os.getenv('AI_RESOLUTION','1080p');pl=aimotion.plan(m['scenes'],d,res_);m['ai_plan']=pl
+        log(cb,f"AI motion plan: {len(pl['shots'])} shots on {pl['model']} @ {res_} ≈ {pl['credits_estimate']} credits ("+', '.join(sh['move'] for sh in pl['shots'])+')')
+        if m.get('audit',{}).get('verdict')=='REJECT':log(cb,'Audit REJECT — skipping paid generation; parallax fallback (pick a listing with a clearer walking route)')
+        elif not os.getenv('HF_KEY'):log(cb,'HF_KEY not configured — using parallax')
+        else:
+            for sh in pl['shots']:
+                sc=m['scenes'][sh['index']];out=work/f"ai{sh['index']:02d}.mp4"
+                log(cb,f"Seedance {sh['index']+1}/{len(pl['shots'])}: {sh['move']} on {sh['room']}")
+                ok,info=aimotion.generate(sc['image'],sh['prompt'],out,res_,5,'9:16' if renderer=='v3' else '16:9',cb)
+                if not ok:log(cb,f"  ↳ not generated ({info}) — parallax for this shot");sh['status']='failed';sh['error']=str(info);continue
+                pr=aimotion.profile(out);sh['profile']=pr
+                if pr.get('frozen'):log(cb,'  ↳ clip is frozen — dropping it (parallax instead)');sh['status']='frozen';continue
+                a,b=pr['best_window'];tr=work/f"ai{sh['index']:02d}-trim.mp4";aimotion.trim(out,a,b,tr);sc['clip']=str(tr);sc['seconds']=round(b-a,2);sh['status']='ok'
+                log(cb,f"  ↳ ok · motion {pr['mean_motion']} · kept {a:.1f}–{b:.1f}s"+(' · dying tail cut' if pr.get('dying_tail') else '')+(' · REVERSAL detected' if pr.get('reverses') else ''))
+            if any(sc.get('clip') for sc in m['scenes']):m['transition_seconds']=0   # hard cuts between generated clips (no dissolves)
     est=lint_manifest(m);log(cb,f'QA guards passed ({len(m["scenes"])} scenes, ~{est:.0f}s)')
     safe=re.sub(r'[^A-Za-z0-9]+','-',d['title'])[:40].strip('-');out=out_dir/f"{time.strftime('%Y-%m-%d')}_{safe}-by-Braivex.mp4"
     m['aspect']='9:16' if renderer=='v3' else '16:9'
     dur,small=render(m,work,out,cb,renderer)
-    res={'video':str(out),'video_720':str(small),'duration':dur,'listing':{k:d.get(k) for k in ['id','url','title','city','rating','count','guests','host']},'review_used':m.get('reviews',{}).get('items',[None])[0]}
+    res={'video':str(out),'video_720':str(small),'duration':dur,'audit':m.get('audit'),'ai_plan':m.get('ai_plan'),'listing':{k:d.get(k) for k in ['id','url','title','city','rating','count','guests','host']},'review_used':m.get('reviews',{}).get('items',[None])[0]}
     (out_dir/'result.json').write_text(json.dumps(res,indent=1));return res
 if __name__=='__main__':
     import argparse

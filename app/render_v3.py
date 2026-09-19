@@ -123,18 +123,18 @@ def draw_overlay(fr,kind,a,b,t,dur):
 def scene_caption(fr,cap,accent,t,dur):
     """Short room caption: pops in at 0.3 s, holds, leaves before the transition."""
     if not cap:return fr
-    fo=1.0 if t<dur-TR-0.3 else clamp((dur-TR-t)/0.3)
+    tr=TR if TR>0 else 0.0;fo=1.0 if t<dur-tr-0.3 else clamp((dur-tr-t)/0.3)
     for k,L in enumerate(caption_layers(cap,accent=accent,size=int(W*0.07),y=H*0.72)):
         p=ease_out(clamp((t-0.3-0.1*k)/0.4));fr=comp(fr,L,p*fo,dy=(1-p)*26)
     return fr
 # ---------- scene = hold + zoom-through into next ----------
 def seg_scene(i):
-    S=M['scenes'];s=S[i];nxt=S[(i+1)] if i+1<len(S) else None;n=int(SD*FPS);hold=n-int(TR*FPS) if nxt else n
+    S=M['scenes'];s=S[i];nxt=S[(i+1)] if i+1<len(S) else None;sd=float(s.get('seconds') or SD);n=int(sd*FPS);hold=n-int(TR*FPS) if (nxt and TR>0) else n
     A=ClipPlate(s['clip']) if s.get('clip') and os.path.exists(s['clip']) else Plate(s['image']);B=Plate(nxt['image']) if nxt else None
     ov=overlay_plan(i,len(S));frames=[]
     for f in range(n):
         t=f/FPS
-        if f<hold or not nxt:
+        if f<hold or not nxt or TR<=0:
             z,ax,ay,px,py=walk(i,t,hold);fr=A.frame(z,ax,ay,px,py)
         else:
             p=(f-hold)/max(n-hold-1,1);e=ease(p)
@@ -142,10 +142,10 @@ def seg_scene(i):
             fb=B.frame(1.45-0.45*e,0,0,0,0);fb=zoomblur(fb,0.10*(1-e))
             mix=ease(clamp((p-0.3)/0.4));fr=(fa.astype(np.float32)*(1-mix)+fb.astype(np.float32)*mix).astype(np.uint8)
         fr=grade(fr)
-        if f<hold and not ov:fr=scene_caption(fr,s.get('caption'),s.get('accent'),t,SD if nxt else SD)
-        for kind,a,b in ov:fr=draw_overlay(fr,kind,a,b,t,SD-(TR if nxt else 0))
+        if f<hold and not ov:fr=scene_caption(fr,s.get('caption'),s.get('accent'),t,sd)
+        for kind,a,b in ov:fr=draw_overlay(fr,kind,a,b,t,sd-(TR if (nxt and TR>0) else 0))
         if i==0 and t<0.5:fr=(fr*(t/0.5)).astype(np.uint8)
-        if not nxt and t>SD-0.8:fr=(fr*clamp((SD-t)/0.8)).astype(np.uint8)
+        if not nxt and t>sd-0.8:fr=(fr*clamp((sd-t)/0.8)).astype(np.uint8)
         frames.append(fr)
     path=os.path.join(WORK,f's{i:02d}.mp4');p=subprocess.Popen(['ffmpeg','-y','-v','error','-f','rawvideo','-pix_fmt','bgr24','-s',f'{W}x{H}','-r',str(FPS),'-i','-',*VCODEC('16M'),'-pix_fmt','yuv420p',path],stdin=subprocess.PIPE)
     for fr in frames:p.stdin.write(fr.tobytes())
@@ -155,11 +155,11 @@ if __name__=='__main__':
     with cf.ProcessPoolExecutor(A.workers) as ex:
         for i in ex.map(seg_scene,range(n)):print('scene',i,flush=True)
     (lambda f:f.write(''.join(f"file 's{i:02d}.mp4'\n" for i in range(n))))(open(os.path.join(WORK,'list.txt'),'w'))
-    total=n*SD;rate=24000;chords=[(130.81,164.81,196),(146.83,174.61,220),(110,130.81,164.81),(98,123.47,146.83)]
+    total=sum(float(x.get('seconds') or SD) for x in M['scenes']);rate=24000;chords=[(130.81,164.81,196),(146.83,174.61,220),(110,130.81,164.81),(98,123.47,146.83)]
     with wave.open(os.path.join(WORK,'score.wav'),'w') as w:   # original, bright, mid-tempo pad + soft pulse
         w.setparams((1,2,rate,0,'NONE','not compressed'));buf=bytearray()
         for k in range(int(total*rate)):
-            t=k/rate;ch=chords[int(t/SD)%4];fade=min(1,t/1.5,(total-t)/2);v=sum(math.sin(2*math.pi*f*t)*0.05 for f in ch)+sum(math.sin(2*math.pi*f*2*t)*0.02 for f in ch)
+            t=k/rate;ch=chords[int(t/max(SD,1))%4];fade=min(1,t/1.5,(total-t)/2);v=sum(math.sin(2*math.pi*f*t)*0.05 for f in ch)+sum(math.sin(2*math.pi*f*2*t)*0.02 for f in ch)
             beat=t%0.5;v+=math.sin(2*math.pi*60*t)*math.exp(-beat*10)*0.09;arp=t%0.25;v+=math.sin(2*math.pi*ch[int(t*4)%3]*4*t)*math.exp(-arp*12)*0.04
             buf.extend(struct.pack('<h',int(max(-1,min(1,v*fade))*32767)))
         w.writeframes(buf)

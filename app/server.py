@@ -176,18 +176,18 @@ def enrich(j):
     j=dict(j);lid=(j.get('listing') or {}).get('id') or (re.search(r'/rooms/(\d+)',j.get('url','')) or [None,None])[1]
     j.update(drive_fields(j));j['contact_url']=hostmsg.contact_url(lid) if lid else None;j['reel_link']=reel_link_for(j);j['search_phrase']=search_phrase(j);j['youtube_title']=search_phrase(j).replace(' BNBsieve',' — by BNBsieve');j['message_final']=finalize_message(j);return j
 def run_job(jid,url,ai_motion,renderer='v2'):
-    j=_jobs[jid];steps=['Fetching','Reviews','Downloaded','Seedance','Estimating depth','Rendering','Rendered','Uploading']
+    j=_jobs[jid];steps=['Fetching','Reviews','Downloaded','Audit','AI motion plan','Seedance','Estimating depth','Rendering','Rendered','Uploading']
     def cb(msg):
         with _lock:
             j['log'].append(time.strftime('%H:%M:%S ')+msg);j['step']=msg
             for i,s in enumerate(steps):
-                if msg.startswith(s):j['progress']=max(j['progress'],int(8+i*13))
+                if msg.startswith(s):j['progress']=max(j['progress'],int(8+i*9))
             persist(j)
     try:
         j['status']='running';persist(j)
         res=pipeline.run(url,JOBS/jid,None,ai_motion,cb,None,renderer)
         with _lock:
-            j.update(status='done',progress=100,step='Done',video_url=f"/media/{jid}/{Path(res['video']).name}",listing={**res['listing'],'location':res['listing'].get('city')},duration=res['duration'])
+            j.update(status='done',progress=100,step='Done',video_url=f"/media/{jid}/{Path(res['video']).name}",listing={**res['listing'],'location':res['listing'].get('city')},duration=res['duration'],audit=res.get('audit'),ai_plan=res.get('ai_plan'))
             if j.get('send_to_host'):
                 j['host_status']='skipped';j['host_error']='Ready — open the pre-filled Airbnb message below and press Send there'
             else:j['host_status']='skipped';j['host_error']='not requested'
@@ -217,6 +217,7 @@ def index(request:Request,url:str=''):
 @app.post('/api/jobs')
 async def create_job(request:Request):
     b=await request.json();url=(b.get('url') or '').strip();ai=bool(b.get('ai_motion'));renderer='v3' if b.get('style')=='tutorial' else 'v2'
+    if ai and b.get('ai_resolution') in ('720p','1080p'):os.environ['AI_RESOLUTION']=b['ai_resolution']
     try:pipeline.listing_id(url)
     except ValueError as e:raise HTTPException(400,str(e))
     jid=uuid.uuid4().hex[:10];(JOBS/jid).mkdir(parents=True,exist_ok=True)

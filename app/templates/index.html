@@ -83,8 +83,12 @@
     <div class="field field-check">
       <label class="check{% if not hf_configured %} is-disabled{% endif %}">
         <input type="checkbox" id="ai_motion" name="ai_motion"{% if not hf_configured %} disabled{% endif %}>
-        <span>AI camera motion via Higgsfield Seedance 2.5 (uses API credits)</span>
+        <span>AI camera motion — Higgsfield Seedance 2.0, tested rig moves (dolly / axis-lock / crane / orbit). Uses API credits.</span>
       </label>
+      <div class="grid-2 ai-opts{% if not hf_configured %} is-disabled{% endif %}">
+        <div class="field"><label for="ai_resolution">Clip resolution</label><select id="ai_resolution" name="ai_resolution"><option value="1080p" selected>1080p — ≈45 credits per 5 s clip (final quality)</option><option value="720p">720p — ≈22.5 credits per 5 s clip (test a move)</option></select></div>
+        <p class="hint">Photos are audited first (single shoot, depth axis, wide living space). A REJECT audit skips paid generation automatically. Costs observed 19 Aug 2026; check the console before large batches.</p>
+      </div>
       {% if not hf_configured %}
       <p class="hint">Add a Higgsfield API key in <a href="/settings">Settings</a> to enable AI motion.</p>
       {% endif %}
