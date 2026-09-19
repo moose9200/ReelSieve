@@ -18,7 +18,9 @@ def _id(res):
     m=re.search(r'(\d{6,})',dec);return m.group(1) if m else None
 def _text_list(lst):return ' · '.join(x.get('body') or x.get('text') or '' for x in (lst or []) if isinstance(x,dict) and (x.get('body') or x.get('text')))
 def parse_results(page_html):
-    scripts=re.findall(r'<script[^>]*id="data-deferred-state[^"]*"[^>]*>(.*?)</script>',page_html,re.S);found=[]
+    # Airbnb serves several page variants: results live in `data-deferred-state`, or in `data-injector-instances` /
+    # `data-initializer-bootstrap` JSON scripts. Walk every application/json script and collect StaySearchResult objects.
+    scripts=re.findall(r'<script[^>]*type="application/json"[^>]*>(.*?)</script>',page_html,re.S);found=[]
     for s in scripts:
         try:_walk(json.loads(s),found)
         except Exception:continue
@@ -38,7 +40,7 @@ def parse_results(page_html):
 def search(location,checkin=None,checkout=None,adults=2,offset=0):
     q=f'adults={int(adults or 2)}'+(f'&checkin={checkin}&checkout={checkout}' if checkin and checkout else '')+(f'&items_offset={int(offset)}' if offset else '')
     slug=re.sub(r'\s*,\s*','--',location.strip());slug=re.sub(r'\s+','-',slug);url=f'{BASE}/s/{quote(slug)}/homes?{q}';r=httpx.get(url,headers=UA,follow_redirects=True,timeout=40)
-    r.raise_for_status();items=parse_results(r.text);diag={'status':r.status_code,'bytes':len(r.text),'deferred_state':'data-deferred-state' in r.text,'title':(re.search(r'<title>([^<]{0,80})',r.text) or [None,None])[1],'final_url':str(r.url)}
+    r.raise_for_status();items=parse_results(r.text);diag={'status':r.status_code,'bytes':len(r.text),'variant':('deferred' if 'data-deferred-state' in r.text else 'injector' if 'data-injector-instances' in r.text else 'unknown'),'title':(re.search(r'<title>([^<]{0,80})',r.text) or [None,None])[1],'final_url':str(r.url)}
     items.sort(key=lambda x:(-(x['reviews'] or 0)*(x['rating'] or 0),-(x['photos'] or 0)))
     return {'query':{'location':location,'checkin':checkin,'checkout':checkout,'adults':adults,'offset':offset},'search_url':str(r.url),'count':len(items),'items':items,'diag':diag}
 if __name__=='__main__':
