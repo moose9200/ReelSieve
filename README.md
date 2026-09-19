@@ -81,3 +81,6 @@ Local service: LaunchAgent `com.braivex.reelsieve`.
 - **Generate:** Higgsfield API `bytedance/seedance-2.0/image-to-video`, 5 s, single start frame, no audio, 720p (≈22.5 cr) or 1080p (≈45 cr). Estimate is shown before spending. Never auto-retries an unknown submission.
 - **Assemble:** frame-difference motion profile per clip → keep the best 3 s window, drop frozen clips, flag dying tails and orbit reversals; hard cuts (no dissolves) in the full-bleed renderer; captions/CTA overlays ride on the clips.
 Unverified end-to-end: the Higgsfield account had 0 credits, so generation returned `not_enough_credits` and every shot fell back to parallax (logged per shot).
+
+## Photo selection (19 Sep 2026)
+All listing photos are downloaded, then scored in `app/photoscore.py` (sharpness, exposure, colour match to the set, orientation for the target aspect, resolution; depth axis added for the top 18). Inside each room the best frame goes first and frames under 45 are dropped when alternatives exist. The job page shows "N of M used" with per-photo scores.
