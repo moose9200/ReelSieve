@@ -62,10 +62,14 @@ Host message: "Message host on Airbnb" copies the message and opens the contact 
 Gemini download quirk: the "Download full-sized image" button only fires when the image is scrolled into view and hovered first.
 
 ## Deployment
-- GitHub: https://github.com/moose9200/listing-reel (private, commits by Hemant Kumar Sain)
-- Railway: project `listing-reel` in workspace "Hemant Kumar Sain's Projects", service `listing-reel`, volume `/data` (jobs + HF model cache), public URL https://listing-reel-production.up.railway.app
+- GitHub: https://github.com/moose9200/BNBsieve (private, commits by Hemant Kumar Sain)
+- Railway: project `listing-reel` in workspace "Hemant Kumar Sain's Projects", service `listing-reel`, volume `/data` (jobs + HF model cache), public URL https://bnbsieve-production.up.railway.app
 - Env vars on Railway: `HF_KEY`, `JOBS_DIR=/data/jobs`, `HF_HOME=/data/hf-cache`; `PUBLIC_BASE_URL` derives from `RAILWAY_PUBLIC_DOMAIN` so reel links are public without a tunnel.
 - Deploy: `railway up --detach --ci` from this folder (Dockerfile build, ~10 min: CPU torch + Chromium). Encoding uses libx264 off macOS.
 
 ## In-app listing picker (19 Sep 2026)
 "Find a listing" on the home page: location + optional dates + guests → `GET /api/search` parses Airbnb's public search page (no login; both page variants: `data-deferred-state` and `data-injector-instances`) → results grid (photo, name, rating, price, badges, photo count) → "Use this listing" fills the URL field. Fixture test in `tests/`.
+
+## Login (19 Sep 2026)
+The whole app is gated. First visit → `/setup` creates the admin login (stored salted PBKDF2 in `.listing-reel/auth.json`, `/data/auth.json` on Railway). Session = HMAC-signed cookie, 30 days. `/logout`, change password in Settings. Env override: `APP_USER` / `APP_PASSWORD` / `SESSION_SECRET`. Public paths: `/static`, `/media` (shared reel files), `/healthz`, OAuth callback.
+Local service: LaunchAgent `com.braivex.bnbsieve`.
