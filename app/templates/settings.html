@@ -21,7 +21,7 @@
 {% if is_admin %}
 <section class="card" id="users-card">
   <div class="section-head"><h2>Users</h2><span class="pill pill-skipped">Admin</span></div>
-  <p class="hint">People who can sign in to this BNBsieve. Admins can add or remove users and reset passwords.</p>
+  <p class="hint">People who can sign in to this ReelSieve. Admins can add or remove users and reset passwords.</p>
   <ul class="user-list" id="user-list"></ul>
   <div class="grid-3">
     <div class="field"><label for="nu-email">Email</label><input type="email" id="nu-email" placeholder="name@company.com" autocomplete="off"></div>
@@ -81,7 +81,7 @@
     <div class="grid-2">
       <div class="field"><label for="google_client_id">Client ID</label><input type="text" id="google_client_id" name="google_client_id" value="{{ s.google_client_id.value }}" placeholder="…apps.googleusercontent.com"></div>
       <div class="field"><label for="google_client_secret">Client secret</label><input type="password" id="google_client_secret" name="google_client_secret" value="" autocomplete="new-password" placeholder="{{ 'configured — leave blank to keep' if s.google_client_secret.configured else 'not set' }}"></div>
-      <div class="field"><label for="gdrive_folder">Drive folder name</label><input type="text" id="gdrive_folder" name="gdrive_folder" value="{{ s.gdrive_folder.value }}" placeholder="BNBsieves"></div>
+      <div class="field"><label for="gdrive_folder">Drive folder name</label><input type="text" id="gdrive_folder" name="gdrive_folder" value="{{ s.gdrive_folder.value }}" placeholder="ReelSieves"></div>
     </div>
   </section>
   <section class="card">

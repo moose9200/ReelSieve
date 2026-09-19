@@ -1,11 +1,11 @@
-"""Auth for BNBsieve: multi-user accounts (email + password, salted PBKDF2), HMAC-signed session cookie, CSRF tokens,
+"""Auth for ReelSieve: multi-user accounts (email + password, salted PBKDF2), HMAC-signed session cookie, CSRF tokens,
 login rate limiting. Store: AUTH_PATH (default .listing-reel/auth.json; /data/auth.json on Railway).
 Env override for emergencies/reset: APP_USER + APP_PASSWORD (grants that login without touching the store)."""
 import os,json,hmac,hashlib,secrets,time,base64,re,threading
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent.parent
 AUTH_PATH=Path(os.getenv('AUTH_PATH') or (ROOT/'.listing-reel'/'auth.json'))
-COOKIE='bnbsieve_session';LONG_TTL=int(os.getenv('SESSION_TTL_DAYS','30'))*86400;SHORT_TTL=12*3600
+COOKIE='reelsieve_session';LONG_TTL=int(os.getenv('SESSION_TTL_DAYS','30'))*86400;SHORT_TTL=12*3600
 _lock=threading.Lock();_fails={}   # ip -> [timestamps]
 EMAIL=re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
 def _load():

@@ -1,4 +1,4 @@
-# BNBsieve by Braivex — FastAPI + ffmpeg + Playwright (reviews) + Depth-Anything (parallax)
+# ReelSieve by Braivex — FastAPI + ffmpeg + Playwright (reviews) + Depth-Anything (parallax)
 FROM mcr.microsoft.com/playwright/python:v1.50.0-jammy
 ENV PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 HF_HOME=/data/hf-cache TRANSFORMERS_OFFLINE=0
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core && rm -rf /var/lib/apt/lists/*

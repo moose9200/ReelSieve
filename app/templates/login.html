@@ -4,7 +4,7 @@
 <section class="login-wrap">
   <section class="card login-card">
     <p class="eyebrow">{{ "First run" if setup else "Welcome back" }}</p>
-    <h1 class="login-title">{{ "Create the admin account" if setup else "Sign in to BNBsieve" }}</h1>
+    <h1 class="login-title">{{ "Create the admin account" if setup else "Sign in to ReelSieve" }}</h1>
     <p class="sub">{{ "No accounts exist on this installation yet. This first account becomes the admin." if setup else "Use the email and password you set up." }}</p>
     {% if notice %}<p class="hint hint-ok" role="status">{{ notice }}</p>{% endif %}
     <form method="post" action="{{ '/setup' if setup else '/login' }}" autocomplete="on" novalidate>

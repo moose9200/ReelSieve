@@ -1,4 +1,4 @@
-/* BNBsieve — small vanilla JS: theme toggle, job submit, job polling, host message, settings actions. */
+/* ReelSieve — small vanilla JS: theme toggle, job submit, job polling, host message, settings actions. */
 (function () {
   "use strict";
 

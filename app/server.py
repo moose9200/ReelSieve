@@ -12,7 +12,7 @@ HERE=Path(__file__).resolve().parent;ROOT=HERE.parent;ENV=ROOT/'.env.local';JOBS
 load_dotenv(ENV)
 if not os.getenv('PUBLIC_BASE_URL') and os.getenv('RAILWAY_PUBLIC_DOMAIN'):os.environ['PUBLIC_BASE_URL']='https://'+os.environ['RAILWAY_PUBLIC_DOMAIN']
 from app import pipeline,hostmsg,search as listing_search,gdrive,auth
-app=FastAPI(title='BNBsieve by Braivex');app.mount('/static',StaticFiles(directory=HERE/'static'),name='static')
+app=FastAPI(title='ReelSieve by Braivex');app.mount('/static',StaticFiles(directory=HERE/'static'),name='static')
 tpl=Jinja2Templates(directory=HERE/'templates');tpl.env.autoescape=True
 from starlette.middleware.base import BaseHTTPMiddleware
 PUBLIC_PREFIXES=('/static/','/media/','/oauth/google/callback','/favicon.ico')
@@ -164,17 +164,17 @@ def reel_link_for(j):
     return j.get('drive_link') or None
 def search_phrase(j):
     L=j.get('listing') or {};title=re.split(r'\s[|·-]\s',(L.get('title') or ''))[0].strip();city=(L.get('city') or '').strip()
-    return ' '.join(x for x in [title,city,'video walkthrough BNBsieve'] if x).strip() or 'BNBsieve'
+    return ' '.join(x for x in [title,city,'video walkthrough ReelSieve'] if x).strip() or 'ReelSieve'
 def finalize_message(j):
     link=reel_link_for(j);msg=(j.get('message') or default_message());L=j.get('listing') or {}
-    if '{reel_link}' in msg and '{search_phrase}' not in msg and 'BNBsieve' not in msg:msg=default_message()   # legacy link-based template → link-free default
+    if '{reel_link}' in msg and '{search_phrase}' not in msg and 'ReelSieve' not in msg:msg=default_message()   # legacy link-based template → link-free default
     host=(L.get('host') or '').strip();msg=msg.replace('{host_name}',host if host else 'there').replace('Hi there!','Hi!')
     msg=msg.replace('{listing_title}',L.get('title') or 'your listing').replace('{city}',L.get('city') or '').replace('{search_phrase}',search_phrase(j))
     return msg.replace('{reel_link}',link) if link else msg.replace('{reel_link}','(reel link not available yet)')
 def enrich(j):
     """Derived, non-persisted fields for the UI."""
     j=dict(j);lid=(j.get('listing') or {}).get('id') or (re.search(r'/rooms/(\d+)',j.get('url','')) or [None,None])[1]
-    j.update(drive_fields(j));j['contact_url']=hostmsg.contact_url(lid) if lid else None;j['reel_link']=reel_link_for(j);j['search_phrase']=search_phrase(j);j['youtube_title']=search_phrase(j).replace(' BNBsieve',' — by BNBsieve');j['message_final']=finalize_message(j);return j
+    j.update(drive_fields(j));j['contact_url']=hostmsg.contact_url(lid) if lid else None;j['reel_link']=reel_link_for(j);j['search_phrase']=search_phrase(j);j['youtube_title']=search_phrase(j).replace(' ReelSieve',' — by ReelSieve');j['message_final']=finalize_message(j);return j
 def run_job(jid,url,ai_motion,renderer='v2'):
     j=_jobs[jid];steps=['Fetching','Reviews','Downloaded','Audit','AI motion plan','Seedance','Estimating depth','Rendering','Rendered','Uploading']
     def cb(msg):

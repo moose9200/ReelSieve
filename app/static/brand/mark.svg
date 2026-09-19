@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100" role="img" aria-label="BNBsieve mark">
-  <!-- BNBsieve mark: a sieve — a 3x3 mesh inside a rounded tile; one cell is "caught" (cyan). Nothing borrowed: no house, no Bélo, no Rausch red. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100" role="img" aria-label="ReelSieve mark">
+  <!-- ReelSieve mark: a sieve — a 3x3 mesh inside a rounded tile; one cell is "caught" (cyan). Nothing borrowed: no house, no Bélo, no Rausch red. -->
   <rect x="6" y="6" width="88" height="88" rx="24" fill="#121212"/>
   <g fill="none" stroke="#ffffff" stroke-opacity="0.92" stroke-width="5" stroke-linecap="round">
     <path d="M29 50h42M50 29v42"/>

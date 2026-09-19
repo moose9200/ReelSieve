@@ -1,4 +1,4 @@
-# BNBsieve — by Braivex
+# ReelSieve — by Braivex
 
 Paste an Airbnb listing URL → a ~30 s cinematic 16:9 reel (intro, trust card, depth-parallax walkthrough, real review card, outro "by Braivex.com") → handed to the **listing host through Airbnb messaging** (pre-filled from your own Airbnb account; you press Send).
 
@@ -62,8 +62,8 @@ Host message: "Message host on Airbnb" copies the message and opens the contact 
 Gemini download quirk: the "Download full-sized image" button only fires when the image is scrolled into view and hovered first.
 
 ## Deployment
-- GitHub: https://github.com/moose9200/BNBsieve (private, commits by Hemant Kumar Sain)
-- Railway: project `listing-reel` in workspace "Hemant Kumar Sain's Projects", service `listing-reel`, volume `/data` (jobs + HF model cache), public URL https://bnbsieve-production.up.railway.app
+- GitHub: https://github.com/moose9200/ReelSieve (private, commits by Hemant Kumar Sain)
+- Railway: project `listing-reel` in workspace "Hemant Kumar Sain's Projects", service `listing-reel`, volume `/data` (jobs + HF model cache), public URL https://reelsieve-production.up.railway.app
 - Env vars on Railway: `HF_KEY`, `JOBS_DIR=/data/jobs`, `HF_HOME=/data/hf-cache`; `PUBLIC_BASE_URL` derives from `RAILWAY_PUBLIC_DOMAIN` so reel links are public without a tunnel.
 - Deploy: `railway up --detach --ci` from this folder (Dockerfile build, ~10 min: CPU torch + Chromium). Encoding uses libx264 off macOS.
 
@@ -72,7 +72,7 @@ Gemini download quirk: the "Download full-sized image" button only fires when th
 
 ## Login (19 Sep 2026)
 The whole app is gated. First visit → `/setup` creates the admin login (stored salted PBKDF2 in `.listing-reel/auth.json`, `/data/auth.json` on Railway). Session = HMAC-signed cookie, 30 days. `/logout`, change password in Settings. Env override: `APP_USER` / `APP_PASSWORD` / `SESSION_SECRET`. Public paths: `/static`, `/media` (shared reel files), `/healthz`, OAuth callback.
-Local service: LaunchAgent `com.braivex.bnbsieve`.
+Local service: LaunchAgent `com.braivex.reelsieve`.
 
 ## AI camera motion (property-video-ai method, 19 Sep 2026)
 `app/aimotion.py` — audit → author → generate → assemble.

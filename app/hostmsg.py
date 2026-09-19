@@ -7,7 +7,7 @@ Form verified 19 Sep 2026 on /contact_host/<id>/send_message: textbox "Message t
 import os,re,subprocess,threading,time,shutil
 from pathlib import Path
 ROOT=Path(__file__).resolve().parent.parent;PROFILE=ROOT/'.listing-reel'/'airbnb-profile';PROFILE.mkdir(parents=True,exist_ok=True)
-DEFAULT_MESSAGE=("Hi {host_name}! I run BNBsieve (by Braivex) — we turn a listing's own photos and reviews into a short cinematic video, and I made one for \"{listing_title}\" as a free sample.\n\n"
+DEFAULT_MESSAGE=("Hi {host_name}! I run ReelSieve (by Braivex) — we turn a listing's own photos and reviews into a short cinematic video, and I made one for \"{listing_title}\" as a free sample.\n\n"
                  "Airbnb doesn't let me send links here, so to watch it just search YouTube for: {search_phrase}\n\n"
                  "If you'd like the full-resolution file, a version for Instagram, or one for your other properties, tell me where to send it and it's yours.")
 # tokens: {host_name} {listing_title} {city} {search_phrase} {reel_link}  — default template deliberately has no URL (Airbnb filters links in pre-booking messages)
