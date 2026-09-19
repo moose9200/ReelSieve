@@ -103,7 +103,7 @@ async def api_users_pw(request:Request):
     except ValueError as e:raise HTTPException(400,str(e))
     return {'ok':True}
 SECRET_KEYS=['HF_KEY','GOOGLE_CLIENT_SECRET'];SETTING_KEYS=['HF_KEY','PUBLIC_BASE_URL','DEFAULT_MESSAGE','GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','GDRIVE_FOLDER']
-HINTS={'HF_KEY':'Higgsfield API key, key-id:key-secret','PUBLIC_BASE_URL':'Where this app is reachable from the internet (optional; tunnel is used otherwise)','DEFAULT_MESSAGE':'Template for the Airbnb message; {reel_link} is replaced','GOOGLE_CLIENT_ID':'OAuth client ID from Google Cloud Console (Web application)','GOOGLE_CLIENT_SECRET':'OAuth client secret','GDRIVE_FOLDER':'Drive folder name for uploads (default: Listing Reels)'}
+HINTS={'HF_KEY':'Higgsfield API key, key-id:key-secret','PUBLIC_BASE_URL':'Where this app is reachable from the internet (optional; tunnel is used otherwise)','DEFAULT_MESSAGE':'Template for the Airbnb message. Tokens: {host_name} {listing_title} {city} {search_phrase} {reel_link}. Keep it link-free — Airbnb filters URLs before a booking','GOOGLE_CLIENT_ID':'OAuth client ID from Google Cloud Console (Web application)','GOOGLE_CLIENT_SECRET':'OAuth client secret','GDRIVE_FOLDER':'Drive folder name for uploads (default: Listing Reels)'}
 _jobs={};_lock=threading.Lock();_airbnb_cache={'t':0,'v':{'connected':False}}
 def default_message():return os.getenv('DEFAULT_MESSAGE') or hostmsg.DEFAULT_MESSAGE
 def airbnb_status(max_age=60):
@@ -160,13 +160,19 @@ def reel_link_for(j):
     base=hostmsg.public_base()
     if base and j.get('video_url'):return f"{base}{j['video_url']}"
     return j.get('drive_link') or None
+def search_phrase(j):
+    L=j.get('listing') or {};title=re.split(r'\s[|·-]\s',(L.get('title') or ''))[0].strip();city=(L.get('city') or '').strip()
+    return ' '.join(x for x in [title,city,'video walkthrough BNBsieve'] if x).strip() or 'BNBsieve'
 def finalize_message(j):
-    link=reel_link_for(j);msg=(j.get('message') or default_message())
-    return msg.replace('{reel_link}',link) if link else msg.replace('{reel_link}','(reel link — start the tunnel in Settings)')
+    link=reel_link_for(j);msg=(j.get('message') or default_message());L=j.get('listing') or {}
+    if '{reel_link}' in msg and '{search_phrase}' not in msg and 'BNBsieve' not in msg:msg=default_message()   # legacy link-based template → link-free default
+    host=(L.get('host') or '').strip();msg=msg.replace('{host_name}',host if host else 'there').replace('Hi there!','Hi!')
+    msg=msg.replace('{listing_title}',L.get('title') or 'your listing').replace('{city}',L.get('city') or '').replace('{search_phrase}',search_phrase(j))
+    return msg.replace('{reel_link}',link) if link else msg.replace('{reel_link}','(reel link not available yet)')
 def enrich(j):
     """Derived, non-persisted fields for the UI."""
     j=dict(j);lid=(j.get('listing') or {}).get('id') or (re.search(r'/rooms/(\d+)',j.get('url','')) or [None,None])[1]
-    j.update(drive_fields(j));j['contact_url']=hostmsg.contact_url(lid) if lid else None;j['reel_link']=reel_link_for(j);j['message_final']=finalize_message(j);return j
+    j.update(drive_fields(j));j['contact_url']=hostmsg.contact_url(lid) if lid else None;j['reel_link']=reel_link_for(j);j['search_phrase']=search_phrase(j);j['youtube_title']=search_phrase(j).replace(' BNBsieve',' — by BNBsieve');j['message_final']=finalize_message(j);return j
 def run_job(jid,url,ai_motion,renderer='v2'):
     j=_jobs[jid];steps=['Fetching','Reviews','Downloaded','Seedance','Estimating depth','Rendering','Rendered','Uploading']
     def cb(msg):

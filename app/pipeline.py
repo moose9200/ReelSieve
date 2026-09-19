@@ -51,6 +51,7 @@ def scrape_listing(url,cb=None):
     m=re.search(r'(\d+) guests? · (\d+|Studio) bedrooms? · (\d+) beds? · ([\d.]+) (?:shared |private )?bathrooms?',html.unescape(t))
     if m:d.update(guests=int(m.group(1)),bedrooms=m.group(2),beds=int(m.group(3)),baths=m.group(4))
     m=re.search(r'"roomType":"([^"]+)"',t);d['room_type']=m.group(1) if m else ''
+    m=re.search(r'Hosted by ([A-Z][\w\'-]{1,30})',html.unescape(t));d['host']=m.group(1) if m else ''
     am=re.findall(r'"title":"([^"]{3,40})","subtitle":null,"icon":"SYSTEM_[A-Z_]+","available":true',t)
     if not am:am=re.findall(r'"available":true,"title":"([^"]{3,40})"',t)
     d['amenities']=list(dict.fromkeys(html.unescape(a) for a in am))[:40]
@@ -289,7 +290,7 @@ def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer
     safe=re.sub(r'[^A-Za-z0-9]+','-',d['title'])[:40].strip('-');out=out_dir/f"{time.strftime('%Y-%m-%d')}_{safe}-by-Braivex.mp4"
     m['aspect']='9:16' if renderer=='v3' else '16:9'
     dur,small=render(m,work,out,cb,renderer)
-    res={'video':str(out),'video_720':str(small),'duration':dur,'listing':{k:d.get(k) for k in ['id','url','title','city','rating','count','guests']},'review_used':m.get('reviews',{}).get('items',[None])[0]}
+    res={'video':str(out),'video_720':str(small),'duration':dur,'listing':{k:d.get(k) for k in ['id','url','title','city','rating','count','guests','host']},'review_used':m.get('reviews',{}).get('items',[None])[0]}
     (out_dir/'result.json').write_text(json.dumps(res,indent=1));return res
 if __name__=='__main__':
     import argparse

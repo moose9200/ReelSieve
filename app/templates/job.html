@@ -55,9 +55,14 @@
       </div>
     </div>
     <div class="field">
+      <label for="yt-title">YouTube title to use (so the host can find it by searching)</label>
+      <div class="copy-row"><input type="text" id="yt-title" readonly value="{{ job.youtube_title or '' }}"><button type="button" class="btn btn-secondary" id="copy-yt-btn">Copy</button></div>
+      <p class="hint">Upload the reel to YouTube with this exact title (unlisted is fine). The message below tells the host to search for it — no link needed.</p>
+    </div>
+    <div class="field">
       <label for="host-message">Message</label>
       <textarea id="host-message" rows="5">{{ job.message_final or job.message or '' }}</textarea>
-      <p class="hint">"Message host on Airbnb" copies this message and opens the host's contact form in a new tab of <strong>this browser</strong>, where you're already logged in. Paste (⌘V) and press <strong>Send message</strong>. Nothing is sent automatically.</p>
+      <p class="hint">Link-free by design: Airbnb filters URLs in pre-booking messages. "Message host on Airbnb" copies this text and opens the host's contact form in a new tab of <strong>this browser</strong>. Paste (⌘V) and press <strong>Send message</strong>. Nothing is sent automatically.</p>
     </div>
     <div class="actions">
       <a class="btn btn-primary" id="contact-link" href="{{ job.contact_url or '#' }}" target="_blank" rel="noopener">Message host on Airbnb</a>
