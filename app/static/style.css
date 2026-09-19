@@ -568,3 +568,8 @@ select { width: 100%; color: var(--ink); background: var(--surface); border: 0; 
 .shot-row .rs { font-size: 12px; color: var(--muted); }
 .prompt { overflow-wrap: anywhere; max-width: 100%; }
 #audit-reasons { overflow-wrap: anywhere; }
+/* status lines wrap on narrow screens */
+.video-actions { display: flex; flex-wrap: wrap; gap: 12px 18px; align-items: center; }
+.email-line { flex-wrap: wrap; max-width: 100%; min-width: 0; }
+.pill-email { white-space: normal; overflow-wrap: anywhere; max-width: 100%; text-align: left; line-height: 1.35; }
+@media (max-width: 720px) { .video-actions > * { width: 100%; } .email-line { display: flex; } }
