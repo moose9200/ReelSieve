@@ -552,3 +552,5 @@ select { width: 100%; color: var(--ink); background: var(--surface); border: 0; 
 .user-row { display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: center; padding: 10px 12px; border-radius: var(--radius-control); box-shadow: var(--sink-sm); font-size: 13px; }
 .u-actions { display: flex; gap: 8px; }
 @media (max-width: 720px) { .grid-3 { grid-template-columns: 1fr; } .user-row { grid-template-columns: 1fr auto; } .u-actions { grid-column: 1 / -1; } }
+
+.brand-accent { color: var(--accent-text); }

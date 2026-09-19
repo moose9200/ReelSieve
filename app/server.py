@@ -38,6 +38,8 @@ def _login_ctx(request,**kw):
     tok=request.cookies.get(auth.COOKIE,'');return {'csrf':auth.csrf_token(tok),'allow_setup':not auth.has_account(),**kw}
 def _set_session(resp,request,user,long=True):
     tok,ttl=auth.issue(user,long);resp.set_cookie(auth.COOKIE,tok,max_age=ttl,httponly=True,samesite='lax',secure=_secure(request));return resp
+@app.get('/favicon.ico')
+def favicon():return FileResponse(HERE/'static'/'brand'/'favicon.ico',media_type='image/x-icon')
 @app.get('/healthz')
 def healthz():return {'ok':True}
 @app.get('/setup',response_class=HTMLResponse)
