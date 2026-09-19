@@ -314,7 +314,7 @@ def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer
     except Exception as e:log(cb,f'Audit skipped ({type(e).__name__})')
     if ai_motion:
         # the method wants ~6 frames with the strongest depth axis, not every photo — cap paid shots (AI_MAX_SHOTS, default 6), route order kept
-        cap=int(os.getenv('AI_MAX_SHOTS','6'));ds=(m.get('audit') or {}).get('depth_scores') or {}
+        cap=int(os.getenv('AI_MAX_SHOTS','6'));ds=(m.get('audit') or {}).get('depth_scores') or {};full_scenes=list(m['scenes'])
         if len(m['scenes'])>cap and ds:
             ranked=sorted(range(len(m['scenes'])),key=lambda i:-(ds.get(Path(m['scenes'][i]['image']).name) or 0))[:cap];keep=sorted(ranked)
             log(cb,f"AI motion: keeping {cap} of {len(m['scenes'])} frames with the strongest depth axis (route order kept)");m['scenes']=[m['scenes'][i] for i in keep]
@@ -333,6 +333,8 @@ def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer
                 a,b=pr['best_window'];tr=work/f"ai{sh['index']:02d}-trim.mp4";aimotion.trim(out,a,b,tr);sc['clip']=str(tr);sc['seconds']=round(b-a,2);sh['status']='ok'
                 log(cb,f"  ↳ ok · motion {pr['mean_motion']} · kept {a:.1f}–{b:.1f}s"+(' · dying tail cut' if pr.get('dying_tail') else '')+(' · REVERSAL detected' if pr.get('reverses') else ''))
             if any(sc.get('clip') for sc in m['scenes']):m['transition_seconds']=0   # hard cuts between generated clips (no dissolves)
+            else:m['scenes']=full_scenes;log(cb,'No AI clips were generated — using the full photo set with parallax motion')
+        if not any(sc.get('clip') for sc in m['scenes']) and len(m['scenes'])<len(full_scenes):m['scenes']=full_scenes;log(cb,'AI motion not run — using the full photo set')
     est=lint_manifest(m);log(cb,f'QA guards passed ({len(m["scenes"])} scenes, ~{est:.0f}s)')
     safe=re.sub(r'[^A-Za-z0-9]+','-',d['title'])[:40].strip('-');out=out_dir/f"{time.strftime('%Y-%m-%d')}_{safe}-by-Braivex.mp4"
     m['aspect']='9:16' if renderer=='v3' else '16:9'
