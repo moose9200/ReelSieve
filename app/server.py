@@ -11,7 +11,7 @@ from dotenv import load_dotenv,dotenv_values
 HERE=Path(__file__).resolve().parent;ROOT=HERE.parent;ENV=ROOT/'.env.local';JOBS=Path(os.getenv('JOBS_DIR') or (ROOT/'jobs'));JOBS.mkdir(parents=True,exist_ok=True);PORT=int(os.getenv('PORT','8787'))
 load_dotenv(ENV)
 if not os.getenv('PUBLIC_BASE_URL') and os.getenv('RAILWAY_PUBLIC_DOMAIN'):os.environ['PUBLIC_BASE_URL']='https://'+os.environ['RAILWAY_PUBLIC_DOMAIN']
-from app import pipeline,hostmsg
+from app import pipeline,hostmsg,search as listing_search
 app=FastAPI(title='Listing Reel by Braivex');app.mount('/static',StaticFiles(directory=HERE/'static'),name='static')
 tpl=Jinja2Templates(directory=HERE/'templates');tpl.env.autoescape=True
 SECRET_KEYS=['HF_KEY'];SETTING_KEYS=['HF_KEY','PUBLIC_BASE_URL','DEFAULT_MESSAGE']
@@ -125,6 +125,12 @@ async def opened_in_browser(jid:str,request:Request):
     upd=dict(host_status='draft',host_error='opened in your browser — paste and press Send',message=msg)
     if jid in _jobs:_jobs[jid].update(upd);persist(_jobs[jid]);return enrich(job_public(_jobs[jid]))
     j.update(upd);(JOBS/jid/'job.json').write_text(json.dumps(j,indent=1));return enrich(j)
+@app.get('/api/search')
+def api_search(location:str,checkin:str='',checkout:str='',adults:int=2,offset:int=0):
+    """In-app listing picker: public Airbnb search results (no login)."""
+    if not location.strip():raise HTTPException(400,'Enter a location')
+    try:return listing_search.search(location,checkin or None,checkout or None,adults,offset)
+    except Exception as e:raise HTTPException(502,f'Search failed: {type(e).__name__}: {str(e)[:120]}')
 @app.get('/media/{jid}/{name}')
 def media(jid:str,name:str):
     p=(JOBS/jid/name).resolve()

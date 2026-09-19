@@ -7,7 +7,25 @@
   <p class="sub">We pull the photos and reviews, build a 30-second walkthrough with captions and music, and prepare an Airbnb message to the host with the reel link. You press Send.</p>
 </section>
 
-<section class="card form-card">
+<section class="card form-card search-card">
+  <p class="eyebrow">Find a listing</p>
+  <form id="search-form" novalidate>
+    <div class="grid-search">
+      <div class="field"><label for="s-location">Location</label><input type="text" id="s-location" name="location" placeholder="Bournemouth, UK" autocomplete="off"></div>
+      <div class="field"><label for="s-checkin">Check-in</label><input type="date" id="s-checkin" name="checkin"></div>
+      <div class="field"><label for="s-checkout">Check-out</label><input type="date" id="s-checkout" name="checkout"></div>
+      <div class="field"><label for="s-adults">Guests</label><input type="number" id="s-adults" name="adults" min="1" max="16" value="2"></div>
+    </div>
+    <div class="actions">
+      <button type="submit" class="btn btn-primary" id="search-btn">Search Airbnb</button>
+      <span class="form-status" id="search-status" role="status" aria-live="polite"></span>
+    </div>
+  </form>
+  <div class="results" id="search-results" aria-live="polite"></div>
+</section>
+
+<section class="card form-card" id="reel-card">
+  <p class="eyebrow">Or paste a link</p>
   <form id="reel-form" method="post" action="/api/jobs" novalidate>
     <div class="field">
       <label for="url">Airbnb listing URL</label>

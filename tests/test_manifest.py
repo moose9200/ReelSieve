@@ -37,3 +37,12 @@ def test_length_scales_with_photos(tmp_path):
     a=_manifest('paris',tmp_path/'a');b=_manifest('bournemouth',tmp_path/'b')
     assert len(a['scenes'])!=len(b['scenes']) or True   # counts derive from labelled photos, not a fixed number
     for m in (a,b):assert pipeline.lint_manifest(m)>=30
+
+def test_search_parser_reads_public_results():
+    from app import search
+    body='<script id="data-deferred-state-0" type="application/json">'+(FIX/'search-bournemouth.deferred.json').read_text()+'</script>'
+    items=search.parse_results(body)
+    assert len(items)>=10
+    first=items[0]
+    assert first['id'].isdigit() and first['url'].startswith('https://www.airbnb.co.uk/rooms/')
+    assert first['photo'] and first['title'] and first['rating'] is not None

@@ -37,6 +37,49 @@
     });
   }
 
+  // ---------- index: in-app listing search ----------
+  var sform = document.getElementById("search-form");
+  if (sform) {
+    var sbtn = document.getElementById("search-btn"), sstatus = document.getElementById("search-status"), sres = document.getElementById("search-results");
+    function esc(t) { var d = document.createElement("div"); d.textContent = t == null ? "" : String(t); return d.innerHTML; }
+    function pick(item) {
+      var urlField = document.getElementById("url");
+      if (urlField) { urlField.value = item.url; urlField.dispatchEvent(new Event("input")); }
+      Array.prototype.forEach.call(sres.querySelectorAll(".result"), function (n) { n.classList.toggle("is-selected", n.getAttribute("data-id") === item.id); });
+      var card = document.getElementById("reel-card"); if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
+      var fs = document.getElementById("form-status"); if (fs) { fs.className = "form-status"; fs.textContent = "Selected: " + (item.name || item.title) + " — press Generate reel."; }
+    }
+    function renderResults(data) {
+      sres.innerHTML = "";
+      if (!data.items || !data.items.length) { sres.innerHTML = '<p class="empty">No listings found for that search. Try a nearby town or different dates.</p>'; return; }
+      data.items.forEach(function (it) {
+        var el = document.createElement("article"); el.className = "result"; el.setAttribute("data-id", it.id);
+        var rating = it.rating != null ? "★ " + it.rating + (it.reviews != null ? " (" + it.reviews + ")" : "") : "New";
+        el.innerHTML = (it.photo ? '<img loading="lazy" src="' + esc(it.photo) + '?im_w=720" alt="">' : "") +
+          '<div class="rb"><div class="rn">' + esc(it.name || it.title) + "</div>" +
+          '<div class="rt">' + esc(it.title) + "</div>" + (it.summary ? '<div class="rs">' + esc(it.summary) + "</div>" : "") +
+          (it.badges && it.badges.length ? '<div><span class="badge">' + esc(it.badges[0]) + "</span></div>" : "") +
+          '<div class="rm"><span>' + esc(rating) + "</span><b>" + esc(it.price) + (it.price_qualifier ? " " + esc(it.price_qualifier) : "") + "</b></div>" +
+          '<div class="rs">' + esc(it.photos) + " photos</div>" +
+          '<button type="button" class="btn btn-primary use-btn">Use this listing</button></div>';
+        el.querySelector(".use-btn").addEventListener("click", function () { pick(it); });
+        el.querySelector("img") && el.querySelector("img").addEventListener("click", function () { pick(it); });
+        sres.appendChild(el);
+      });
+    }
+    sform.addEventListener("submit", function (ev) {
+      ev.preventDefault();
+      var loc = sform.location.value.trim();
+      sstatus.className = "form-status";
+      if (!loc) { sstatus.textContent = "Enter a location."; sstatus.classList.add("is-error"); sform.location.focus(); return; }
+      var q = "location=" + encodeURIComponent(loc) + "&checkin=" + encodeURIComponent(sform.checkin.value || "") + "&checkout=" + encodeURIComponent(sform.checkout.value || "") + "&adults=" + encodeURIComponent(sform.adults.value || "2");
+      sbtn.disabled = true; sstatus.textContent = "Searching Airbnb…"; sres.innerHTML = "";
+      getJSON("/api/search?" + q).then(function (data) { renderResults(data); sstatus.textContent = data.count + " listings"; })
+        .catch(function (err) { sstatus.textContent = err.message || "Search failed."; sstatus.classList.add("is-error"); })
+        .then(function () { sbtn.disabled = false; });
+    });
+  }
+
   // ---------- index: submit job ----------
   var form = document.getElementById("reel-form");
   if (form) {
