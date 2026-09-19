@@ -499,3 +499,7 @@ select { width: 100%; color: var(--ink); background: var(--surface); border: 0; 
 
 .load-more { justify-content: center; margin-top: 14px; }
 .load-more.hidden { display: none; }
+
+.result .rbtns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+.result .rbtns .btn { margin-top: 0; min-height: 44px; display: inline-flex; align-items: center; justify-content: center; text-decoration: none; white-space: nowrap; }
+.result .rn { cursor: pointer; } .result .rn:hover { color: var(--accent-text); }

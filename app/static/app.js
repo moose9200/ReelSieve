@@ -78,9 +78,11 @@
           (it.badges && it.badges.length ? '<div><span class="badge">' + esc(it.badges[0]) + "</span></div>" : "") +
           '<div class="rm"><span>' + esc(rating) + "</span><b>" + esc(it.price) + (it.price_qualifier ? " " + esc(it.price_qualifier) : "") + "</b></div>" +
           '<div class="rs">' + esc(it.photos) + " photos</div>" +
-          '<button type="button" class="btn btn-primary use-btn">Use this listing</button></div>';
+          '<div class="rbtns"><button type="button" class="btn btn-primary use-btn">Use this listing</button>' +
+          '<a class="btn btn-secondary open-link" href="' + esc(it.url) + '" target="_blank" rel="noopener noreferrer" title="Open this listing on Airbnb in a new tab">Open on Airbnb ↗</a></div></div>';
         el.querySelector(".use-btn").addEventListener("click", function () { pick(it); });
         el.querySelector("img") && el.querySelector("img").addEventListener("click", function () { pick(it); });
+        el.querySelector(".rn").addEventListener("click", function () { window.open(it.url, "_blank", "noopener"); });
         sres.appendChild(el);
       });
     }
