@@ -95,9 +95,9 @@ def run_job(jid,url,ai_motion,renderer='v2'):
         with _lock:j.update(status='failed',error=f'{type(e).__name__}: {str(e)[:300]}',step='Failed');j['log'].append(traceback.format_exc()[-600:])
     persist(j)
 @app.get('/',response_class=HTMLResponse)
-def index(request:Request):
+def index(request:Request,url:str=''):
     jobs=[{'id':j['id'],'status':j['status'],'title':(j.get('listing') or {}).get('title') or j.get('url'),'location':(j.get('listing') or {}).get('location'),'created':j.get('created'),'video_url':j.get('video_url')} for j in load_jobs()[:12]]
-    return tpl.TemplateResponse(request,'index.html',{'jobs':jobs,'hf_configured':bool(os.getenv('HF_KEY')),'airbnb_connected':airbnb_status().get('connected',False),'public_url_ok':bool(hostmsg.public_base()),'default_message':default_message()})
+    return tpl.TemplateResponse(request,'index.html',{'jobs':jobs,'hf_configured':bool(os.getenv('HF_KEY')),'airbnb_connected':airbnb_status().get('connected',False),'public_url_ok':bool(hostmsg.public_base()),'default_message':default_message(),'prefill_url':url})
 @app.post('/api/jobs')
 async def create_job(request:Request):
     b=await request.json();url=(b.get('url') or '').strip();ai=bool(b.get('ai_motion'));renderer='v3' if b.get('style')=='tutorial' else 'v2'
@@ -197,11 +197,40 @@ def upload_drive(jid:str):
     upd=dict(drive_status='uploaded',drive_link=info.get('webViewLink'),drive_name=info.get('name'),drive_id=info.get('id'))
     if jid in _jobs:_jobs[jid].update(upd);persist(_jobs[jid]);return enrich(job_public(_jobs[jid]))
     j.update(upd);(JOBS/jid/'job.json').write_text(json.dumps(j,indent=1));return enrich(j)
+def listing_id_of(j):
+    return (j.get('listing') or {}).get('id') or (re.search(r'/rooms/(\d+)',j.get('url','')) or [None,None])[1]
+def poster_for(j):
+    """First-frame poster (2 s in) generated once per finished reel; served from /media."""
+    if j.get('status')!='done' or not j.get('video_url'):return None
+    d=JOBS/j['id'];vid=d/Path(j['video_url']).name;pos=d/'poster.jpg'
+    if not pos.exists() and vid.exists():
+        import subprocess;subprocess.run(['ffmpeg','-y','-v','error','-ss','2','-i',str(vid),'-frames:v','1','-vf','scale=640:-2',str(pos)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    return f"/media/{j['id']}/poster.jpg" if pos.exists() else None
+def library():
+    groups={};order=[]
+    for j in load_jobs():
+        lid=listing_id_of(j) or j.get('url')
+        if lid not in groups:
+            L=dict(j.get('listing') or {});L.setdefault('id',lid);L.setdefault('url',j.get('url'));groups[lid]={'listing':L,'jobs':[],'latest':j,'poster':None};order.append(lid)
+        g=groups[lid];g['jobs'].append(j)
+        if (j.get('listing') or {}).get('title') and not g['listing'].get('title'):g['listing'].update({k:v for k,v in j['listing'].items() if v})
+        if not g['poster']:g['poster']=poster_for(j)
+    return [groups[k] for k in order]
+@app.get('/reels',response_class=HTMLResponse)
+def reels_page(request:Request):return tpl.TemplateResponse(request,'reels.html',{'groups':library()})
+@app.get('/api/reels/index')
+def reels_index():
+    """listing id → reels (for the search results 'Reel ready' marker)."""
+    out={}
+    for j in load_jobs():
+        lid=listing_id_of(j)
+        if lid and j.get('status')=='done':out.setdefault(lid,[]).append({'id':j['id'],'created':j.get('created'),'video_url':j.get('video_url'),'drive_link':j.get('drive_link')})
+    return out
 @app.get('/media/{jid}/{name}')
 def media(jid:str,name:str):
     p=(JOBS/jid/name).resolve()
-    if not p.is_file() or JOBS not in p.parents or p.suffix!='.mp4':raise HTTPException(404)
-    return FileResponse(p,media_type='video/mp4',filename=name)
+    if not p.is_file() or JOBS not in p.parents or p.suffix not in ('.mp4','.jpg'):raise HTTPException(404)
+    return FileResponse(p,media_type='image/jpeg' if p.suffix=='.jpg' else 'video/mp4',filename=None if p.suffix=='.jpg' else name)
 @app.get('/settings',response_class=HTMLResponse)
 def settings(request:Request,saved:int=0,flash:str=''):return tpl.TemplateResponse(request,'settings.html',{'s':settings_view(),'saved':bool(saved),'flash':flash})
 @app.post('/settings')

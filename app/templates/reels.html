@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Reels{% endblock %}
+{% block content %}
+<section class="hero">
+  <p class="eyebrow">Library</p>
+  <h1>Reels you've created</h1>
+  <p class="sub">Every generated video, grouped by listing. Newest first.</p>
+</section>
+
+{% if groups %}
+<div class="reel-groups">
+  {% for g in groups %}
+  <section class="card reel-group" id="listing-{{ g.listing.id }}">
+    <div class="rg-head">
+      {% if g.poster %}<a class="rg-poster" href="/jobs/{{ g.latest.id }}"><img src="{{ g.poster }}" alt=""></a>{% endif %}
+      <div class="rg-meta">
+        <h2 class="rg-title">{{ g.listing.title or ("Listing " ~ g.listing.id) }}</h2>
+        <p class="rg-sub">{{ g.listing.city or "" }}{% if g.listing.rating %} · ★ {{ g.listing.rating }}{% if g.listing.count %} ({{ g.listing.count }}){% endif %}{% endif %} · {{ g.jobs|length }} reel{{ "s" if g.jobs|length != 1 else "" }}</p>
+        <p class="rg-links">
+          <a href="/jobs/{{ g.latest.id }}">Latest reel</a>
+          <a href="{{ g.listing.url }}" target="_blank" rel="noopener noreferrer">Open on Airbnb ↗</a>
+          <a href="/?url={{ g.listing.url|urlencode }}">Make another</a>
+        </p>
+      </div>
+    </div>
+    <ul class="reel-list">
+      {% for j in g.jobs %}
+      <li class="reel-row">
+        <span class="reel-when">{{ j.created or "" }}</span>
+        <span class="reel-style">{{ "9:16 tutorial" if j.style == "v3" else "16:9 cinematic" }}{% if j.duration %} · {{ j.duration|round|int }}s{% endif %}</span>
+        <span class="pill pill-{{ j.status }}">{{ j.status }}</span>
+        <span class="reel-actions">
+          {% if j.status == "done" %}
+          <a class="btn btn-secondary btn-sm" href="/jobs/{{ j.id }}">Open</a>
+          <a class="btn btn-secondary btn-sm" href="{{ j.video_url }}" download>Download</a>
+          {% if j.drive_link %}<a class="btn btn-secondary btn-sm" href="{{ j.drive_link }}" target="_blank" rel="noopener">Drive ↗</a>{% endif %}
+          {% else %}<a class="btn btn-secondary btn-sm" href="/jobs/{{ j.id }}">View</a>{% endif %}
+        </span>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endfor %}
+</div>
+{% else %}
+<section class="card"><p class="empty">No reels yet. <a href="/">Make the first one</a>.</p></section>
+{% endif %}
+{% endblock %}

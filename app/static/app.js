@@ -64,6 +64,8 @@
       if (cmp) a.sort(cmp); return a;
     }
     if (sortSel) sortSel.addEventListener("change", function () { if (lastData) renderResults(lastData); });
+    var reelIndex = {};
+    getJSON("/api/reels/index").then(function (d) { reelIndex = d || {}; if (lastData) renderResults(lastData); }).catch(function () {});
     function renderResults(data) {
       lastData = data; sres.innerHTML = "";
       var sortWrap = document.getElementById("sort-wrap"); if (sortWrap) sortWrap.classList.toggle("hidden", !(data.items && data.items.length));
@@ -76,6 +78,7 @@
           '<div class="rb"><div class="rn">' + esc(it.name || it.title) + "</div>" +
           '<div class="rt">' + esc(it.title) + "</div>" + (it.summary ? '<div class="rs">' + esc(it.summary) + "</div>" : "") +
           (it.badges && it.badges.length ? '<div><span class="badge">' + esc(it.badges[0]) + "</span></div>" : "") +
+          (reelIndex[it.id] && reelIndex[it.id].length ? '<div><a class="badge badge-reel" href="/reels#listing-' + esc(it.id) + '">Reel ready · ' + reelIndex[it.id].length + '</a></div>' : "") +
           '<div class="rm"><span>' + esc(rating) + "</span><b>" + esc(it.price) + (it.price_qualifier ? " " + esc(it.price_qualifier) : "") + "</b></div>" +
           '<div class="rs">' + esc(it.photos) + " photos</div>" +
           '<div class="rbtns"><button type="button" class="btn btn-primary use-btn">Use this listing</button>' +

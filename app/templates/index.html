@@ -56,7 +56,7 @@
   <form id="reel-form" method="post" action="/api/jobs" novalidate>
     <div class="field">
       <label for="url">Airbnb listing URL</label>
-      <input type="url" id="url" name="url" required inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://www.airbnb.co.uk/rooms/…">
+      <input type="url" id="url" name="url" required inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://www.airbnb.co.uk/rooms/…" value="{{ prefill_url }}">
     </div>
     <div class="field field-check">
       <label class="check">
