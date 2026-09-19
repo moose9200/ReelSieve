@@ -119,11 +119,16 @@ def classify(label):
 def month_word(date):
     m=re.search(r'(January|February|March|April|May|June|July|August|September|October|November|December) (\d{4})',date or '')
     return f'{m.group(1)} {m.group(2)}' if m else time.strftime('%B %Y')
-def build_manifest(d,revs,imgdir,depth_dir,scenes_n=None,max_scenes=14,min_scenes=6):
+def build_manifest(d,revs,imgdir,depth_dir,scenes_n=None,max_scenes=14,min_scenes=6,scores=None):
     """Walkthrough order (research: exterior → entry/living → kitchen/dining → bedrooms → bath → outdoor → best feature + CTA;
     3–5 s per shot, 8–15 photos). Photos stay grouped by room so the reel reads like walking the house; length = photo count × scene_seconds."""
     groups={}
     for p in d['photos']:groups.setdefault(classify(p['label']),[]).append(p)
+    if scores:   # best-first inside each room; drop clearly bad frames (blurry / blown-out / off-shoot) when the room has alternatives
+        for k,lst in groups.items():
+            lst.sort(key=lambda p:-(scores.get(Path(p['url']).name,{}).get('score',0)))
+            good=[p for p in lst if scores.get(Path(p['url']).name,{}).get('score',0)>=45]
+            if good:groups[k]=good
     order=[k for k,_ in ROUTE];per_room_cap=3
     ext=groups.get('exterior',[]);hero=ext[0] if ext else (groups.get('view') or groups.get('garden') or d['photos'])[0]
     closer=ext[1] if len(ext)>1 else (groups.get('spa') or groups.get('garden') or groups.get('view') or [hero])[0]   # end on the best feature
@@ -242,7 +247,12 @@ def render(m,workdir,out,cb=None,renderer='v2'):
     imgs=sorted({s['image'] for s in m['scenes']}|{m['intro']['image'],m['outro']['image']}|({m['trust']['image']} if 'trust' in m else set())|set(m.get('reviews',{}).get('bg',[])))
     sel=workdir/'sel';sel.mkdir(exist_ok=True)
     for i in imgs:shutil.copy(i,sel/Path(i).name)
-    log(cb,'Estimating depth (Depth-Anything-V2)');subprocess.run([PY,str(HERE/'depth.py'),str(sel),m['depth_dir']],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    missing=[i for i in imgs if not (Path(m['depth_dir'])/(Path(i).stem+'.png')).exists()]
+    if missing:
+        sel3=workdir/'sel3';sel3.mkdir(exist_ok=True)
+        for i in missing:shutil.copy(i,sel3/Path(i).name)
+        log(cb,f'Estimating depth for {len(missing)} more frames');subprocess.run([PY,str(HERE/'depth.py'),str(sel3),m['depth_dir']],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    else:log(cb,'Depth maps ready')
     (workdir/'manifest.json').write_text(json.dumps(m,indent=1));log(cb,'Rendering '+('tutorial-style 9:16 walkthrough' if renderer=='v3' else 'cinematic 16:9 walkthrough (v2)'))
     renderer_file='render_v3.py' if renderer=='v3' else 'render_v2.py'
     r=subprocess.run([PY,str(HERE/renderer_file),str(workdir/'manifest.json'),str(out),'--workers','6'],capture_output=True,text=True)
@@ -281,15 +291,25 @@ def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer
     if ai_motion:renderer='v3'   # AI-motion assembly = hard cuts in the full-bleed renderer
     out_dir=Path(out_dir);out_dir.mkdir(parents=True,exist_ok=True);work=out_dir/'work';work.mkdir(exist_ok=True)
     d=scrape_listing(url,cb);revs=scrape_reviews(url,cb);(out_dir/'listing.json').write_text(json.dumps({**d,'reviews':revs},indent=1))
-    imgdir=work/'images';m=build_manifest(d,revs,imgdir,work/'depth')
-    need=sorted({Path(s['image']).name for s in m['scenes']}|{Path(m['intro']['image']).name,Path(m['outro']['image']).name}|{Path(x).name for x in m.get('reviews',{}).get('bg',[])}|({Path(m['trust']['image']).name} if 'trust' in m else set()))
-    download_photos(d,imgdir,cb,needed=[p['url'] for p in d['photos'] if Path(p['url']).name in need])
+    imgdir=work/'images';download_photos(d,imgdir,cb)   # every photo, so selection is on quality not on Airbnb's order
+    from app import photoscore
+    scores=photoscore.score_all([imgdir/Path(p['url']).name for p in d['photos'] if (imgdir/Path(p['url']).name).exists()],'9:16' if renderer=='v3' else '16:9')
+    # depth maps for the shortlist (top 18 by cheap score) so the depth axis can count
+    short=sorted(scores,key=lambda k:-scores[k]['score'])[:18];sel=work/'sel';sel.mkdir(exist_ok=True)
+    for k in short:shutil.copy(imgdir/k,sel/k)
+    subprocess.run([PY,str(HERE/'depth.py'),str(sel),str(work/'depth')],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    photoscore.add_depth(scores,work/'depth')
+    m=build_manifest(d,revs,imgdir,work/'depth',scores=scores);m['photo_scores']=scores
+    used={Path(s['image']).name for s in m['scenes']}|{Path(m['intro']['image']).name,Path(m['outro']['image']).name}
+    ranked=sorted(scores.items(),key=lambda kv:-kv[1]['score'])
+    log(cb,f"Scored {len(scores)} photos; using {len(used)} (best {ranked[0][1]['score']}, median {sorted(v['score'] for v in scores.values())[len(scores)//2]}, lowest used {min(scores[k]['score'] for k in used if k in scores)})")
+    m['selection']={'downloaded':len(scores),'used':sorted(used),'skipped':[k for k,_ in ranked if k not in used]}
     # --- audit (free): is this photo set video-worthy? ---
     from app import aimotion
     try:
-        depth_dir=work/'depth';sel=work/'sel';sel.mkdir(exist_ok=True)
-        for sc in m['scenes']:shutil.copy(sc['image'],sel/Path(sc['image']).name)
-        subprocess.run([PY,str(HERE/'depth.py'),str(sel),str(depth_dir)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        depth_dir=work/'depth';sel2=work/'sel2';sel2.mkdir(exist_ok=True);missing=[sc['image'] for sc in m['scenes'] if not (depth_dir/(Path(sc['image']).stem+'.png')).exists()]
+        for im_ in missing:shutil.copy(im_,sel2/Path(im_).name)
+        if missing:subprocess.run([PY,str(HERE/'depth.py'),str(sel2),str(depth_dir)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         aud=aimotion.audit([sc['image'] for sc in m['scenes']],depth_dir,{Path(sc['image']).name:sc.get('room') for sc in m['scenes']});m['audit']=aud
         log(cb,f"Audit: {aud['verdict']} ({aud['score']}/100) — "+'; '.join(aud['reasons']))
     except Exception as e:log(cb,f'Audit skipped ({type(e).__name__})')
@@ -318,7 +338,7 @@ def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer
     safe=re.sub(r'[^A-Za-z0-9]+','-',d['title'])[:40].strip('-');out=out_dir/f"{time.strftime('%Y-%m-%d')}_{safe}-by-Braivex.mp4"
     m['aspect']='9:16' if renderer=='v3' else '16:9'
     dur,small=render(m,work,out,cb,renderer)
-    res={'video':str(out),'video_720':str(small),'duration':dur,'audit':m.get('audit'),'ai_plan':m.get('ai_plan'),'listing':{k:d.get(k) for k in ['id','url','title','city','rating','count','guests','host']},'review_used':m.get('reviews',{}).get('items',[None])[0]}
+    res={'video':str(out),'video_720':str(small),'duration':dur,'audit':m.get('audit'),'ai_plan':m.get('ai_plan'),'selection':m.get('selection'),'photo_scores':m.get('photo_scores'),'listing':{k:d.get(k) for k in ['id','url','title','city','rating','count','guests','host']},'review_used':m.get('reviews',{}).get('items',[None])[0]}
     (out_dir/'result.json').write_text(json.dumps(res,indent=1));return res
 if __name__=='__main__':
     import argparse

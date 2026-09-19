@@ -71,6 +71,22 @@
     </div>
   </div>
 
+  <div class="card sel-card{% if not job.selection %} hidden{% endif %}" id="sel-card">
+    <div class="section-head"><h2>Photo selection</h2>{% if job.selection %}<span class="pill pill-done">{{ job.selection.used|length }} of {{ job.selection.downloaded }} used</span>{% endif %}</div>
+    {% if job.selection %}
+    <p class="hint">All listing photos were downloaded and scored (sharpness, exposure, colour match, orientation, resolution, depth axis). The reel uses the best frame per room in walkthrough order.</p>
+    <details><summary>Show scores</summary>
+    <ul class="score-list">
+      {% for name in job.selection.used %}{% set sc = job.photo_scores[name] if job.photo_scores and name in job.photo_scores else None %}
+      <li class="score-row is-used"><span class="badge">used</span><span class="sr-name">{{ name[:18] }}…</span><b>{{ sc.score if sc else '—' }}</b><span class="rs">{% if sc %}sharp {{ sc.sharp }} · luma {{ sc.luma }} · colour {{ sc.colour }} · {{ sc.orientation }}{% if sc.depth is defined %} · depth {{ sc.depth }}{% endif %}{% endif %}</span></li>
+      {% endfor %}
+      {% for name in job.selection.skipped[:12] %}{% set sc = job.photo_scores[name] if job.photo_scores and name in job.photo_scores else None %}
+      <li class="score-row"><span class="badge badge-muted">skipped</span><span class="sr-name">{{ name[:18] }}…</span><b>{{ sc.score if sc else '—' }}</b><span class="rs">{% if sc %}sharp {{ sc.sharp }} · luma {{ sc.luma }} · colour {{ sc.colour }} · {{ sc.orientation }}{% endif %}</span></li>
+      {% endfor %}
+    </ul></details>
+    {% endif %}
+  </div>
+
   <div class="card audit-card{% if not job.audit %} hidden{% endif %}" id="audit-card">
     <div class="section-head"><h2>Photo audit</h2><span class="pill {{ 'pill-done' if (job.audit and job.audit.verdict == 'PASS') else ('pill-running' if (job.audit and job.audit.verdict == 'WEAK') else 'pill-failed') }}" id="audit-pill">{{ job.audit.verdict if job.audit else '—' }}{% if job.audit %} · {{ job.audit.score }}/100{% endif %}</span></div>
     <p class="hint" id="audit-reasons">{% if job.audit %}{{ job.audit.reasons|join('; ') }} · {{ job.audit.photos }} frames · colour spread {{ job.audit.rgb_spread }}{% endif %}</p>

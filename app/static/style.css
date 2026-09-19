@@ -573,3 +573,11 @@ select { width: 100%; color: var(--ink); background: var(--surface); border: 0; 
 .email-line { flex-wrap: wrap; max-width: 100%; min-width: 0; }
 .pill-email { white-space: normal; overflow-wrap: anywhere; max-width: 100%; text-align: left; line-height: 1.35; }
 @media (max-width: 720px) { .video-actions > * { width: 100%; } .email-line { display: flex; } }
+
+.sel-card { margin-top: 18px; } .sel-card.hidden { display: none; }
+.score-list { list-style: none; margin: 10px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.score-row { display: grid; grid-template-columns: auto 1fr auto 2fr; gap: 10px; align-items: center; padding: 8px 12px; border-radius: var(--radius-control); box-shadow: var(--sink-sm); font-size: 12px; }
+.score-row > * { min-width: 0; overflow-wrap: anywhere; } .score-row .sr-name { color: var(--muted); font-family: ui-monospace, monospace; }
+.score-row.is-used b { color: var(--accent-text); } .badge-muted { background: var(--shadow-light); color: var(--muted); }
+.sel-card summary { cursor: pointer; color: var(--accent-text); font-size: 13px; }
+@media (max-width: 720px) { .score-row { grid-template-columns: auto 1fr auto; } .score-row .rs { grid-column: 1 / -1; } }

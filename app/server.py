@@ -176,7 +176,7 @@ def enrich(j):
     j=dict(j);lid=(j.get('listing') or {}).get('id') or (re.search(r'/rooms/(\d+)',j.get('url','')) or [None,None])[1]
     j.update(drive_fields(j));j['contact_url']=hostmsg.contact_url(lid) if lid else None;j['reel_link']=reel_link_for(j);j['search_phrase']=search_phrase(j);j['youtube_title']=search_phrase(j).replace(' ReelSieve',' — by ReelSieve');j['message_final']=finalize_message(j);return j
 def run_job(jid,url,ai_motion,renderer='v2'):
-    j=_jobs[jid];steps=['Fetching','Reviews','Downloaded','Audit','AI motion plan','Seedance','Estimating depth','Rendering','Rendered','Uploading']
+    j=_jobs[jid];steps=['Fetching','Reviews','Downloaded','Scored','Audit','AI motion plan','Seedance','Estimating depth','Rendering','Rendered','Uploading']
     def cb(msg):
         with _lock:
             j['log'].append(time.strftime('%H:%M:%S ')+msg);j['step']=msg
@@ -187,7 +187,7 @@ def run_job(jid,url,ai_motion,renderer='v2'):
         j['status']='running';persist(j)
         res=pipeline.run(url,JOBS/jid,None,ai_motion,cb,None,renderer)
         with _lock:
-            j.update(status='done',progress=100,step='Done',video_url=f"/media/{jid}/{Path(res['video']).name}",listing={**res['listing'],'location':res['listing'].get('city')},duration=res['duration'],audit=res.get('audit'),ai_plan=res.get('ai_plan'))
+            j.update(status='done',progress=100,step='Done',video_url=f"/media/{jid}/{Path(res['video']).name}",listing={**res['listing'],'location':res['listing'].get('city')},duration=res['duration'],audit=res.get('audit'),ai_plan=res.get('ai_plan'),selection=res.get('selection'),photo_scores=res.get('photo_scores'))
             if j.get('send_to_host'):
                 j['host_status']='skipped';j['host_error']='Ready — open the pre-filled Airbnb message below and press Send there'
             else:j['host_status']='skipped';j['host_error']='not requested'
