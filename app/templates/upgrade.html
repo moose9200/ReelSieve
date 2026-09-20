@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}Upgrade{% endblock %}
+{% block content %}
+<section class="login-wrap">
+  <section class="card login-card">
+    <p class="eyebrow">Upgrade</p>
+    <h1 class="login-title">{{ plan|capitalize if plan else 'Choose a plan' }}</h1>
+    {% if account %}<p class="sub">Signed in as {{ account.user }} · {{ account.plan_name }}{% if account.remaining is not none %} · {{ account.remaining }} left{% endif %}</p>{% endif %}
+    {% if link %}
+      <p class="sub">Complete payment and your credits are added automatically.</p>
+      <div class="actions"><a class="btn btn-primary btn-wide" href="{{ link }}" rel="noopener">Continue to secure checkout</a></div>
+    {% else %}
+      <p class="sub">Card payment isn't switched on for this installation yet. Email <a href="mailto:hello@braivex.com?subject=ReelSieve%20{{ plan }}">hello@braivex.com</a> and we'll invoice you and add the credits the same day.</p>
+      <div class="actions"><a class="btn btn-primary btn-wide" href="mailto:hello@braivex.com?subject=ReelSieve%20{{ plan }}%20plan">Email us to activate</a></div>
+      <p class="hint">Admins can set a plan instantly in Settings → Users.</p>
+    {% endif %}
+    <p class="login-foot"><a href="/app">Back to the app</a> · <a href="/#pricing">See all plans</a></p>
+  </section>
+</section>
+{% endblock %}

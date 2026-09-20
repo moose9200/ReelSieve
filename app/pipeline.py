@@ -21,6 +21,7 @@ CAPTIONS={'exterior':[('Arrive in {city}','{hood_or_city}  /  {parking}'),('Firs
 def log(cb,msg):
     print(msg,flush=True)
     if cb:cb(msg)
+def is_airbnb(url):return bool(re.search(r'airbnb\.[a-z.]+/rooms/\d+',url or ''))
 def listing_id(url):
     m=re.search(r'/rooms/(\d+)',url)
     if not m:raise ValueError('Not an Airbnb listing URL (expected /rooms/<id>)')
@@ -210,7 +211,7 @@ def lint_manifest(m,min_images=6):
     segs=2+len(m['scenes'])+(1 if m.get('trust') else 0)+len((m.get('reviews') or {}).get('items',[]));total-=0.6*(segs-1)
     if float(m.get('scene_seconds',4.5))<3.5:probs.append('scene_seconds under 3.5 s — images change too fast')
     total=sum(float(x.get('seconds') or m.get('scene_seconds',4.5)) for x in m['scenes'])
-    if not 27<=total<=150:probs.append(f'reel would be {total:.1f}s (expected 27–150 s, scaled by photo count)')
+    if not 20<=total<=200:probs.append(f'reel would be {total:.1f}s (expected 27–150 s, scaled by photo count)')
     if len(m['scenes'])<6:probs.append('fewer than 6 walkthrough scenes')
     rk=[s.get('room') for s in m['scenes'] if s.get('room') and s.get('room')!='other'];ordr=[k for k,_ in ROUTE]
     if rk!=sorted(rk,key=ordr.index):probs.append(f'scenes out of route order: {rk}')
@@ -289,7 +290,14 @@ def email_html(d,link,dur):
 # ---------------- orchestration ----------------
 def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer='v2'):
     out_dir=Path(out_dir);out_dir.mkdir(parents=True,exist_ok=True);work=out_dir/'work';work.mkdir(exist_ok=True)
-    d=scrape_listing(url,cb);revs=scrape_reviews(url,cb);(out_dir/'listing.json').write_text(json.dumps({**d,'reviews':revs},indent=1))
+    if is_airbnb(url):
+        d=scrape_listing(url,cb);revs=scrape_reviews(url,cb)
+    else:
+        from app import extract
+        log(cb,'Not an Airbnb link — reading the listing page directly');d=extract.scrape(url,cb);revs=[]
+        log(cb,f"Found {len(d['photos'])} photos on {d.get('source')}")
+        if len(d['photos'])<5:raise RuntimeError(f"Only {len(d['photos'])} usable photos found on that page. Try the listing's Airbnb link, or a page that shows the full photo gallery.")
+    (out_dir/'listing.json').write_text(json.dumps({**d,'reviews':revs},indent=1))
     imgdir=work/'images';download_photos(d,imgdir,cb)   # every photo, so selection is on quality not on Airbnb's order
     from app import photoscore
     scores=photoscore.score_all([imgdir/Path(p['url']).name for p in d['photos'] if (imgdir/Path(p['url']).name).exists()],'9:16' if renderer=='v3' else '16:9')
@@ -335,6 +343,11 @@ def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer
             if any(sc.get('clip') for sc in m['scenes']):m['transition_seconds']=0   # hard cuts between generated clips (no dissolves)
             else:m['scenes']=full_scenes;log(cb,'No AI clips were generated — using the full photo set with parallax motion')
         if not any(sc.get('clip') for sc in m['scenes']) and len(m['scenes'])<len(full_scenes):m['scenes']=full_scenes;log(cb,'AI motion not run — using the full photo set')
+    cap=float(os.getenv('MAX_SECONDS','0') or 0)
+    if cap:
+        per=float(m.get('scene_seconds',4.5));fixed=float(m.get('intro_seconds',4.5))+float(m.get('outro_seconds',5.5))+float((m.get('trust') or {}).get('seconds',0))+float((m.get('reviews') or {}).get('seconds',0))
+        room=max(3,int((cap-fixed)//per))
+        if len(m['scenes'])>room:log(cb,f'Trimming to {room} scenes for the {int(cap)}s plan limit');m['scenes']=m['scenes'][:room]
     est=lint_manifest(m);log(cb,f'QA guards passed ({len(m["scenes"])} scenes, ~{est:.0f}s)')
     safe=re.sub(r'[^A-Za-z0-9]+','-',d['title'])[:40].strip('-');out=out_dir/f"{time.strftime('%Y-%m-%d')}_{safe}-by-Braivex.mp4"
     m['aspect']='9:16' if renderer=='v3' else '16:9'

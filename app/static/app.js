@@ -483,4 +483,369 @@
       postJSON("/api/tunnel/stop").then(function (d) { setTunnel(d); tStatus.textContent = "Stopped."; }).catch(function (err) { tStatus.textContent = err.message; });
     });
   }
+
+  // ---------- outreach console (templates/outreach.html) ----------
+  var orCsrfEl = document.getElementById("or-csrf");
+  if (orCsrfEl) {
+    var orEscBox = document.createElement("div");
+    function orEsc(t) { orEscBox.textContent = t == null ? "" : String(t); return orEscBox.innerHTML; }
+    function orPost(url, body) { var b = body || {}; b.csrf = orCsrfEl.value; return postJSON(url, b); }
+    function orSay(el, msg, bad) { if (!el) return; el.className = "form-status" + (bad ? " is-error" : ""); el.textContent = msg || ""; }
+    function orNum(v) { var n = parseInt(v, 10); return isNaN(n) ? v : n; }
+    function orTokens(tpl, ctx) {
+      return String(tpl == null ? "" : tpl).replace(/\{(name|city|listing_title|company)\}/g, function (m, k) {
+        var v = ctx[k]; return v == null ? "" : String(v);
+      });
+    }
+    function orCopy(text, done) {
+      var t = String(text == null ? "" : text);
+      function fallback() {
+        try {
+          var ta = document.createElement("textarea");
+          ta.value = t; ta.setAttribute("readonly", "");
+          ta.style.position = "fixed"; ta.style.top = "-1000px"; ta.style.opacity = "0";
+          document.body.appendChild(ta); ta.select();
+          var ok = document.execCommand("copy");
+          document.body.removeChild(ta); done(!!ok);
+        } catch (e) { done(false); }
+      }
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(function () { done(true); }, fallback);
+      else fallback();
+    }
+    function orFlashBtn(btn, word) {
+      if (!btn) return;
+      if (!btn.getAttribute("data-label")) btn.setAttribute("data-label", btn.textContent);
+      btn.textContent = word;
+      setTimeout(function () { btn.textContent = btn.getAttribute("data-label"); }, 1500);
+    }
+    function orStats(stats) {
+      if (!stats) return;
+      Array.prototype.forEach.call(document.querySelectorAll("[data-stat]"), function (b) {
+        var k = b.getAttribute("data-stat");
+        if (stats[k] != null) b.textContent = stats[k];
+      });
+    }
+    var OR_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    function orWhen() {
+      Array.prototype.forEach.call(document.querySelectorAll(".or-when"), function (el) {
+        if (el.getAttribute("data-fmt")) return;
+        el.setAttribute("data-fmt", "1");
+        var raw = el.getAttribute("data-ts"), n = parseFloat(raw);
+        if (!raw || !isFinite(n) || n < 1e8) return;
+        var d = new Date(n < 1e11 ? n * 1000 : n);
+        if (isNaN(d.getTime())) return;
+        function p2(x) { return (x < 10 ? "0" : "") + x; }
+        el.textContent = p2(d.getDate()) + " " + OR_MONTHS[d.getMonth()] + " " + d.getFullYear() + ", " + p2(d.getHours()) + ":" + p2(d.getMinutes());
+        try { el.title = d.toString(); } catch (e) {}
+      });
+    }
+    orWhen();
+
+    // --- A. Airbnb Co-Host Network ---
+    var coFind = document.getElementById("co-find"), coCity = document.getElementById("co-city");
+    var coResults = document.getElementById("co-results"), coStatus = document.getElementById("co-status");
+    var coCompose = document.getElementById("co-compose-card"), coPickedPill = document.getElementById("co-picked");
+    var coMsg = document.getElementById("co-message"), coSendStatus = document.getElementById("co-send-status");
+    var coReview = document.getElementById("co-review"), coPanel = document.getElementById("co-review-panel"), coQueueBtn = document.getElementById("co-queue");
+    var coItems = [], coCityUsed = "", coBatch = [];
+    var OR_CAP = (coReview && parseInt(coReview.getAttribute("data-cap"), 10)) || 5;
+
+    function coChecked() {
+      var out = [];
+      if (!coResults) return out;
+      Array.prototype.forEach.call(coResults.querySelectorAll(".or-pick"), function (cb) {
+        if (!cb.checked) return;
+        var it = coItems[parseInt(cb.getAttribute("data-i"), 10)];
+        if (it) out.push(it);
+      });
+      return out;
+    }
+    function coCount() { if (coPickedPill) coPickedPill.textContent = coChecked().length + " picked"; }
+    function coPayload(list) {
+      var tpl = coMsg ? coMsg.value : "";
+      return list.map(function (it) {
+        var city = it.city || coCityUsed;
+        return {
+          id: it.id != null ? it.id : null,
+          name: it.name || "",
+          url: it.url || "",
+          city: city,
+          message: orTokens(tpl, { name: it.name || "", city: city, listing_title: it.listing_title || it.tagline || "" })
+        };
+      });
+    }
+    function coRender(data) {
+      coItems = (data && data.items) || [];
+      if (!coResults) return;
+      coResults.innerHTML = "";
+      if (!coItems.length) {
+        coResults.innerHTML = '<p class="empty">No co-hosts found for that city. Try a nearby town, or the wider county.</p>';
+        if (coCompose) coCompose.classList.add("hidden");
+        return;
+      }
+      coItems.forEach(function (it, i) {
+        var row = document.createElement("div");
+        row.className = "or-row";
+        row.innerHTML =
+          '<label class="or-check"><input type="checkbox" class="or-pick" data-i="' + i + '" checked aria-label="Include ' + orEsc(it.name || "this co-host") + '"></label>' +
+          (it.avatar ? '<img class="or-avatar" loading="lazy" alt="" src="' + orEsc(it.avatar) + '">' : "") +
+          '<div class="or-row-body"><span class="or-name">' + orEsc(it.name || "Co-host") + "</span>" +
+          (it.listings != null ? '<span class="or-badge">' + orEsc(it.listings) + " listings</span>" : "") +
+          (it.tagline ? '<span class="or-sub">' + orEsc(it.tagline) + "</span>" : "") + "</div>" +
+          '<div class="or-row-actions">' +
+          (it.url ? '<a class="btn btn-secondary btn-sm" href="' + orEsc(it.url) + '" target="_blank" rel="noopener">Open ↗</a>' : "") +
+          "</div>";
+        coResults.appendChild(row);
+      });
+      Array.prototype.forEach.call(coResults.querySelectorAll(".or-pick"), function (cb) { cb.addEventListener("change", coCount); });
+      if (coCompose) coCompose.classList.remove("hidden");
+      coCount();
+    }
+    if (coFind) coFind.addEventListener("click", function () {
+      var city = ((coCity && coCity.value) || "").trim();
+      if (!city) { orSay(coStatus, "Type a city first.", true); if (coCity) coCity.focus(); return; }
+      coCityUsed = city;
+      coFind.disabled = true;
+      orSay(coStatus, "Searching the Co-Host Network for " + city + "…");
+      getJSON("/api/outreach/cohosts?city=" + encodeURIComponent(city))
+        .then(function (d) {
+          coRender(d);
+          var n = (d && d.items && d.items.length) || 0;
+          var bits = [n + (n === 1 ? " co-host" : " co-hosts") + " found"];
+          if (d && d.source) bits.push("source: " + d.source);
+          if (d && d.note) bits.push(d.note);
+          orSay(coStatus, bits.join(" · "));
+        })
+        .catch(function (err) { orSay(coStatus, err.message, true); })
+        .then(function () { coFind.disabled = false; });
+    });
+    if (coCity) coCity.addEventListener("keydown", function (e) { if (e.key === "Enter" && coFind) { e.preventDefault(); coFind.click(); } });
+
+    function coNewIds(rows, queued) {
+      var want = {}, ids = [];
+      queued.forEach(function (q) { want[(q.name || "") + "|" + (q.url || "")] = 1; });
+      (rows || []).forEach(function (r) {
+        if (!r || r.id == null || ids.length >= queued.length) return;
+        if (want[(r.name || "") + "|" + (r.url || "")]) ids.push(r.id);
+      });
+      if (!ids.length) {
+        ids = (rows || []).slice(0, queued.length).map(function (r) { return r && r.id; }).filter(function (x) { return x != null; });
+      }
+      return ids;
+    }
+    function coSend() {
+      if (!coBatch.length) return;
+      if (!window.confirm("Send " + coBatch.length + " message" + (coBatch.length === 1 ? "" : "s") + " on Airbnb now? They go out as you, one per co-host.")) return;
+      var btn = document.getElementById("co-confirm");
+      if (btn) btn.disabled = true;
+      orSay(coSendStatus, "Queueing " + coBatch.length + "…");
+      orPost("/api/outreach/queue", { channel: "cohost", items: coBatch })
+        .then(function (q) {
+          orStats(q && q.stats);
+          var ids = coNewIds(q && q.rows, coBatch);
+          if (!ids.length) throw new Error("Queued, but no tracker ids came back — send them from the tracker.");
+          orSay(coSendStatus, "Sending " + ids.length + " on Airbnb…");
+          return orPost("/api/outreach/send", { ids: ids, confirm: true });
+        })
+        .then(function (d) {
+          orStats(d && d.stats);
+          var sent = (d && d.sent) || 0, failed = (d && d.failed) || [];
+          var todayEl = document.getElementById("sent-today");
+          if (todayEl && d && d.sent_today != null) todayEl.textContent = d.sent_today;
+          var msg = "Sent " + sent + " of " + coBatch.length;
+          if (failed.length) msg += " · " + failed.length + " failed: " + failed.map(function (f) { return (f && f.error) || "error"; }).join("; ");
+          orSay(coSendStatus, msg + " · refreshing…", failed.length > 0);
+          if (coPanel) coPanel.classList.add("hidden");
+          setTimeout(function () { location.reload(); }, 1200);
+        })
+        .catch(function (err) { orSay(coSendStatus, err.message, true); if (btn) btn.disabled = false; });
+    }
+    if (coReview && coPanel) coReview.addEventListener("click", function () {
+      if (!((coMsg && coMsg.value) || "").trim()) { orSay(coSendStatus, "Write a message first.", true); if (coMsg) coMsg.focus(); return; }
+      var picked = coChecked();
+      if (!picked.length) { orSay(coSendStatus, "Tick at least one co-host.", true); return; }
+      coBatch = coPayload(picked.slice(0, OR_CAP));
+      coPanel.innerHTML = "";
+      coBatch.forEach(function (p) {
+        var block = document.createElement("div");
+        block.className = "or-review-item";
+        block.innerHTML = '<div class="or-review-name">' + orEsc(p.name || "Co-host") + (p.city ? ' <span class="or-sub">· ' + orEsc(p.city) + "</span>" : "") + "</div><pre></pre>";
+        block.querySelector("pre").textContent = p.message;
+        coPanel.appendChild(block);
+      });
+      var act = document.createElement("div");
+      act.className = "or-review-actions";
+      act.innerHTML = '<button type="button" class="btn btn-primary" id="co-confirm">Send these ' + coBatch.length + ' on Airbnb</button>' +
+        '<button type="button" class="btn btn-secondary" id="co-cancel">Cancel</button>';
+      coPanel.appendChild(act);
+      coPanel.classList.remove("hidden");
+      orSay(coSendStatus, "Read them, then confirm. " + coBatch.length + " of " + OR_CAP + " in this batch.");
+      document.getElementById("co-confirm").addEventListener("click", coSend);
+      document.getElementById("co-cancel").addEventListener("click", function () {
+        coPanel.classList.add("hidden"); coPanel.innerHTML = ""; coBatch = []; orSay(coSendStatus, "");
+      });
+      coPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+    if (coQueueBtn) coQueueBtn.addEventListener("click", function () {
+      var picked = coChecked();
+      if (!picked.length) { orSay(coSendStatus, "Tick at least one co-host.", true); return; }
+      if (!((coMsg && coMsg.value) || "").trim()) { orSay(coSendStatus, "Write a message first.", true); if (coMsg) coMsg.focus(); return; }
+      coQueueBtn.disabled = true;
+      orSay(coSendStatus, "Adding " + picked.length + " to the tracker…");
+      orPost("/api/outreach/queue", { channel: "cohost", items: coPayload(picked) })
+        .then(function (d) {
+          orStats(d && d.stats);
+          orSay(coSendStatus, "Added " + picked.length + " to the tracker · refreshing…");
+          setTimeout(function () { location.reload(); }, 1200);
+        })
+        .catch(function (err) { orSay(coSendStatus, err.message, true); coQueueBtn.disabled = false; });
+    });
+
+    // --- B. LinkedIn prospects ---
+    var liBuild = document.getElementById("li-build"), liResults = document.getElementById("li-results");
+    var liStatus = document.getElementById("li-status"), liMsg = document.getElementById("li-message");
+    var liCount = document.getElementById("li-count"), liCityIn = document.getElementById("li-city"), liRoleIn = document.getElementById("li-role");
+    var liItems = [];
+
+    function liCity(it) { return (it && it.city) || ((liCityIn && liCityIn.value) || "").trim(); }
+    function liNote(it) {
+      return orTokens(liMsg ? liMsg.value : "", { name: (it && it.name) || "", company: (it && it.company) || "", city: liCity(it) });
+    }
+    function liCounter() {
+      if (!liCount || !liMsg) return;
+      var n = liMsg.value.length;
+      liCount.textContent = n + " / 300";
+      liCount.classList.toggle("is-warn", n > 300);
+    }
+    if (liMsg) { liMsg.addEventListener("keyup", liCounter); liMsg.addEventListener("input", liCounter); liCounter(); }
+
+    function liRender(data) {
+      liItems = (data && data.items) || [];
+      if (!liResults) return;
+      liResults.innerHTML = "";
+      if (!liItems.length) {
+        liResults.innerHTML = '<p class="empty">No prospects found. Try a broader role, or a bigger city nearby.</p>';
+        return;
+      }
+      liItems.forEach(function (it, i) {
+        var sub = [it.company, it.city].filter(Boolean).join(" · ");
+        var row = document.createElement("div");
+        row.className = "or-row";
+        row.innerHTML =
+          '<div class="or-row-body"><span class="or-name">' + orEsc(it.name || "Prospect") + "</span>" +
+          (sub ? '<span class="or-sub">' + orEsc(sub) + "</span>" : "") +
+          (it.listings != null ? '<span class="or-badge">' + orEsc(it.listings) + " listings</span>" : "") +
+          (it.note ? '<span class="or-sub">' + orEsc(it.note) + "</span>" : "") + "</div>" +
+          '<div class="or-row-actions">' +
+          (it.url ? '<a class="btn btn-secondary btn-sm" href="' + orEsc(it.url) + '" target="_blank" rel="noopener">Open ↗</a>' : "") +
+          '<button type="button" class="btn btn-secondary btn-sm li-copy" data-i="' + i + '">Copy note</button>' +
+          '<button type="button" class="btn btn-primary btn-sm li-queue" data-i="' + i + '">Queue</button></div>';
+        liResults.appendChild(row);
+      });
+      Array.prototype.forEach.call(liResults.querySelectorAll(".li-copy"), function (b) {
+        b.addEventListener("click", function () {
+          var it = liItems[parseInt(b.getAttribute("data-i"), 10)];
+          if (!it) return;
+          var text = liNote(it);
+          if (!text.trim()) { orSay(liStatus, "Write a connection note first.", true); if (liMsg) liMsg.focus(); return; }
+          orCopy(text, function (ok) {
+            orFlashBtn(b, ok ? "Copied" : "Copy failed");
+            orSay(liStatus, ok ? "Note for " + (it.name || "prospect") + " copied — paste it into LinkedIn." : "Could not copy — select the text manually.", !ok);
+          });
+        });
+      });
+      Array.prototype.forEach.call(liResults.querySelectorAll(".li-queue"), function (b) {
+        b.addEventListener("click", function () {
+          var it = liItems[parseInt(b.getAttribute("data-i"), 10)];
+          if (!it) return;
+          b.disabled = true;
+          orPost("/api/outreach/queue", {
+            channel: "linkedin",
+            items: [{ id: it.id != null ? it.id : null, name: it.name || "", url: it.url || "", city: liCity(it), message: liNote(it) }]
+          })
+            .then(function (d) { orStats(d && d.stats); b.textContent = "Queued"; orSay(liStatus, (it.name || "Prospect") + " added to the tracker — reload to see the row."); })
+            .catch(function (err) { orSay(liStatus, err.message, true); b.disabled = false; });
+        });
+      });
+    }
+    if (liBuild) liBuild.addEventListener("click", function () {
+      var city = ((liCityIn && liCityIn.value) || "").trim();
+      var role = ((liRoleIn && liRoleIn.value) || "").trim();
+      if (!city) { orSay(liStatus, "Type a city first.", true); if (liCityIn) liCityIn.focus(); return; }
+      liBuild.disabled = true;
+      orSay(liStatus, "Building the prospect list…");
+      getJSON("/api/outreach/linkedin?city=" + encodeURIComponent(city) + "&role=" + encodeURIComponent(role))
+        .then(function (d) {
+          liRender(d);
+          var n = (d && d.items && d.items.length) || 0;
+          orSay(liStatus, n + (n === 1 ? " prospect" : " prospects") + (d && d.source ? " · source: " + d.source : ""));
+        })
+        .catch(function (err) { orSay(liStatus, err.message, true); })
+        .then(function () { liBuild.disabled = false; });
+    });
+
+    // --- C. Tracker ---
+    var trChan = document.getElementById("tr-channel"), trStat = document.getElementById("tr-status"), trSearch = document.getElementById("tr-search");
+    var trTable = document.getElementById("tr-table"), trNone = document.getElementById("tr-none");
+    function trFilter() {
+      if (!trTable) return;
+      var c = trChan ? trChan.value : "", s = trStat ? trStat.value : "", q = (trSearch ? trSearch.value : "").trim().toLowerCase();
+      var shown = 0;
+      Array.prototype.forEach.call(trTable.querySelectorAll("tbody tr"), function (tr) {
+        var ok = (!c || tr.getAttribute("data-channel") === c) &&
+          (!s || tr.getAttribute("data-status") === s) &&
+          (!q || (tr.getAttribute("data-search") || "").indexOf(q) !== -1);
+        tr.classList.toggle("hidden", !ok);
+        if (ok) shown += 1;
+      });
+      if (trNone) trNone.classList.toggle("hidden", shown !== 0);
+    }
+    if (trChan) trChan.addEventListener("change", trFilter);
+    if (trStat) trStat.addEventListener("change", trFilter);
+    if (trSearch) trSearch.addEventListener("input", trFilter);
+
+    Array.prototype.forEach.call(document.querySelectorAll(".tr-status-sel"), function (sel) {
+      sel.setAttribute("data-prev", sel.value);
+      sel.addEventListener("change", function () {
+        var val = sel.value, prev = sel.getAttribute("data-prev") || "";
+        var row = sel.closest ? sel.closest("tr") : null;
+        sel.disabled = true;
+        orPost("/api/outreach/status", { id: orNum(sel.getAttribute("data-id")), status: val })
+          .then(function (d) {
+            orStats(d && d.stats);
+            sel.setAttribute("data-prev", val);
+            if (row) row.setAttribute("data-status", val);
+            trFilter();
+          })
+          .catch(function (err) { sel.value = prev; window.alert(err.message); })
+          .then(function () { sel.disabled = false; });
+      });
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll(".tr-copy"), function (b) {
+      b.addEventListener("click", function () {
+        var msg = b.getAttribute("data-msg") || "";
+        if (!msg.trim()) { orFlashBtn(b, "No message"); return; }
+        orCopy(msg, function (ok) { orFlashBtn(b, ok ? "Copied" : "Copy failed"); });
+      });
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll(".tr-note"), function (b) {
+      b.addEventListener("click", function () {
+        var note = window.prompt("Note for this prospect:", b.getAttribute("data-note") || "");
+        if (note === null) return;
+        b.disabled = true;
+        orPost("/api/outreach/note", { id: orNum(b.getAttribute("data-id")), note: note })
+          .then(function () {
+            b.setAttribute("data-note", note);
+            var row = b.closest ? b.closest("tr") : null;
+            var box = row ? row.querySelector(".or-note") : null;
+            if (box) { box.textContent = note; box.classList.toggle("hidden", !note); }
+            orFlashBtn(b, "Saved");
+          })
+          .catch(function (err) { window.alert(err.message); })
+          .then(function () { b.disabled = false; });
+      });
+    });
+  }
 })();

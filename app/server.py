@@ -8,15 +8,16 @@ from fastapi.responses import HTMLResponse,JSONResponse,RedirectResponse,FileRes
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from dotenv import load_dotenv,dotenv_values
+from urllib.parse import quote
 HERE=Path(__file__).resolve().parent;ROOT=HERE.parent;ENV=ROOT/'.env.local';JOBS=Path(os.getenv('JOBS_DIR') or (ROOT/'jobs'));JOBS.mkdir(parents=True,exist_ok=True);PORT=int(os.getenv('PORT','8787'))
 load_dotenv(ENV)
 if not os.getenv('PUBLIC_BASE_URL') and os.getenv('RAILWAY_PUBLIC_DOMAIN'):os.environ['PUBLIC_BASE_URL']='https://'+os.environ['RAILWAY_PUBLIC_DOMAIN']
-from app import pipeline,hostmsg,search as listing_search,gdrive,auth
+from app import pipeline,hostmsg,search as listing_search,gdrive,auth,store,plans,cohost,linkedin
 app=FastAPI(title='ReelSieve by Braivex');app.mount('/static',StaticFiles(directory=HERE/'static'),name='static')
 tpl=Jinja2Templates(directory=HERE/'templates');tpl.env.autoescape=True
 from starlette.middleware.base import BaseHTTPMiddleware
 PUBLIC_PREFIXES=('/static/','/media/','/oauth/google/callback','/favicon.ico')
-PUBLIC_EXACT=('/login','/setup','/logout','/forgot','/healthz')
+PUBLIC_EXACT=('/','/login','/signup','/setup','/logout','/forgot','/healthz','/privacy','/terms')
 class LoginGate(BaseHTTPMiddleware):
     async def dispatch(self,request,call_next):
         path=request.url.path;request.state.user=None
@@ -43,7 +44,7 @@ def favicon():return FileResponse(HERE/'static'/'brand'/'favicon.ico',media_type
 @app.get('/healthz')
 def healthz():return {'ok':True}
 @app.get('/setup',response_class=HTMLResponse)
-def setup_page(request:Request,next:str='/'):
+def setup_page(request:Request,next:str='/app'):
     if auth.has_account():return RedirectResponse('/login?notice=exists',status_code=303)
     return tpl.TemplateResponse(request,'login.html',_login_ctx(request,setup=True,next=next))
 @app.post('/setup')
@@ -54,17 +55,18 @@ async def setup_post(request:Request):
     if p1!=p2:return tpl.TemplateResponse(request,'login.html',_login_ctx(request,setup=True,user=u,error='Passwords do not match'),status_code=400)
     try:auth.create_user(u,p1,'admin')
     except ValueError as e:return tpl.TemplateResponse(request,'login.html',_login_ctx(request,setup=True,user=u,error=str(e)),status_code=400)
-    return _set_session(RedirectResponse(nxt if nxt.startswith('/') else '/',status_code=303),request,u,True)
+    store.ensure_account(u,'enterprise',_ip(request),None);store.set_plan(u,'enterprise')
+    return _set_session(RedirectResponse(nxt if nxt.startswith('/') else '/app',status_code=303),request,u,True)
 @app.get('/login',response_class=HTMLResponse)
-def login_page(request:Request,next:str='/',notice:str=''):
+def login_page(request:Request,next:str='/app',notice:str=''):
     if not auth.has_account():return RedirectResponse('/setup',status_code=303)
-    if request.state.user:return RedirectResponse(next if next.startswith('/') else '/',status_code=303)
+    if request.state.user:return RedirectResponse(next if next.startswith('/') else '/app',status_code=303)
     msg={'exists':'An account already exists — sign in.','out':'You have been signed out.','created':'Account created — sign in.'}.get(notice,'')
     return tpl.TemplateResponse(request,'login.html',_login_ctx(request,setup=False,next=next,notice=msg))
 @app.post('/login')
 async def login_post(request:Request):
-    f=await request.form();u=(f.get('user') or '').strip();p=f.get('password') or '';nxt=f.get('next') or '/';remember=f.get('remember')=='1';ip=_ip(request)
-    if not nxt.startswith('/'):nxt='/'
+    f=await request.form();u=(f.get('user') or '').strip();p=f.get('password') or '';nxt=f.get('next') or '/app';remember=f.get('remember')=='1';ip=_ip(request)
+    if not nxt.startswith('/'):nxt='/app'
     if not auth.csrf_ok(request.cookies.get(auth.COOKIE,''),f.get('csrf')):return tpl.TemplateResponse(request,'login.html',_login_ctx(request,setup=False,next=nxt,user=u,error='Form expired — try again'),status_code=400)
     if auth.too_many(ip):return tpl.TemplateResponse(request,'login.html',_login_ctx(request,setup=False,next=nxt,user=u,error='Too many attempts — wait 10 minutes'),status_code=429)
     if not auth.verify(u,p):
@@ -84,8 +86,18 @@ async def change_password(request:Request):
     return {'ok':True}
 def _require_admin(request):
     if auth.role(request.state.user)!='admin':raise HTTPException(403,'Admin only')
+@app.get('/api/account')
+def api_account(request:Request):return plans.account_view(request.state.user)
+@app.post('/api/users/plan')
+async def api_user_plan(request:Request):
+    _require_admin(request);b=await request.json();u=(b.get('user') or '').strip().lower();pl=b.get('plan') or 'free'
+    if pl not in plans.PLANS:raise HTTPException(400,'Unknown plan')
+    cr=b.get('credits');store.ensure_account(u);store.set_plan(u,pl,int(cr) if cr not in (None,'') else plans.PLANS[pl]['videos'] or 0)
+    return {'ok':True,'account':plans.account_view(u)}
 @app.get('/api/users')
-def api_users(request:Request):_require_admin(request);return {'users':auth.users(),'me':request.state.user}
+def api_users(request:Request):
+    _require_admin(request);accs={a['user']:a for a in store.all_accounts()}
+    return {'users':[{**u,**{k:accs.get(u['user'],{}).get(k) for k in ('plan','credits','blocked')}} for u in auth.users()],'me':request.state.user,'plan_keys':plans.ORDER}
 @app.post('/api/users')
 async def api_users_add(request:Request):
     _require_admin(request);b=await request.json()
@@ -106,6 +118,11 @@ async def api_users_pw(request:Request):
     return {'ok':True}
 SECRET_KEYS=['HF_KEY','GOOGLE_CLIENT_SECRET'];SETTING_KEYS=['HF_KEY','PUBLIC_BASE_URL','DEFAULT_MESSAGE','GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','GDRIVE_FOLDER']
 HINTS={'HF_KEY':'Higgsfield API key, key-id:key-secret','PUBLIC_BASE_URL':'Where this app is reachable from the internet (optional; tunnel is used otherwise)','DEFAULT_MESSAGE':'Template for the Airbnb message. Tokens: {host_name} {listing_title} {city} {search_phrase} {reel_link}. Keep it link-free — Airbnb filters URLs before a booking','GOOGLE_CLIENT_ID':'OAuth client ID from Google Cloud Console (Web application)','GOOGLE_CLIENT_SECRET':'OAuth client secret','GDRIVE_FOLDER':'Drive folder name for uploads (default: Listing Reels)'}
+DAILY_CAP=int(os.getenv('OUTREACH_DAILY_CAP','5'))
+COHOST_MESSAGE=("Hi {name} — I'm Hemant from ReelSieve (Braivex). I make short cinematic walkthrough videos for short-let "
+ "listings, built from the photos and reviews already on them. I made one for a {city} property this week and thought of you.\n\n"
+ "Happy to make one for {listing_title} free so you can see it — no strings, no card. If it is useful I do them at volume for operators.\n\n"
+ "If you'd rather I sent it elsewhere, tell me where and I will.")
 _jobs={};_lock=threading.Lock();_airbnb_cache={'t':0,'v':{'connected':False}}
 def default_message():return os.getenv('DEFAULT_MESSAGE') or hostmsg.DEFAULT_MESSAGE
 def airbnb_status(max_age=60):
@@ -176,6 +193,7 @@ def enrich(j):
     j=dict(j);lid=(j.get('listing') or {}).get('id') or (re.search(r'/rooms/(\d+)',j.get('url','')) or [None,None])[1]
     j.update(drive_fields(j));j['contact_url']=hostmsg.contact_url(lid) if lid else None;j['reel_link']=reel_link_for(j);j['search_phrase']=search_phrase(j);j['youtube_title']=search_phrase(j).replace(' ReelSieve',' — by ReelSieve');j['message_final']=finalize_message(j);return j
 def run_job(jid,url,ai_motion,renderer='v2'):
+    os.environ['MAX_SECONDS']=str((_jobs.get(jid) or {}).get('max_seconds') or 60)
     j=_jobs[jid];steps=['Fetching','Reviews','Downloaded','Scored','Audit','AI motion plan','Seedance','Estimating depth','Rendering','Rendered','Uploading']
     def cb(msg):
         with _lock:
@@ -211,18 +229,56 @@ def run_job(jid,url,ai_motion,renderer='v2'):
         with _lock:j.update(status='failed',error=f'{type(e).__name__}: {str(e)[:300]}',step='Failed');j['log'].append(traceback.format_exc()[-600:])
     persist(j)
 @app.get('/',response_class=HTMLResponse)
+def landing(request:Request):
+    return tpl.TemplateResponse(request,'landing.html',{'signed_in':bool(request.state.user),'user':request.state.user,
+        'plans':plans.public_plans(),'products':plans.PRODUCTS,'sample_video':os.getenv('SAMPLE_VIDEO_URL') or None,'sample_poster':os.getenv('SAMPLE_POSTER_URL') or None})
+@app.get('/privacy',response_class=HTMLResponse)
+def privacy(request:Request):return tpl.TemplateResponse(request,'legal.html',{'kind':'privacy'})
+@app.get('/terms',response_class=HTMLResponse)
+def terms(request:Request):return tpl.TemplateResponse(request,'legal.html',{'kind':'terms'})
+@app.get('/signup',response_class=HTMLResponse)
+def signup_page(request:Request,plan:str='',url:str=''):
+    if request.state.user:return RedirectResponse('/app',status_code=303)
+    return tpl.TemplateResponse(request,'signup.html',_login_ctx(request,plan=plan,url=url,plans=plans.public_plans()))
+@app.post('/signup')
+async def signup_post(request:Request):
+    f=await request.form();u=(f.get('user') or '').strip();p1=f.get('password') or '';p2=f.get('password2') or ''
+    plan=(f.get('plan') or 'free').strip();url=(f.get('url') or '').strip();ip=_ip(request);fp=(f.get('fp') or '')[:400]
+    ctx=lambda err:tpl.TemplateResponse(request,'signup.html',_login_ctx(request,user=u,plan=plan,url=url,error=err,plans=plans.public_plans()),status_code=400)
+    if not auth.csrf_ok(request.cookies.get(auth.COOKIE,''),f.get('csrf')):return ctx('Form expired — try again')
+    if p2 and p1!=p2:return ctx('Passwords do not match')
+    guard=plans.signup_guard(u,ip,fp)
+    if guard:return ctx(guard)
+    try:auth.create_user(u,p1,'member')
+    except ValueError as e:return ctx(str(e))
+    store.ensure_account(u,'free',ip,fp)
+    nxt='/app'+(('?url='+quote(url)) if url else '')
+    if plan in ('starter','commercial'):nxt='/upgrade?plan='+plan
+    return _set_session(RedirectResponse(nxt,status_code=303),request,u,True)
+@app.get('/upgrade',response_class=HTMLResponse)
+def upgrade(request:Request,plan:str=''):
+    links={'starter':os.getenv('CHECKOUT_STARTER',''),'commercial':os.getenv('CHECKOUT_COMMERCIAL','')}
+    return tpl.TemplateResponse(request,'upgrade.html',{'plan':plan,'plans':plans.public_plans(),'link':links.get(plan,''),
+        'account':plans.account_view(request.state.user) if request.state.user else None})
+@app.get('/app',response_class=HTMLResponse)
 def index(request:Request,url:str=''):
     jobs=[{'id':j['id'],'status':j['status'],'title':(j.get('listing') or {}).get('title') or j.get('url'),'location':(j.get('listing') or {}).get('location'),'created':j.get('created'),'video_url':j.get('video_url')} for j in load_jobs()[:12]]
-    return tpl.TemplateResponse(request,'index.html',{'jobs':jobs,'hf_configured':bool(os.getenv('HF_KEY')),'airbnb_connected':airbnb_status().get('connected',False),'public_url_ok':bool(hostmsg.public_base()),'default_message':default_message(),'prefill_url':url})
+    return tpl.TemplateResponse(request,'index.html',{'jobs':jobs,'hf_configured':bool(os.getenv('HF_KEY')),'airbnb_connected':airbnb_status().get('connected',False),'public_url_ok':bool(hostmsg.public_base()),'default_message':default_message(),'prefill_url':url,'account':plans.account_view(request.state.user)})
 @app.post('/api/jobs')
 async def create_job(request:Request):
     b=await request.json();url=(b.get('url') or '').strip();ai=bool(b.get('ai_motion'));renderer='v3' if b.get('style')=='tutorial' else 'v2'
     if ai and b.get('ai_resolution') in ('720p','1080p'):os.environ['AI_RESOLUTION']=b['ai_resolution']
     try:pipeline.listing_id(url)
     except ValueError as e:raise HTTPException(400,str(e))
+    user=request.state.user;acct=plans.account_view(user);ip=_ip(request);fp=(b.get('fp') or '')[:400]
+    ok,why,meta=plans.can_generate(user,url,ip,fp)
+    if not ok:raise HTTPException(402 if meta.get('upgrade') else 403,why)
+    P=plans.PLANS[acct['plan']]
+    if ai and not P['ai_motion']:ai=False
     jid=uuid.uuid4().hex[:10];(JOBS/jid).mkdir(parents=True,exist_ok=True)
-    j={'id':jid,'url':url,'ai_motion':ai,'style':renderer,'send_to_host':bool(b.get('send_to_host',True)),'message':(b.get('message') or default_message()).strip(),'status':'queued','progress':2,'step':'Queued','log':[],'video_url':None,'error':None,'listing':{'url':url},'created':time.strftime('%Y-%m-%d %H:%M'),'host_status':None,'host_error':None}
-    _jobs[jid]=j;persist(j);threading.Thread(target=run_job,args=(jid,url,ai,renderer),daemon=True).start();return {'id':jid}
+    plans.consume(user,url,jid,ip,fp)
+    j={'id':jid,'url':url,'ai_motion':ai,'style':renderer,'user':user,'plan':acct['plan'],'max_seconds':P['max_seconds'],'send_to_host':bool(b.get('send_to_host',True)),'message':(b.get('message') or default_message()).strip(),'status':'queued','progress':2,'step':'Queued','log':[],'video_url':None,'error':None,'listing':{'url':url},'created':time.strftime('%Y-%m-%d %H:%M'),'host_status':None,'host_error':None}
+    _jobs[jid]=j;persist(j);threading.Thread(target=run_job,args=(jid,url,ai,renderer),daemon=True).start();return {'id':jid,'account':plans.account_view(user)}
 def get_job(jid):
     j=_jobs.get(jid)
     if j:
@@ -349,6 +405,75 @@ def reels_index():
         lid=listing_id_of(j)
         if lid and j.get('status')=='done':out.setdefault(lid,[]).append({'id':j['id'],'created':j.get('created'),'video_url':j.get('video_url'),'drive_link':j.get('drive_link'),**drive_fields(j)})
     return out
+@app.get('/outreach',response_class=HTMLResponse)
+def outreach_page(request:Request):
+    u=request.state.user
+    return tpl.TemplateResponse(request,'outreach.html',{'csrf':auth.csrf_token(request.cookies.get(auth.COOKIE,'')),
+        'stats':store.outreach_stats(u),'cities':store.cities(u),'rows':store.outreach_rows(u),
+        'default_message':os.getenv('COHOST_MESSAGE') or COHOST_MESSAGE,'linkedin_default':linkedin.CONNECT_DEFAULT,
+        'daily_cap':DAILY_CAP,'sent_today':store.sent_today(u)})
+@app.get('/api/outreach/cohosts')
+def api_cohosts(request:Request,city:str=''):
+    if not city.strip():raise HTTPException(400,'Enter a city')
+    try:return cohost.discover(city.strip())
+    except Exception as e:raise HTTPException(502,f'Lookup failed: {type(e).__name__}: {str(e)[:120]}')
+@app.get('/api/outreach/linkedin')
+def api_linkedin(request:Request,city:str='',role:str='property manager'):
+    if not city.strip():raise HTTPException(400,'Enter a city')
+    try:return linkedin.build(city.strip(),role.strip() or 'property manager')
+    except Exception as e:raise HTTPException(502,f'Lookup failed: {type(e).__name__}: {str(e)[:120]}')
+@app.post('/api/outreach/queue')
+async def api_queue(request:Request):
+    b=await request.json();u=request.state.user
+    if not auth.csrf_ok(request.cookies.get(auth.COOKIE,''),b.get('csrf')):raise HTTPException(403,'Form expired — reload')
+    ch=b.get('channel') or 'cohost';out=[]
+    for it in (b.get('items') or [])[:25]:
+        rid=store.add_outreach(u,ch,it.get('name') or '',it.get('url') or '',it.get('city') or '',it.get('message') or '',meta=it)
+        out.append(rid)
+    return {'ok':True,'ids':out,'rows':store.outreach_rows(u),'stats':store.outreach_stats(u)}
+@app.post('/api/outreach/send')
+async def api_send(request:Request):
+    """Sends only with confirm=true, capped per day, paced, and stops at the first hard failure."""
+    b=await request.json();u=request.state.user
+    if not auth.csrf_ok(request.cookies.get(auth.COOKIE,''),b.get('csrf')):raise HTTPException(403,'Form expired — reload')
+    if not b.get('confirm'):raise HTTPException(400,'Confirmation required')
+    if not airbnb_status(max_age=0).get('connected'):raise HTTPException(400,'Connect your Airbnb account in Settings first')
+    already=store.sent_today(u)
+    room=max(0,DAILY_CAP-already)
+    if room<=0:raise HTTPException(429,f'Daily cap of {DAILY_CAP} reached — try again tomorrow')
+    ids=[int(i) for i in (b.get('ids') or [])][:room]
+    items=[]
+    for i in ids:
+        r=store.outreach_get(i)
+        if r and r['user']==u and r['status']=='queued':items.append({'id':i,'url':r['url'],'message':r['message'],'name':r['name']})
+    res=cohost.send_batch(items,confirm=True)
+    sent=0;failed=[]
+    for r in res:
+        st='sent' if r['status']=='sent' else ('queued' if r['status'] in ('draft','manual') else 'skipped')
+        store.outreach_set(r['id'],status=st,sent_at=(time.time() if st=='sent' else None),note=r['info'][:300])
+        if st=='sent':sent+=1
+        else:failed.append({'id':r['id'],'error':r['info']})
+    return {'ok':True,'sent':sent,'failed':failed,'rows':store.outreach_rows(u),'stats':store.outreach_stats(u),'sent_today':store.sent_today(u)}
+@app.post('/api/outreach/status')
+async def api_out_status(request:Request):
+    b=await request.json();u=request.state.user
+    r=store.outreach_get(int(b.get('id') or 0))
+    if not r or r['user']!=u:raise HTTPException(404)
+    st=b.get('status') or 'queued'
+    if st not in ('queued','sent','replied','won','skipped'):raise HTTPException(400,'Bad status')
+    store.outreach_set(r['id'],status=st,**({'sent_at':time.time()} if st=='sent' and not r.get('sent_at') else {}))
+    return {'ok':True,'stats':store.outreach_stats(u)}
+@app.post('/api/outreach/note')
+async def api_out_note(request:Request):
+    b=await request.json();u=request.state.user
+    r=store.outreach_get(int(b.get('id') or 0))
+    if not r or r['user']!=u:raise HTTPException(404)
+    store.outreach_set(r['id'],note=(b.get('note') or '')[:500]);return {'ok':True}
+@app.get('/api/outreach/export.csv')
+def api_out_csv(request:Request):
+    from fastapi.responses import PlainTextResponse
+    csv=linkedin.csv_rows(store.outreach_rows(request.state.user))
+    return PlainTextResponse(csv,media_type='text/csv',headers={'Content-Disposition':'attachment; filename="reelsieve-outreach.csv"'})
 @app.get('/media/{jid}/{name}')
 def media(jid:str,name:str):
     p=(JOBS/jid/name).resolve()

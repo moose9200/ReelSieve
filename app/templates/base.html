@@ -30,7 +30,8 @@
       <span class="brand-suffix">by Braivex</span>
     </a>
     <nav class="site-nav" aria-label="Primary">
-      <a href="/"{% if request and request.url.path == "/" %} aria-current="page"{% endif %}>New reel</a>
+      <a href="/app"{% if request and request.url.path == "/app" %} aria-current="page"{% endif %}>New reel</a>
+      <a href="/outreach"{% if request and request.url.path == "/outreach" %} aria-current="page"{% endif %}>Outreach</a>
       <a href="/reels"{% if request and request.url.path == "/reels" %} aria-current="page"{% endif %}>Reels</a>
       <a href="/settings"{% if request and request.url.path == "/settings" %} aria-current="page"{% endif %}>Settings</a>
       {% if request and request.state.user %}<a href="/logout" class="nav-user" title="Signed in as {{ request.state.user }}">Log out</a>{% endif %}

@@ -8,6 +8,6 @@ RUN pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requir
 COPY app ./app
 COPY tests ./tests
 COPY README.md main.py ./
-ENV JOBS_DIR=/data/jobs GDRIVE_TOKEN_PATH=/data/google-token.json AUTH_PATH=/data/auth.json PORT=8787
+ENV DB_PATH=/data/reelsieve.db JOBS_DIR=/data/jobs GDRIVE_TOKEN_PATH=/data/google-token.json AUTH_PATH=/data/auth.json PORT=8787
 EXPOSE 8787
 CMD ["sh","-c","uvicorn app.server:app --host 0.0.0.0 --port ${PORT:-8787}"]

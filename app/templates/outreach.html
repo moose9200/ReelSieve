@@ -1,0 +1,165 @@
+{% extends "base.html" %}
+{% block title %}Outreach{% endblock %}
+{% block content %}
+{%- set cap = daily_cap|default(5, true) -%}
+{%- set sent_n = sent_today|default(0, true) -%}
+{%- set st = stats or {} -%}
+
+<section class="settings-head">
+  <p class="eyebrow">Outreach</p>
+  <h1>Find hosts, say the right thing, keep score</h1>
+  <p class="sub">Two routes to a paying client: Airbnb's Co-Host Network, and property managers on LinkedIn. Everything you send lands in the tracker at the bottom.</p>
+</section>
+
+<input type="hidden" id="or-csrf" value="{{ csrf }}">
+
+<section class="card" id="cohost-card">
+  <p class="eyebrow">AIRBNB CO-HOST NETWORK</p>
+  <div class="section-head"><h2>Find co-hosts</h2><span class="pill pill-skipped">Cap {{ cap }}/day</span></div>
+  <p class="hint">Co-hosts and property managers list themselves here to be contacted. Find them by city, personalise, and send. Capped at {{ cap }} a day so it stays human.</p>
+  <p class="hint">Sent today: <span id="sent-today">{{ sent_n }}</span> of {{ cap }}.</p>
+
+  <div class="or-find-row">
+    <div class="field">
+      <label for="co-city">City</label>
+      <input type="text" id="co-city" placeholder="Bournemouth, United Kingdom" list="city-list" autocomplete="off" spellcheck="false">
+    </div>
+    <button type="button" class="btn btn-primary" id="co-find">Find co-hosts</button>
+  </div>
+  <datalist id="city-list">
+    {%- for c in cities or [] %}<option value="{{ c }}"></option>{% endfor -%}
+  </datalist>
+
+  <p class="or-statusline"><span class="form-status" id="co-status" role="status" aria-live="polite"></span></p>
+  <div id="co-results" class="or-results"></div>
+</section>
+
+<section class="card hidden" id="co-compose-card">
+  <p class="eyebrow">AIRBNB CO-HOST NETWORK</p>
+  <div class="section-head"><h2>Message</h2><span class="pill pill-skipped" id="co-picked">0 picked</span></div>
+  <div class="field">
+    <label for="co-message">What each co-host receives</label>
+    <textarea id="co-message" rows="6" spellcheck="true">{{ default_message or '' }}</textarea>
+  </div>
+  <p class="hint">Tokens: <code>{name}</code> <code>{city}</code> <code>{listing_title}</code>. Each message is personalised per recipient before sending.</p>
+
+  <div class="actions">
+    <button type="button" class="btn btn-primary" id="co-review" data-cap="{{ cap }}">Review {{ cap }} and send</button>
+    <button type="button" class="btn btn-secondary" id="co-queue">Add to tracker only</button>
+    <span class="form-status" id="co-send-status" role="status" aria-live="polite"></span>
+  </div>
+
+  <div id="co-review-panel" class="or-review hidden"></div>
+</section>
+
+<section class="card" id="li-card">
+  <p class="eyebrow">LINKEDIN</p>
+  <div class="section-head"><h2>LinkedIn prospects</h2><span class="pill pill-skipped">Manual send</span></div>
+  <p class="hint">LinkedIn's terms forbid automated sending, so ReelSieve prepares the list and the words — you paste and send. Copy each message, or export the list as CSV.</p>
+
+  <div class="or-find-row or-find-row-3">
+    <div class="field">
+      <label for="li-city">City</label>
+      <input type="text" id="li-city" placeholder="Bournemouth" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field">
+      <label for="li-role">Role</label>
+      <input type="text" id="li-role" placeholder="short let property manager" value="property manager" autocomplete="off" spellcheck="false">
+    </div>
+    <button type="button" class="btn btn-primary" id="li-build">Build prospect list</button>
+    <a class="btn btn-secondary" id="li-export" href="/api/outreach/export.csv" download>Export CSV</a>
+  </div>
+
+  <p class="or-statusline"><span class="form-status" id="li-status" role="status" aria-live="polite"></span></p>
+  <div id="li-results" class="or-results"></div>
+
+  <div class="field or-mt">
+    <label for="li-message">Connection note <span class="or-count" id="li-count">0 / 300</span></label>
+    <textarea id="li-message" rows="5" spellcheck="true">{{ linkedin_default or '' }}</textarea>
+  </div>
+  <p class="hint">Tokens: <code>{name}</code> <code>{company}</code> <code>{city}</code>. Connection notes are capped at 300 characters — the counter turns amber past 300.</p>
+</section>
+
+<section class="card" id="tracker-card">
+  <div class="section-head">
+    <h2>Tracker</h2>
+    <div class="or-stats">
+      <span class="pill pill-skipped">Queued <b data-stat="queued">{{ st.queued|default(0, true) }}</b></span>
+      <span class="pill pill-running">Sent <b data-stat="sent">{{ st.sent|default(0, true) }}</b></span>
+      <span class="pill pill-done">Replied <b data-stat="replied">{{ st.replied|default(0, true) }}</b></span>
+      <span class="pill pill-done">Won <b data-stat="won">{{ st.won|default(0, true) }}</b></span>
+    </div>
+  </div>
+
+  <div class="or-filters">
+    <div class="field">
+      <label for="tr-channel">Channel</label>
+      <select id="tr-channel">
+        <option value="">All channels</option>
+        <option value="cohost">Co-host</option>
+        <option value="linkedin">LinkedIn</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="tr-status">Status</label>
+      <select id="tr-status">
+        <option value="">All</option>
+        <option value="queued">queued</option>
+        <option value="sent">sent</option>
+        <option value="replied">replied</option>
+        <option value="won">won</option>
+        <option value="skipped">skipped</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="tr-search">Search</label>
+      <input type="text" id="tr-search" placeholder="Search name or city" autocomplete="off">
+    </div>
+  </div>
+
+  {% if rows %}
+  <div class="or-table-wrap">
+    <table class="or-table" id="tr-table">
+      <thead>
+        <tr><th scope="col">When</th><th scope="col">Channel</th><th scope="col">Name</th><th scope="col">City</th><th scope="col">Status</th><th scope="col">Actions</th></tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr data-id="{{ r.id }}" data-channel="{{ r.channel or '' }}" data-status="{{ r.status or 'queued' }}" data-search="{{ ((r.name or '') ~ ' ' ~ (r.city or ''))|lower }}">
+          <td data-label="When">
+            <span class="or-when" data-ts="{{ r.ts }}">{{ r.ts }}</span>
+            {% if r.sent_at %}<small class="or-sub">sent <span class="or-when" data-ts="{{ r.sent_at }}">{{ r.sent_at }}</span></small>{% endif %}
+          </td>
+          <td data-label="Channel"><span class="or-chan">{{ 'Co-host' if r.channel == 'cohost' else ('LinkedIn' if r.channel == 'linkedin' else (r.channel or '—')) }}</span></td>
+          <td data-label="Name">
+            <span class="or-name">{{ r.name or '—' }}</span>
+            <small class="or-sub or-note{% if not r.note %} hidden{% endif %}">{{ r.note or '' }}</small>
+          </td>
+          <td data-label="City">{{ r.city or '—' }}</td>
+          <td data-label="Status">
+            <select class="tr-status-sel" data-id="{{ r.id }}" aria-label="Status for {{ r.name or 'this prospect' }}">
+              <option value="queued"{% if (r.status or 'queued') == 'queued' %} selected{% endif %}>queued</option>
+              <option value="sent"{% if r.status == 'sent' %} selected{% endif %}>sent</option>
+              <option value="replied"{% if r.status == 'replied' %} selected{% endif %}>replied</option>
+              <option value="won"{% if r.status == 'won' %} selected{% endif %}>won</option>
+              <option value="skipped"{% if r.status == 'skipped' %} selected{% endif %}>skipped</option>
+            </select>
+          </td>
+          <td data-label="Actions">
+            <div class="or-actions">
+              {% if r.url %}<a class="btn btn-secondary btn-sm" href="{{ r.url }}" target="_blank" rel="noopener">Open ↗</a>{% endif %}
+              <button type="button" class="btn btn-secondary btn-sm tr-copy" data-msg="{{ r.message or '' }}">Copy message</button>
+              <button type="button" class="btn btn-secondary btn-sm tr-note" data-id="{{ r.id }}" data-note="{{ r.note or '' }}">Note</button>
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  <p class="empty hidden" id="tr-none">Nothing matches those filters.</p>
+  {% else %}
+  <p class="empty">Nothing yet. Find co-hosts above, or build a LinkedIn list.</p>
+  {% endif %}
+</section>
+{% endblock %}
