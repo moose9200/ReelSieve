@@ -13,7 +13,6 @@ swiss-home/images/
 swiss-home/out/
 swiss-home/depth/
 swiss-home/*.jpg
-*.mp4
 *.avif
 images/
 sel/
@@ -22,3 +21,4 @@ listing.md
 manifest*.json
 reviews.json
 .playwright-mcp/
+sample-build/
