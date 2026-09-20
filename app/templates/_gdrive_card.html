@@ -1,0 +1,15 @@
+{# Per-account Google Drive. Included by both Settings (admin) and Account (member) so the two can never drift. #}
+<section class="card">
+  <div class="section-head">
+    <h2>Your Google Drive</h2>
+    <span class="pill {{ 'pill-done' if gdrive.connected else 'pill-neg' }}" id="gdrive-pill">{{ ('Connected' ~ (' · ' ~ gdrive.email if gdrive.email else '')) if gdrive.connected else 'Not connected' }}</span>
+  </div>
+  <p class="hint">Connect your own Google account and every finished reel is uploaded to a folder called "<strong>{{ gdrive.folder }}</strong>" in <strong>your</strong> Drive, named after the listing URL. Nobody else's reels go there, and nobody else can reach yours.</p>
+  <p class="hint">ReelSieve asks only for the <code>drive.file</code> permission, so it can see the files it creates for you and nothing else in your Drive. Each uploaded reel is shared as anyone-with-link so you can send it straight to a host. Disconnect at any time.</p>
+  {% if not gdrive.configured %}<p class="hint hint-warn">Google Drive delivery is not set up on this install yet. {% if request.state.is_admin %}Add an OAuth client ID and secret below (Google Cloud Console → Credentials → OAuth client, type Web; authorised redirect URI <code>{{ request.base_url }}oauth/google/callback</code>).{% else %}Ask the ReelSieve team to switch it on.{% endif %}</p>{% endif %}
+  <div class="actions">
+    <a class="btn btn-primary{% if not gdrive.configured %} is-disabled{% endif %}" href="/oauth/google/start" id="gdrive-connect">{{ 'Reconnect Google Drive' if gdrive.connected else 'Connect Google Drive' }}</a>
+    {% if gdrive.connected %}<button type="button" class="btn btn-secondary" id="gdrive-disconnect">Disconnect</button>{% endif %}
+    <span class="form-status" id="gdrive-status"></span>
+  </div>
+</section>

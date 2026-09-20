@@ -67,19 +67,7 @@
   </div>
 </section>
 
-<section class="card">
-  <div class="section-head">
-    <h2>Google Drive</h2>
-    <span class="pill {{ 'pill-done' if s.gdrive.connected else 'pill-neg' }}" id="gdrive-pill">{{ ('Connected' ~ (' · ' ~ s.gdrive.email if s.gdrive.email else '')) if s.gdrive.connected else 'Not connected' }}</span>
-  </div>
-  <p class="hint">Every finished reel is uploaded automatically to the folder "<strong>{{ s.gdrive.folder }}</strong>" in your Drive, named after the listing URL, and shared as anyone-with-link (that link is also used as the public reel link when no tunnel is running).</p>
-  {% if not s.gdrive.configured %}<p class="hint hint-warn">Add a Google OAuth client ID and secret below first (Google Cloud Console → Credentials → OAuth client, type Web; add <code>{{ request.base_url }}oauth/google/callback</code> as an authorised redirect URI).</p>{% endif %}
-  <div class="actions">
-    <a class="btn btn-primary{% if not s.gdrive.configured %} is-disabled{% endif %}" href="/oauth/google/start" id="gdrive-connect">{{ 'Reconnect Google Drive' if s.gdrive.connected else 'Connect Google Drive' }}</a>
-    <button type="button" class="btn btn-secondary" id="gdrive-disconnect">Disconnect</button>
-    <span class="form-status" id="gdrive-status"></span>
-  </div>
-</section>
+{% include '_gdrive_card.html' %}
 
 <form method="post" action="/settings" class="settings-form" autocomplete="off">
   <input type="hidden" name="csrf" value="{{ csrf }}">

@@ -157,7 +157,7 @@ def settings_view():
     cur=dotenv_values(ENV) if ENV.exists() else {}
     s={k.lower():{'configured':bool((cur.get(k) or os.getenv(k) or '').strip()),'hint':HINTS[k],'value':'' if k in SECRET_KEYS else (cur.get(k) or os.getenv(k) or '')} for k in SETTING_KEYS}
     s['default_message']['value']=s['default_message']['value'] or hostmsg.DEFAULT_MESSAGE
-    s['airbnb_connected']=airbnb_status().get('connected',False);s['tunnel']=hostmsg.tunnel_status();s['gdrive']=gdrive.status();return s
+    s['airbnb_connected']=airbnb_status().get('connected',False);s['tunnel']=hostmsg.tunnel_status();return s
 def save_settings(form):
     """Merge into .env.local (0600). Blank secret = keep existing. Values never logged or rendered."""
     cur=dotenv_values(ENV) if ENV.exists() else {}
@@ -245,9 +245,10 @@ def run_job(jid,url,ai_motion,renderer='v2',max_seconds=None):
             else:j['host_status']='skipped';j['host_error']='not requested'
             j['log'].append(time.strftime('%H:%M:%S ')+'Reel ready. Host message is prepared for you to review and send.')
         persist(j)
-        if gdrive.status().get('connected'):
+        owner=j.get('user')
+        if owner and gdrive.connected(owner):
             try:
-                cb('Uploading to Google Drive');info=gdrive.upload(res['video'],(res['listing'].get('url') or url),description=f"{res['listing'].get('title','')} · {res['listing'].get('city','')} · Listing Reel by Braivex")
+                cb('Uploading to your Google Drive');info=gdrive.upload(res['video'],(res['listing'].get('url') or url),owner,description=f"{res['listing'].get('title','')} · {res['listing'].get('city','')} · Listing Reel by Braivex")
                 with _lock:j.update(drive_status='uploaded',drive_link=info.get('webViewLink'),drive_name=info.get('name'),drive_id=info.get('id'))
                 cb(f"Google Drive: uploaded as {info.get('name')}")
                 if info.get('id') and not KEEP_LOCAL:
@@ -258,7 +259,7 @@ def run_job(jid,url,ai_motion,renderer='v2',max_seconds=None):
                 with _lock:j.update(drive_status='failed',drive_error=f'{type(e).__name__}: {str(e)[:160]}')
                 cb(f'Google Drive upload failed: {type(e).__name__}: {str(e)[:120]}')
         else:
-            with _lock:j.update(drive_status='skipped',drive_error='Google Drive not connected (Settings)')
+            with _lock:j.update(drive_status='skipped',drive_error='Connect your Google Drive in Account to have reels delivered there')
     except Exception as e:
         with _lock:j.update(status='failed',error=f'{type(e).__name__}: {str(e)[:300]}',step='Failed');j['log'].append(traceback.format_exc()[-600:])
     persist(j)
@@ -279,6 +280,14 @@ def _migrate_jobs_owner():
         return n
     except Exception:return 0
 _MIGRATED=_migrate_jobs_owner()
+def _adopt_legacy_drive():
+    """Drive used to be one shared connection. Hand that token to the operator who created it, so their
+    existing delivery keeps working, and let everyone else connect their own account."""
+    try:
+        admins=[u['user'] for u in auth.users() if u.get('role')=='admin']
+        return gdrive.adopt_legacy(admins[0]) if admins else False
+    except Exception:return False
+_DRIVE_ADOPTED=_adopt_legacy_drive()
 @app.get('/',response_class=HTMLResponse)
 def landing(request:Request):
     return tpl.TemplateResponse(request,'landing.html',{'signed_in':bool(request.state.user),'user':request.state.user,
@@ -470,28 +479,31 @@ def _redirect_uri(request):
     return base+'/oauth/google/callback'
 @app.get('/oauth/google/start')
 def google_start(request:Request):
-    _require_admin(request)
-    if not gdrive.configured():raise HTTPException(400,'Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in Settings first')
-    return RedirectResponse(gdrive.auth_url(_redirect_uri(request)),status_code=302)
+    """Every tenant connects their own Google account — reels are delivered to their Drive, not the operator's."""
+    if not request.state.user:raise HTTPException(401,'Sign in first')
+    if not gdrive.configured():raise HTTPException(400,'Google Drive is not set up on this install yet')
+    return RedirectResponse(gdrive.auth_url(_redirect_uri(request),request.state.user),status_code=302)
 @app.get('/oauth/google/callback')
 def google_callback(request:Request,code:str='',state:str='',error:str=''):
     if error or not code:return RedirectResponse('/settings?flash='+(error or 'Google sign-in cancelled'),status_code=303)
-    try:gdrive.exchange(code,state,_redirect_uri(request))
+    dest='/settings' if is_admin(request) else '/account'
+    try:gdrive.exchange(code,state,_redirect_uri(request),request.state.user)
     except Exception as e:
-        from urllib.parse import quote as _q;return RedirectResponse('/settings?flash='+_q('Google Drive connect failed: '+str(e)[:300]),status_code=303)
-    return RedirectResponse('/settings?saved=1',status_code=303)
+        from urllib.parse import quote as _q;return RedirectResponse(dest+'?flash='+_q('Google Drive connect failed: '+str(e)[:300]),status_code=303)
+    return RedirectResponse(dest+'?saved=1',status_code=303)
 @app.get('/api/gdrive/status')
-def gdrive_status(request:Request):_require_admin(request);return gdrive.status()
+def gdrive_status(request:Request):return gdrive.status(request.state.user)
 @app.post('/api/gdrive/disconnect')
-def gdrive_disconnect(request:Request):_require_admin(request);gdrive.disconnect();return gdrive.status()
+def gdrive_disconnect(request:Request):gdrive.disconnect(request.state.user);return gdrive.status(request.state.user)
 @app.post('/api/jobs/{jid}/upload-drive')
 def upload_drive(request:Request,jid:str):
     j=_jobs.get(jid) or get_job(jid)
     if not owns(j,request.state.user,is_admin(request)):raise HTTPException(404)
     if j.get('status')!='done':raise HTTPException(400,'Reel not ready')
-    if not gdrive.status().get('connected'):raise HTTPException(400,'Google Drive not connected')
+    owner=j.get('user') or request.state.user
+    if not gdrive.connected(owner):raise HTTPException(400,'Connect your Google Drive in Account first')
     vid=JOBS/jid/Path(j['video_url']).name
-    try:info=gdrive.upload(vid,(j.get('listing') or {}).get('url') or j['url'],description=(j.get('listing') or {}).get('title',''))
+    try:info=gdrive.upload(vid,(j.get('listing') or {}).get('url') or j['url'],owner,description=(j.get('listing') or {}).get('title',''))
     except Exception as e:raise HTTPException(502,f'Upload failed: {type(e).__name__}: {str(e)[:160]}')
     upd=dict(drive_status='uploaded',drive_link=info.get('webViewLink'),drive_name=info.get('name'),drive_id=info.get('id'))
     if info.get('id') and not KEEP_LOCAL:purge_local(jid);upd.update(local_deleted=True,video_url=None)
@@ -625,10 +637,11 @@ def media(request:Request,jid:str,name:str,t:str=''):
 @app.get('/settings',response_class=HTMLResponse)
 def settings(request:Request,saved:int=0,flash:str=''):
     if not is_admin(request):return RedirectResponse('/account',status_code=303)
-    return tpl.TemplateResponse(request,'settings.html',{'s':settings_view(),'saved':bool(saved),'flash':flash,'csrf':auth.csrf_token(request.cookies.get(auth.COOKIE,'')),'is_admin':auth.role(request.state.user)=='admin'})
+    return tpl.TemplateResponse(request,'settings.html',{'s':settings_view(),'gdrive':gdrive.status(request.state.user),'saved':bool(saved),'flash':flash,'csrf':auth.csrf_token(request.cookies.get(auth.COOKIE,'')),'is_admin':auth.role(request.state.user)=='admin'})
 @app.get('/account',response_class=HTMLResponse)
 def account_page(request:Request,saved:int=0):
-    return tpl.TemplateResponse(request,'account.html',{'account':plans.account_view(request.state.user),'plans':plans.public_plans(),'csrf':auth.csrf_token(request.cookies.get(auth.COOKIE,''))})
+    return tpl.TemplateResponse(request,'account.html',{'account':plans.account_view(request.state.user),'plans':plans.public_plans(),'gdrive':gdrive.status(request.state.user),
+        'csrf':auth.csrf_token(request.cookies.get(auth.COOKIE,''))})
 @app.post('/settings')
 async def settings_post(request:Request):
     if not is_admin(request):raise HTTPException(403,'Admin only')
