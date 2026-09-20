@@ -34,6 +34,9 @@ class LoginGate(BaseHTTPMiddleware):
         if request.method in ('POST','PUT','DELETE') and not path.startswith('/api/'):
             form=await request.form()
             if not auth.csrf_ok(request.cookies.get(auth.COOKIE,''),form.get('csrf')):return HTMLResponse('Invalid or expired form token — reload and try again',status_code=403)
+            # BaseHTTPMiddleware has already drained the body, so the endpoint's own request.form() would come back
+            # empty. Hand the parsed form down through the shared scope instead.
+            request.scope['_form']=dict(form)
         request.state.user=user;request.state.is_admin=_role_admin(user);return await call_next(request)
 app.add_middleware(LoginGate)
 def _secure(request):return request.url.scheme=='https' or 'railway.app' in request.headers.get('host','') or 'https' in request.headers.get('x-forwarded-proto','')
@@ -581,7 +584,8 @@ def account_page(request:Request,saved:int=0):
 @app.post('/settings')
 async def settings_post(request:Request):
     if not is_admin(request):raise HTTPException(403,'Admin only')
-    form=await request.form();save_settings(dict(form));return RedirectResponse('/settings?saved=1',status_code=303)
+    form=request.scope.get('_form') or dict(await request.form())
+    save_settings(form);return RedirectResponse('/settings?saved=1',status_code=303)
 @app.get('/api/settings')
 def settings_api(request:Request):
     _require_admin(request)

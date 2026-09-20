@@ -101,6 +101,17 @@
   </section>
 
   <section class="card">
+    <div class="section-head"><h2>Payments</h2></div>
+    <p class="hint">Paste a hosted payment link per plan and the Upgrade page sends customers straight there. A Skydo InstaLink works (zero FX markup, flat fee — best value above about $300). Leave a plan blank and customers request an invoice instead, which you settle in Orders above.</p>
+    <div class="grid-2">
+      <div class="field"><label for="checkout_starter">Starter ($100) payment link</label><input type="text" id="checkout_starter" name="checkout_starter" value="{{ s.checkout_starter.value }}" placeholder="https://… (Skydo InstaLink, PayPal, Razorpay, Dodo)"></div>
+      <div class="field"><label for="checkout_commercial">Commercial ($500) payment link</label><input type="text" id="checkout_commercial" name="checkout_commercial" value="{{ s.checkout_commercial.value }}" placeholder="https://…"></div>
+      <div class="field"><label for="billing_webhook_secret">Webhook secret</label><input type="password" id="billing_webhook_secret" name="billing_webhook_secret" value="" autocomplete="new-password" placeholder="{{ 'configured — leave blank to keep' if s.billing_webhook_secret.configured else 'optional — auto-settles paid orders' }}"><p class="hint">Point your provider at <code>{{ request.base_url }}api/billing/webhook/skydo</code> and sign the body with this secret to settle orders automatically.</p></div>
+      <div class="field"><label for="billing_note">Invoice promise shown to customers</label><input type="text" id="billing_note" name="billing_note" value="{{ s.billing_note.value }}" placeholder="We send the invoice within a few hours…"></div>
+    </div>
+  </section>
+
+  <section class="card">
     <div class="section-head"><h2>Message template</h2></div>
     <div class="field">
       <label for="default_message">Default message to the host</label>
