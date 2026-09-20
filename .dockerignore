@@ -7,3 +7,4 @@ swiss-home
 .git
 *.mp4
 **/__pycache__
+!app/static/sample/reel.mp4
