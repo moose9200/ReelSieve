@@ -59,7 +59,20 @@ class LoginGate(BaseHTTPMiddleware):
         request.state.user=user;request.state.is_admin=_role_admin(user);return await call_next(request)
 app.add_middleware(LoginGate)
 def _secure(request):return request.url.scheme=='https' or 'railway.app' in request.headers.get('host','') or 'https' in request.headers.get('x-forwarded-proto','')
-def _ip(request):return (request.headers.get('x-forwarded-for','').split(',')[0].strip() or (request.client.host if request.client else '?'))
+TRUSTED_HOPS=int(os.getenv('TRUSTED_PROXY_HOPS','1'))
+def _ip(request):
+    """The client address, read from the RIGHT of X-Forwarded-For.
+
+    A client can send any X-Forwarded-For it likes and the proxy appends to it, so the leftmost entry is
+    attacker-controlled. Reading it that way let anyone defeat the per-network free-tier cap by sending a
+    fresh fake address on every request. Only the entries our own proxies appended can be trusted, so we
+    count TRUSTED_PROXY_HOPS in from the right: 1 for a single edge such as Railway, 2 if another proxy
+    (for example Cloudflare) is put in front. Rate limiting and quota counting both depend on this."""
+    parts=[x.strip() for x in request.headers.get('x-forwarded-for','').split(',') if x.strip()]
+    if parts:
+        i=max(0,len(parts)-max(1,TRUSTED_HOPS))
+        return parts[i]
+    return request.client.host if request.client else '?'
 def _login_ctx(request,**kw):
     tok=request.cookies.get(auth.COOKIE,'');return {'csrf':auth.csrf_token(tok),'allow_setup':not auth.has_account(),**kw}
 def _set_session(resp,request,user,long=True):
