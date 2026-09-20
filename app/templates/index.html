@@ -1,10 +1,11 @@
 {% extends "base.html" %}
 {% block title %}New reel{% endblock %}
 {% block content %}
+{% set adm = request and request.state.is_admin %}
 <section class="hero">
-  <p class="eyebrow">Airbnb → 30-second reel → the host</p>
+  <p class="eyebrow">Any listing → cinematic reel → the host</p>
   <h1>Paste a listing. Send the host a cinematic reel.</h1>
-  <p class="sub">We pull the photos and reviews, build a 30-second walkthrough with captions and music, and prepare an Airbnb message to the host with the reel link. You press Send.</p>
+  <p class="sub">We pull the photos and reviews, build a walkthrough with captions and music{% if account %} up to {{ account.max_seconds }} seconds{% endif %}, and prepare a message to the host. You press Send.</p>
 </section>
 
 {% if account %}
@@ -71,7 +72,7 @@
         <span>Prepare an Airbnb message to the host with the reel link</span>
       </label>
       <p class="hint">Opens the host's Airbnb contact form in this browser with the message copied — you paste and press Send.</p>
-      {% if not public_url_ok %}
+      {% if adm and not public_url_ok %}
       <p class="hint hint-warn">No public link yet — start the tunnel or set a public URL in <a href="/settings">Settings</a> so the host can open the reel.</p>
       {% endif %}
     </div>
@@ -88,16 +89,19 @@
       </select>
     </div>
     <div class="field field-check">
-      <label class="check{% if not hf_configured %} is-disabled{% endif %}">
-        <input type="checkbox" id="ai_motion" name="ai_motion"{% if not hf_configured %} disabled{% endif %}>
-        <span>AI camera motion — Higgsfield Seedance 2.0, tested rig moves (dolly / axis-lock / crane / orbit). Uses API credits.</span>
+      {% set ai_ok = (account and account.ai_motion) and hf_configured %}
+      <label class="check{% if not ai_ok %} is-disabled{% endif %}">
+        <input type="checkbox" id="ai_motion" name="ai_motion"{% if not ai_ok %} disabled{% endif %}>
+        <span>AI camera motion — real generated camera moves through each room instead of a pan over a still.</span>
       </label>
+      {% if adm %}
       <div class="grid-2 ai-opts{% if not hf_configured %} is-disabled{% endif %}">
-        <div class="field"><label for="ai_resolution">Clip resolution</label><select id="ai_resolution" name="ai_resolution"><option value="1080p" selected>1080p — ≈45 credits per 5 s clip (final quality)</option><option value="720p">720p — ≈22.5 credits per 5 s clip (test a move)</option></select></div>
-        <p class="hint">Photos are audited first (single shoot, depth axis, wide living space). A REJECT audit skips paid generation automatically. Costs observed 19 Aug 2026; check the console before large batches.</p>
+        <div class="field"><label for="ai_resolution">Clip resolution</label><select id="ai_resolution" name="ai_resolution"><option value="1080p" selected>1080p — ≈45 credits per 5 s clip</option><option value="720p">720p — ≈22.5 credits per 5 s clip</option></select></div>
+        <p class="hint">Photos are audited first; a REJECT audit skips paid generation. Verify current Higgsfield pricing before large batches.</p>
       </div>
-      {% if not hf_configured %}
-      <p class="hint">Add a Higgsfield API key in <a href="/settings">Settings</a> to enable AI motion.</p>
+      {% if not hf_configured %}<p class="hint">Add a Higgsfield API key in <a href="/settings">Settings</a> to enable AI motion.</p>{% endif %}
+      {% elif account and not account.ai_motion %}
+      <p class="hint">On the {{ account.plan_name }} plan. <a href="/#pricing">Starter</a> adds AI camera motion and 90-second reels.</p>
       {% endif %}
     </div>
     <div class="actions">

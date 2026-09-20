@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Listing Reel by Braivex — paste an Airbnb URL, get a 30 s cinematic reel, hand it to the host via Airbnb messaging.
 Run: .venv/bin/uvicorn app.server:app --port 8787   (from the project root)"""
-import os,re,json,uuid,threading,time,traceback
+import os,re,json,uuid,threading,time,traceback,secrets
 from pathlib import Path
 from fastapi import FastAPI,Request,HTTPException
 from fastapi.responses import HTMLResponse,JSONResponse,RedirectResponse,FileResponse
@@ -16,13 +16,16 @@ from app import pipeline,hostmsg,search as listing_search,gdrive,auth,store,plan
 app=FastAPI(title='ReelSieve by Braivex');app.mount('/static',StaticFiles(directory=HERE/'static'),name='static')
 tpl=Jinja2Templates(directory=HERE/'templates');tpl.env.autoescape=True
 from starlette.middleware.base import BaseHTTPMiddleware
+def _role_admin(user):
+    try:return bool(user) and auth.role(user)=='admin'
+    except Exception:return False
 PUBLIC_PREFIXES=('/static/','/media/','/oauth/google/callback','/favicon.ico')
 PUBLIC_EXACT=('/','/login','/signup','/setup','/logout','/forgot','/healthz','/privacy','/terms')
 class LoginGate(BaseHTTPMiddleware):
     async def dispatch(self,request,call_next):
         path=request.url.path;request.state.user=None
         if path.startswith(PUBLIC_PREFIXES) or path in PUBLIC_EXACT:
-            request.state.user=auth.check(request.cookies.get(auth.COOKIE,''));return await call_next(request)
+            request.state.user=auth.check(request.cookies.get(auth.COOKIE,''));request.state.is_admin=_role_admin(request.state.user);return await call_next(request)
         user=auth.check(request.cookies.get(auth.COOKIE,''))
         if not user:
             if path.startswith('/api/'):return JSONResponse({'detail':'Sign in required'},status_code=401)
@@ -31,7 +34,7 @@ class LoginGate(BaseHTTPMiddleware):
         if request.method in ('POST','PUT','DELETE') and not path.startswith('/api/'):
             form=await request.form()
             if not auth.csrf_ok(request.cookies.get(auth.COOKIE,''),form.get('csrf')):return HTMLResponse('Invalid or expired form token — reload and try again',status_code=403)
-        request.state.user=user;return await call_next(request)
+        request.state.user=user;request.state.is_admin=_role_admin(user);return await call_next(request)
 app.add_middleware(LoginGate)
 def _secure(request):return request.url.scheme=='https' or 'railway.app' in request.headers.get('host','') or 'https' in request.headers.get('x-forwarded-proto','')
 def _ip(request):return (request.headers.get('x-forwarded-for','').split(',')[0].strip() or (request.client.host if request.client else '?'))
@@ -165,8 +168,8 @@ def drive_fields(j):
     if not fid:return {}
     return {'drive_embed':f'https://drive.google.com/file/d/{fid}/preview','drive_download':f'https://drive.google.com/uc?export=download&id={fid}','drive_thumb':f'https://drive.google.com/thumbnail?id={fid}&sz=w640'}
 def is_admin(request):
-    try:return auth.role(request.state.user)=='admin'
-    except Exception:return False
+    v=getattr(request.state,'is_admin',None)
+    return _role_admin(request.state.user) if v is None else bool(v)
 def _deny():raise HTTPException(404)
 def owns(j,user,admin=False):
     """A job belongs to the user who made it. Legacy jobs (no user field) belong to admins only."""
@@ -187,7 +190,9 @@ def load_jobs(user=None,admin=False):
 def reel_link_for(j):
     if j.get('drive_link') and (j.get('local_deleted') or not j.get('video_url')):return j['drive_link']
     base=hostmsg.public_base()
-    if base and j.get('video_url'):return f"{base}{j['video_url']}"
+    if base and j.get('video_url'):
+        t=j.get('share_token') or share_token(j.get('id') or '')
+        return f"{base}{j['video_url']}"+(f'?t={t}' if t else '')
     return j.get('drive_link') or None
 def search_phrase(j):
     L=j.get('listing') or {};title=re.split(r'\s[|·-]\s',(L.get('title') or ''))[0].strip();city=(L.get('city') or '').strip()
@@ -375,6 +380,7 @@ def _redirect_uri(request):
     return base+'/oauth/google/callback'
 @app.get('/oauth/google/start')
 def google_start(request:Request):
+    _require_admin(request)
     if not gdrive.configured():raise HTTPException(400,'Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in Settings first')
     return RedirectResponse(gdrive.auth_url(_redirect_uri(request)),status_code=302)
 @app.get('/oauth/google/callback')
@@ -385,9 +391,9 @@ def google_callback(request:Request,code:str='',state:str='',error:str=''):
         from urllib.parse import quote as _q;return RedirectResponse('/settings?flash='+_q('Google Drive connect failed: '+str(e)[:300]),status_code=303)
     return RedirectResponse('/settings?saved=1',status_code=303)
 @app.get('/api/gdrive/status')
-def gdrive_status():return gdrive.status()
+def gdrive_status(request:Request):_require_admin(request);return gdrive.status()
 @app.post('/api/gdrive/disconnect')
-def gdrive_disconnect():gdrive.disconnect();return gdrive.status()
+def gdrive_disconnect(request:Request):_require_admin(request);gdrive.disconnect();return gdrive.status()
 @app.post('/api/jobs/{jid}/upload-drive')
 def upload_drive(request:Request,jid:str):
     j=_jobs.get(jid) or get_job(jid)
@@ -504,10 +510,27 @@ def api_out_csv(request:Request):
     from fastapi.responses import PlainTextResponse
     csv=linkedin.csv_rows(store.outreach_rows(request.state.user))
     return PlainTextResponse(csv,media_type='text/csv',headers={'Content-Disposition':'attachment; filename="reelsieve-outreach.csv"'})
+def share_token(jid):
+    """Per-job secret for public reel links. Separate from the job id so knowing an id proves nothing."""
+    f=JOBS/jid/'job.json'
+    if not f.exists():return None
+    try:j=json.loads(f.read_text())
+    except Exception:return None
+    t=j.get('share_token')
+    if not t:
+        t=secrets.token_urlsafe(18);j['share_token']=t;f.write_text(json.dumps(j,indent=1))
+        if jid in _jobs:_jobs[jid]['share_token']=t
+    return t
 @app.get('/media/{jid}/{name}')
-def media(jid:str,name:str):
+def media(request:Request,jid:str,name:str,t:str=''):
     p=(JOBS/jid/name).resolve()
     if not p.is_file() or JOBS not in p.parents or p.suffix not in ('.mp4','.jpg'):raise HTTPException(404)
+    tok=share_token(jid)
+    if not (t and tok and secrets.compare_digest(t,tok)):
+        u=getattr(request.state,'user',None)
+        try:j=get_job(jid,u,is_admin(request))
+        except HTTPException:raise HTTPException(404)
+        if not owns(j,u,is_admin(request)):raise HTTPException(404)
     return FileResponse(p,media_type='image/jpeg' if p.suffix=='.jpg' else 'video/mp4',filename=None if p.suffix=='.jpg' else name)
 @app.get('/settings',response_class=HTMLResponse)
 def settings(request:Request,saved:int=0,flash:str=''):
@@ -521,16 +544,18 @@ async def settings_post(request:Request):
     if not is_admin(request):raise HTTPException(403,'Admin only')
     form=await request.form();save_settings(dict(form));return RedirectResponse('/settings?saved=1',status_code=303)
 @app.get('/api/settings')
-def settings_api():return {k:({'configured':v['configured']} if isinstance(v,dict) and 'configured' in v else v) for k,v in settings_view().items()}
+def settings_api(request:Request):
+    _require_admin(request)
+    return {k:({'configured':v['configured']} if isinstance(v,dict) and 'configured' in v else v) for k,v in settings_view().items()}
 @app.post('/api/airbnb/connect')
-def airbnb_connect():hostmsg.connect();return {'ok':True}
+def airbnb_connect(request:Request):_require_admin(request);hostmsg.connect();return {'ok':True}
 @app.get('/api/airbnb/status')
-def airbnb_status_api():return airbnb_status(max_age=0)
+def airbnb_status_api(request:Request):_require_admin(request);return airbnb_status(max_age=0)
 @app.post('/api/airbnb/disconnect')
-def airbnb_disconnect():hostmsg.disconnect();_airbnb_cache.update(t=0);return airbnb_status(max_age=0)
+def airbnb_disconnect(request:Request):_require_admin(request);hostmsg.disconnect();_airbnb_cache.update(t=0);return airbnb_status(max_age=0)
 @app.post('/api/tunnel/start')
-def tunnel_start():return hostmsg.tunnel_start(PORT)
+def tunnel_start(request:Request):_require_admin(request);return hostmsg.tunnel_start(PORT)
 @app.get('/api/tunnel/status')
-def tunnel_status():return hostmsg.tunnel_status()
+def tunnel_status(request:Request):_require_admin(request);return hostmsg.tunnel_status()
 @app.post('/api/tunnel/stop')
-def tunnel_stop():return hostmsg.tunnel_stop()
+def tunnel_stop(request:Request):_require_admin(request);return hostmsg.tunnel_stop()

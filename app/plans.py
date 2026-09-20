@@ -31,7 +31,7 @@ PLANS={
 }
 ORDER=['free','starter','commercial','enterprise']
 FREE_LIFETIME=int(os.getenv('FREE_LIFETIME','2'))
-FREE_PER_NET=int(os.getenv('FREE_PER_NET','3'))
+FREE_PER_NET=int(os.getenv('FREE_PER_NET','12'))  # offices and mobile carriers share a /24; the per-account cap is the real control
 FREE_PER_DEVICE=int(os.getenv('FREE_PER_DEVICE','2'))
 FREE_COOLDOWN_H=float(os.getenv('FREE_COOLDOWN_H','0'))  # 2 lifetime videos is the real cap; a cooldown only hurts first-run UX
 DISPOSABLE=set('''mailinator.com guerrillamail.com 10minutemail.com tempmail.com temp-mail.org yopmail.com throwawaymail.com
@@ -67,8 +67,8 @@ def signup_guard(email,ip,fp):
     """Refuse obvious multi-account farming at the door. Returns None or a message."""
     err=check_email(email)
     if err:return err
-    if store.count_usage(ip=ip,since_days=30)>=FREE_PER_NET+2:
-        return 'This network has already used its free videos. Choose a plan to continue.'
+    if store.count_usage(ip=ip,since_days=30)>=FREE_PER_NET*2:
+        return 'This network has made a lot of free videos today. Choose a plan, or email hello@braivex.com and we will lift it.'
     return None
 def can_generate(user,listing_url,ip=None,fp=None):
     """(ok, reason, meta). Paid: needs credits. Free: layered guardrails. Same listing never costs twice."""
@@ -84,7 +84,7 @@ def can_generate(user,listing_url,ip=None,fp=None):
     if used>=FREE_LIFETIME:
         return False,f'Free plan covers {FREE_LIFETIME} videos and you have used them. Starter is $100 for 3 with AI camera motion.',{'upgrade':True}
     if ip and store.count_usage(ip=ip,since_days=30)>=FREE_PER_NET:
-        return False,'The free allowance for this network is used up. Choose a plan to continue.',{'upgrade':True}
+        return False,'A lot of free videos have come from this network. Choose a plan, or email hello@braivex.com and we will lift it.',{'upgrade':True}
     if fp and store.count_usage(fp=fp)>=FREE_PER_DEVICE:
         return False,'The free allowance for this device is used up. Choose a plan to continue.',{'upgrade':True}
     last=store.last_usage_ts(user)
