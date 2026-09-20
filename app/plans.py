@@ -101,9 +101,10 @@ def consume(user,listing_url,job_id,ip=None,fp=None):
 def public_plans():
     return [dict(PLANS[k]) for k in ORDER]
 PRODUCTS=[
- {'name':'Loculens','tagline':'Local SEO and review intelligence','url':'https://loculens.com'},
- {'name':'HireSieve','tagline':'Sift the CVs that actually fit','url':'https://braivex.com'},
+ {'name':'Loculens','tagline':'Local SEO and review intelligence','url':'https://loculens.braivex.com'},
+ {'name':'HireSieve','tagline':'Sift the CVs that actually fit','url':'https://hiresieve.braivex.com'},
+ # briefsieve.braivex.com has no DNS record yet (checked 20 Sep 2026) — point at the studio site until it does
  {'name':'BriefSieve','tagline':'Turn long briefs into decisions','url':'https://braivex.com'},
- {'name':'HouSieve','tagline':'Property data, sifted','url':'https://braivex.com'},
+ {'name':'HouSieve','tagline':'Property data, sifted','url':'https://housieve.braivex.com'},
  {'name':'Braivex','tagline':'The studio behind them','url':'https://braivex.com'},
 ]
