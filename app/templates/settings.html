@@ -19,6 +19,13 @@
 </section>
 
 {% if is_admin %}
+<section class="card" id="orders-card">
+  <div class="section-head"><h2>Orders</h2><span class="pill pill-running" id="ord-pending">—</span></div>
+  <p class="hint">Someone requests an invoice, you send them a Skydo InstaLink or your virtual-account details, then mark it paid here. Credits land instantly and the customer's plan switches. Settling twice never double-credits.</p>
+  <ul class="user-list" id="ord-list"></ul>
+  <p class="form-status" id="ord-status"></p>
+</section>
+
 <section class="card" id="users-card">
   <div class="section-head"><h2>Users</h2><span class="pill pill-skipped">Admin</span></div>
   <p class="hint">People who can sign in to this ReelSieve. Admins can add or remove users and reset passwords.</p>

@@ -854,4 +854,49 @@
       });
     });
   }
+
+  // ---------- billing: request an invoice ----------
+  var billBtn = document.getElementById("bill-request");
+  if (billBtn) {
+    billBtn.addEventListener("click", function () {
+      var out = document.getElementById("bill-status"); out.className = "form-status"; billBtn.disabled = true; out.textContent = "Creating your order…";
+      var note = (document.getElementById("bill-note") || {}).value || "";
+      postJSON("/api/billing/request", { plan: billBtn.getAttribute("data-plan"), provider: "invoice", note: note, csrf: (document.getElementById("bill-csrf") || {}).value })
+        .then(function (d) { window.location.href = "/upgrade?plan=" + encodeURIComponent(billBtn.getAttribute("data-plan")) + "&ref=" + encodeURIComponent(d.order.ref); })
+        .catch(function (e) { out.textContent = e.message || "Could not create the order."; out.classList.add("is-error"); billBtn.disabled = false; });
+    });
+  }
+
+  // ---------- admin: orders ----------
+  var ordList = document.getElementById("ord-list");
+  if (ordList) {
+    var ordStatus = document.getElementById("ord-status"), ordPending = document.getElementById("ord-pending");
+    function renderOrders(d) {
+      ordList.innerHTML = ""; var rows = (d && d.orders) || [];
+      ordPending.textContent = (d && d.pending ? d.pending : 0) + " pending";
+      if (!rows.length) { ordList.innerHTML = '<li class="user-row"><span>No orders yet.</span></li>'; return; }
+      rows.forEach(function (o) {
+        var li = document.createElement("li"); li.className = "user-row";
+        var when = o.ts ? new Date(o.ts * 1000).toLocaleDateString() : "";
+        li.innerHTML = '<span class="u-mail"></span><span class="badge"></span><span class="u-actions"></span>';
+        li.querySelector(".u-mail").textContent = o.ref + " · " + o.user + " · " + o.plan + " · $" + Math.round(o.amount_usd) + " · " + when;
+        li.querySelector(".badge").textContent = o.status;
+        var acts = li.querySelector(".u-actions");
+        if (o.status === "pending") {
+          var pay = document.createElement("button"); pay.type = "button"; pay.className = "btn btn-primary btn-sm"; pay.textContent = "Mark paid";
+          pay.addEventListener("click", function () {
+            if (!confirm("Mark " + o.ref + " paid and grant " + o.plan + " credits to " + o.user + "?")) return;
+            postJSON("/api/billing/settle", { ref: o.ref }).then(function (r) { ordStatus.textContent = o.ref + " settled — " + r.account.plan_name + ", " + r.account.remaining + " credits."; load(); })
+              .catch(function (e) { ordStatus.textContent = e.message; });
+          });
+          var can = document.createElement("button"); can.type = "button"; can.className = "btn btn-secondary btn-sm"; can.textContent = "Cancel";
+          can.addEventListener("click", function () { if (!confirm("Cancel " + o.ref + "?")) return; postJSON("/api/billing/cancel", { ref: o.ref }).then(load).catch(function (e) { ordStatus.textContent = e.message; }); });
+          acts.appendChild(pay); acts.appendChild(can);
+        }
+        ordList.appendChild(li);
+      });
+    }
+    function load() { getJSON("/api/billing/orders?all=1").then(renderOrders).catch(function () {}); }
+    load();
+  }
 })();

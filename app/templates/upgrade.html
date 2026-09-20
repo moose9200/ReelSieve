@@ -1,20 +1,57 @@
 {% extends "base.html" %}
 {% block title %}Upgrade{% endblock %}
 {% block content %}
-<section class="login-wrap">
-  <section class="card login-card">
-    <p class="eyebrow">Upgrade</p>
-    <h1 class="login-title">{{ plan|capitalize if plan else 'Choose a plan' }}</h1>
-    {% if account %}<p class="sub">Signed in as {{ account.user }} · {{ account.plan_name }}{% if account.remaining is not none %} · {{ account.remaining }} left{% endif %}</p>{% endif %}
-    {% if link %}
-      <p class="sub">Complete payment and your credits are added automatically.</p>
-      <div class="actions"><a class="btn btn-primary btn-wide" href="{{ link }}" rel="noopener">Continue to secure checkout</a></div>
-    {% else %}
-      <p class="sub">Card payment isn't switched on for this installation yet. Email <a href="mailto:hello@braivex.com?subject=ReelSieve%20{{ plan }}">hello@braivex.com</a> and we'll invoice you and add the credits the same day.</p>
-      <div class="actions"><a class="btn btn-primary btn-wide" href="mailto:hello@braivex.com?subject=ReelSieve%20{{ plan }}%20plan">Email us to activate</a></div>
-      <p class="hint">Admins can set a plan instantly in Settings → Users.</p>
-    {% endif %}
-    <p class="login-foot"><a href="/app">Back to the app</a> · <a href="/#pricing">See all plans</a></p>
-  </section>
+{% set p = (plans | selectattr('key','equalto',plan) | list | first) if plan else None %}
+<section class="hero">
+  <p class="eyebrow">Upgrade</p>
+  <h1>{{ p.name if p else 'Choose a plan' }}{% if p %} · {{ p.price_label }}{% endif %}</h1>
+  {% if account %}<p class="sub">{{ account.user }} · on {{ account.plan_name }}{% if account.remaining is not none %} · {{ account.remaining }} left{% endif %}</p>{% endif %}
 </section>
+
+{% if order %}
+<section class="card">
+  <div class="section-head"><h2>Invoice requested</h2><span class="pill {{ 'pill-done' if order.status == 'paid' else 'pill-running' }}">{{ order.status }}</span></div>
+  <p class="sub">Reference <strong>{{ order.ref }}</strong> · {{ order.plan|capitalize }} · ${{ order.amount_usd|round|int }}</p>
+  <p class="hint">{{ billing_note }}</p>
+  <div class="actions"><a class="btn btn-secondary" href="/app">Back to the app</a><a class="btn btn-secondary" href="mailto:hello@braivex.com?subject=ReelSieve%20order%20{{ order.ref }}">Email us about {{ order.ref }}</a></div>
+</section>
+{% elif p %}
+<section class="card">
+  <div class="section-head"><h2>What you get</h2><span class="pill pill-done">{{ p.period }}</span></div>
+  <ul class="steps">{% for f in p.features %}<li>{{ f }}</li>{% endfor %}</ul>
+</section>
+
+<section class="card">
+  <div class="section-head"><h2>Pay</h2></div>
+  {% if link %}
+    <p class="hint">Card or bank transfer through our payment provider. Credits are added as soon as it clears.</p>
+    <div class="actions"><a class="btn btn-primary" href="{{ link }}" rel="noopener">Pay ${{ p.price_usd }} now</a></div>
+    <p class="hint">Prefer an invoice for your accounts team? Request one below.</p>
+  {% else %}
+    <p class="hint">We invoice for this plan. Request one and we'll send a secure payment link you can pay by card or bank transfer.</p>
+  {% endif %}
+  <div class="field">
+    <label for="bill-note">Anything we should put on the invoice? (company name, VAT/GST, PO number)</label>
+    <textarea id="bill-note" rows="2" placeholder="Optional"></textarea>
+  </div>
+  <div class="actions">
+    <button type="button" class="btn {{ 'btn-secondary' if link else 'btn-primary' }}" id="bill-request" data-plan="{{ p.key }}">Request an invoice</button>
+    <span class="form-status" id="bill-status"></span>
+  </div>
+  <input type="hidden" id="bill-csrf" value="{{ csrf }}">
+</section>
+{% else %}
+<section class="card"><p class="sub">Pick a plan on the <a href="/#pricing">pricing page</a>.</p></section>
+{% endif %}
+
+{% if orders %}
+<section class="card">
+  <div class="section-head"><h2>Your orders</h2></div>
+  <ul class="user-list">
+    {% for o in orders %}
+    <li class="user-row"><span>{{ o.ref }} · {{ o.plan|capitalize }} · ${{ o.amount_usd|round|int }}</span><span class="badge">{{ o.provider }}</span><span class="pill pill-sm {{ 'pill-done' if o.status == 'paid' else 'pill-skipped' }}">{{ o.status }}</span></li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
 {% endblock %}

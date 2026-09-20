@@ -12,7 +12,7 @@ from urllib.parse import quote
 HERE=Path(__file__).resolve().parent;ROOT=HERE.parent;ENV=ROOT/'.env.local';JOBS=Path(os.getenv('JOBS_DIR') or (ROOT/'jobs'));JOBS.mkdir(parents=True,exist_ok=True);PORT=int(os.getenv('PORT','8787'))
 load_dotenv(ENV)
 if not os.getenv('PUBLIC_BASE_URL') and os.getenv('RAILWAY_PUBLIC_DOMAIN'):os.environ['PUBLIC_BASE_URL']='https://'+os.environ['RAILWAY_PUBLIC_DOMAIN']
-from app import pipeline,hostmsg,search as listing_search,gdrive,auth,store,plans,cohost,linkedin
+from app import pipeline,hostmsg,search as listing_search,gdrive,auth,store,plans,cohost,linkedin,billing
 app=FastAPI(title='ReelSieve by Braivex');app.mount('/static',StaticFiles(directory=HERE/'static'),name='static')
 tpl=Jinja2Templates(directory=HERE/'templates');tpl.env.autoescape=True
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -119,8 +119,8 @@ async def api_users_pw(request:Request):
     try:auth.set_password(b.get('user',''),b.get('password',''))
     except ValueError as e:raise HTTPException(400,str(e))
     return {'ok':True}
-SECRET_KEYS=['HF_KEY','GOOGLE_CLIENT_SECRET'];SETTING_KEYS=['HF_KEY','PUBLIC_BASE_URL','DEFAULT_MESSAGE','GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','GDRIVE_FOLDER']
-HINTS={'HF_KEY':'Higgsfield API key, key-id:key-secret','PUBLIC_BASE_URL':'Where this app is reachable from the internet (optional; tunnel is used otherwise)','DEFAULT_MESSAGE':'Template for the Airbnb message. Tokens: {host_name} {listing_title} {city} {search_phrase} {reel_link}. Keep it link-free — Airbnb filters URLs before a booking','GOOGLE_CLIENT_ID':'OAuth client ID from Google Cloud Console (Web application)','GOOGLE_CLIENT_SECRET':'OAuth client secret','GDRIVE_FOLDER':'Drive folder name for uploads (default: Listing Reels)'}
+SECRET_KEYS=['HF_KEY','GOOGLE_CLIENT_SECRET','BILLING_WEBHOOK_SECRET'];SETTING_KEYS=['HF_KEY','PUBLIC_BASE_URL','DEFAULT_MESSAGE','GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','GDRIVE_FOLDER','CHECKOUT_STARTER','CHECKOUT_COMMERCIAL','BILLING_WEBHOOK_SECRET','BILLING_NOTE']
+HINTS={'HF_KEY':'Higgsfield API key, key-id:key-secret','PUBLIC_BASE_URL':'Where this app is reachable from the internet (optional; tunnel is used otherwise)','DEFAULT_MESSAGE':'Template for the Airbnb message. Tokens: {host_name} {listing_title} {city} {search_phrase} {reel_link}. Keep it link-free — Airbnb filters URLs before a booking','GOOGLE_CLIENT_ID':'OAuth client ID from Google Cloud Console (Web application)','GOOGLE_CLIENT_SECRET':'OAuth client secret','GDRIVE_FOLDER':'Drive folder name for uploads (default: Listing Reels)','CHECKOUT_STARTER':'Hosted checkout link for Starter ($100) — Skydo InstaLink, Dodo, Razorpay or PayPal','CHECKOUT_COMMERCIAL':'Hosted checkout link for Commercial ($500)','BILLING_WEBHOOK_SECRET':'Shared secret your payment provider signs webhooks with','BILLING_NOTE':'Line shown to customers who choose invoice (e.g. how fast you send it)'}
 DAILY_CAP=int(os.getenv('OUTREACH_DAILY_CAP','5'))
 COHOST_MESSAGE=("Hi {name} — I'm Hemant from ReelSieve (Braivex). I make short cinematic walkthrough videos for short-let "
  "listings, built from the photos and reviews already on them. I made one for a {city} property this week and thought of you.\n\n"
@@ -287,10 +287,49 @@ async def signup_post(request:Request):
     if plan in ('starter','commercial'):nxt='/upgrade?plan='+plan
     return _set_session(RedirectResponse(nxt,status_code=303),request,u,True)
 @app.get('/upgrade',response_class=HTMLResponse)
-def upgrade(request:Request,plan:str=''):
-    links={'starter':os.getenv('CHECKOUT_STARTER',''),'commercial':os.getenv('CHECKOUT_COMMERCIAL','')}
-    return tpl.TemplateResponse(request,'upgrade.html',{'plan':plan,'plans':plans.public_plans(),'link':links.get(plan,''),
-        'account':plans.account_view(request.state.user) if request.state.user else None})
+def upgrade(request:Request,plan:str='',ref:str=''):
+    return tpl.TemplateResponse(request,'upgrade.html',{'plan':plan,'plans':plans.public_plans(),
+        'link':billing.checkout_link(plan) if plan else '','ref':ref,'order':billing.get_order(ref) if ref else None,
+        'billing_note':os.getenv('BILLING_NOTE') or 'We send the invoice within a few hours and add your credits the moment it clears.',
+        'csrf':auth.csrf_token(request.cookies.get(auth.COOKIE,'')),
+        'account':plans.account_view(request.state.user) if request.state.user else None,
+        'orders':billing.orders(request.state.user)[:5] if request.state.user else []})
+@app.post('/api/billing/request')
+async def billing_request(request:Request):
+    b=await request.json();pl=(b.get('plan') or '').strip()
+    if pl not in ('starter','commercial'):raise HTTPException(400,'Choose Starter or Commercial')
+    try:o=billing.create_order(request.state.user,pl,b.get('provider') or 'invoice',(b.get('note') or '')[:400],{'ip':_ip(request)})
+    except ValueError as e:raise HTTPException(400,str(e))
+    return {'ok':True,'order':o}
+@app.get('/api/billing/orders')
+def billing_orders(request:Request,all:int=0):
+    if all and is_admin(request):return {'orders':billing.orders(),'pending':billing.pending_count()}
+    return {'orders':billing.orders(request.state.user)}
+@app.post('/api/billing/settle')
+async def billing_settle(request:Request):
+    _require_admin(request);b=await request.json()
+    try:o=billing.settle((b.get('ref') or '').strip(),by=request.state.user)
+    except ValueError as e:raise HTTPException(400,str(e))
+    return {'ok':True,'order':o,'account':plans.account_view(o['user'])}
+@app.post('/api/billing/cancel')
+async def billing_cancel(request:Request):
+    _require_admin(request);b=await request.json()
+    return {'ok':True,'order':billing.cancel((b.get('ref') or '').strip(),b.get('note') or 'cancelled')}
+@app.post('/api/billing/webhook/{provider}')
+async def billing_webhook(provider:str,request:Request):
+    """Provider-agnostic: HMAC-SHA256 over the raw body, our order ref anywhere in the payload."""
+    raw=await request.body()
+    sig=(request.headers.get('x-signature') or request.headers.get('x-razorpay-signature') or
+         request.headers.get('x-skydo-signature') or request.headers.get('x-dodo-signature') or
+         request.headers.get('x-webhook-signature') or '')
+    if not billing.verify(provider,raw,sig):raise HTTPException(401,'Bad signature')
+    try:payload=json.loads(raw or b'{}')
+    except Exception:raise HTTPException(400,'Bad payload')
+    ref=billing.ref_from_payload(payload)
+    if not ref:raise HTTPException(400,'No order reference in payload')
+    try:o=billing.settle(ref,by=f'webhook:{provider}',provider=provider)
+    except ValueError as e:raise HTTPException(404,str(e))
+    return {'ok':True,'ref':o['ref'],'status':o['status']}
 @app.get('/app',response_class=HTMLResponse)
 def index(request:Request,url:str=''):
     jobs=[{'id':j['id'],'status':j['status'],'title':(j.get('listing') or {}).get('title') or j.get('url'),'location':(j.get('listing') or {}).get('location'),'created':j.get('created'),'video_url':j.get('video_url')} for j in load_jobs(request.state.user,is_admin(request))[:12]]
