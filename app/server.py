@@ -483,7 +483,10 @@ def api_search_more(location:str,page:int,checkin:str='',checkout:str='',adults:
     except Exception as e:raise HTTPException(502,f'Load more failed: {type(e).__name__}: {str(e)[:120]}')
 def _redirect_uri(request):
     base=(os.getenv('PUBLIC_BASE_URL') or str(request.base_url)).rstrip('/')
-    if 'localhost' in str(request.base_url) or '127.0.0.1' in str(request.base_url):base=str(request.base_url).rstrip('/')
+    if 'localhost' in str(request.base_url) or '127.0.0.1' in str(request.base_url):
+        # Google matches redirect URIs as exact strings for Web clients, and 127.0.0.1 is not localhost.
+        # Normalise so either way into a dev server produces the one URI registered on the OAuth client.
+        base=str(request.base_url).rstrip('/').replace('127.0.0.1','localhost')
     return base+'/oauth/google/callback'
 @app.get('/oauth/google/start')
 def google_start(request:Request):
