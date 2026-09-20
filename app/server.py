@@ -23,11 +23,10 @@ def _settings_file():
     return ROOT/'.env.local'
 ENV=_settings_file();JOBS=Path(os.getenv('JOBS_DIR') or (ROOT/'jobs'));JOBS.mkdir(parents=True,exist_ok=True);PORT=int(os.getenv('PORT','8787'))
 load_dotenv(ENV)
-if ENV!=ROOT/'.env.local' and (ROOT/'.env.local').exists() and not ENV.exists():
-    # first boot after this change: carry the image's bundled settings onto the volume, once
-    try:
-        ENV.write_text((ROOT/'.env.local').read_text());os.chmod(ENV,0o600)
-    except Exception:pass
+# Deliberately NOT copying a bundled .env.local onto the volume. A file shipped inside the image would be a
+# developer's local secrets, and promoting those to a production volume is exactly the accident to avoid.
+# Deployed installs are configured through real environment variables; the volume file is only what the
+# operator saves from Settings.
 if not os.getenv('PUBLIC_BASE_URL') and os.getenv('RAILWAY_PUBLIC_DOMAIN'):os.environ['PUBLIC_BASE_URL']='https://'+os.environ['RAILWAY_PUBLIC_DOMAIN']
 from app import pipeline,hostmsg,search as listing_search,gdrive,auth,store,plans,cohost,linkedin,billing
 app=FastAPI(title='ReelSieve by Braivex');app.mount('/static',StaticFiles(directory=HERE/'static'),name='static')

@@ -7,3 +7,9 @@ sample-build
 .listing-reel
 .git
 **/__pycache__
+.env
+.env.local
+*.env.local
+.listing-reel/
+gdrive
+*.db
