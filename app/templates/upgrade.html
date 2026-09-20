@@ -15,6 +15,10 @@
   <p class="sub">Reference <strong>{{ order.ref }}</strong> · {{ order.plan|capitalize }} · ${{ order.amount_usd|round|int }}</p>
   {% if order.status == 'paid' %}
     <p class="hint">Credits are on your account. <a href="/app">Make a reel</a>.</p>
+  {% elif order.pay_link %}
+    <p class="hint">Your payment link is ready. It is issued for this order only, so nothing else needs to be quoted.</p>
+    <div class="actions"><a class="btn btn-primary" href="{{ order.pay_link }}" target="_blank" rel="noopener">Pay ${{ order.amount_usd|round|int }} now</a></div>
+    <p class="hint">Paid already? Credits are added once the payment clears. Bank transfers can take a few working days.</p>
   {% else %}
     <p class="hint">Quote <strong>{{ order.ref }}</strong> as the payment reference if your bank or card page asks for one — it is how we match your payment to this account.</p>
     <p class="hint">{{ billing_note }}</p>

@@ -879,10 +879,10 @@
         var li = document.createElement("li"); li.className = "user-row";
         var when = o.ts ? new Date(o.ts * 1000).toLocaleDateString() : "";
         li.innerHTML = '<span class="u-mail"></span><span class="badge"></span><span class="u-actions"></span>';
-        li.querySelector(".u-mail").textContent = o.ref + " · " + o.user + " · " + o.plan + " · $" + Math.round(o.amount_usd) + " · " + when;
+        li.querySelector(".u-mail").textContent = o.ref + " · " + o.user + " · " + o.plan + " · $" + Math.round(o.amount_usd) + " · " + when + (o.pay_link ? " · link sent" : "");
         li.querySelector(".badge").textContent = o.status;
         var acts = li.querySelector(".u-actions");
-        if (o.status === "pending") {
+        if (o.status === "pending" || o.status === "reported") {
           var pay = document.createElement("button"); pay.type = "button"; pay.className = "btn btn-primary btn-sm"; pay.textContent = "Mark paid";
           pay.addEventListener("click", function () {
             if (!confirm("Mark " + o.ref + " paid and grant " + o.plan + " credits to " + o.user + "?")) return;
@@ -891,7 +891,17 @@
           });
           var can = document.createElement("button"); can.type = "button"; can.className = "btn btn-secondary btn-sm"; can.textContent = "Cancel";
           can.addEventListener("click", function () { if (!confirm("Cancel " + o.ref + "?")) return; postJSON("/api/billing/cancel", { ref: o.ref }).then(load).catch(function (e) { ordStatus.textContent = e.message; }); });
-          acts.appendChild(pay); acts.appendChild(can);
+          // Providers like Skydo mint one single-use link per payment, so the link IS the tenant mapping.
+          var lnk = document.createElement("button"); lnk.type = "button"; lnk.className = "btn btn-secondary btn-sm";
+          lnk.textContent = o.pay_link ? "Change link" : "Add pay link";
+          lnk.addEventListener("click", function () {
+            var url = prompt("Paste the payment link issued for " + o.ref + " (" + o.user + ", $" + Math.round(o.amount_usd) + ").\nLeave blank to remove it.", o.pay_link || "");
+            if (url === null) return;
+            postJSON("/api/billing/link", { ref: o.ref, url: url.trim() })
+              .then(function () { ordStatus.textContent = url.trim() ? (o.ref + " — link attached; the customer sees a Pay button.") : (o.ref + " — link removed."); load(); })
+              .catch(function (e) { ordStatus.textContent = e.message; });
+          });
+          acts.appendChild(pay); acts.appendChild(can); acts.appendChild(lnk);
         }
         ordList.appendChild(li);
       });

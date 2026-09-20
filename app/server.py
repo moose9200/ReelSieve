@@ -123,7 +123,7 @@ async def api_users_pw(request:Request):
     except ValueError as e:raise HTTPException(400,str(e))
     return {'ok':True}
 SECRET_KEYS=['HF_KEY','GOOGLE_CLIENT_SECRET','BILLING_WEBHOOK_SECRET'];SETTING_KEYS=['HF_KEY','PUBLIC_BASE_URL','DEFAULT_MESSAGE','GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','GDRIVE_FOLDER','CHECKOUT_STARTER','CHECKOUT_COMMERCIAL','BILLING_WEBHOOK_SECRET','BILLING_NOTE']
-HINTS={'HF_KEY':'Higgsfield API key, key-id:key-secret','PUBLIC_BASE_URL':'Where this app is reachable from the internet (optional; tunnel is used otherwise)','DEFAULT_MESSAGE':'Template for the Airbnb message. Tokens: {host_name} {listing_title} {city} {search_phrase} {reel_link}. Keep it link-free — Airbnb filters URLs before a booking','GOOGLE_CLIENT_ID':'OAuth client ID from Google Cloud Console (Web application)','GOOGLE_CLIENT_SECRET':'OAuth client secret','GDRIVE_FOLDER':'Drive folder name for uploads (default: Listing Reels)','CHECKOUT_STARTER':'Hosted checkout link for Starter ($100) — Skydo InstaLink, Dodo, Razorpay or PayPal','CHECKOUT_COMMERCIAL':'Hosted checkout link for Commercial ($500)','BILLING_WEBHOOK_SECRET':'Shared secret your payment provider signs webhooks with','BILLING_NOTE':'Line shown to customers who choose invoice (e.g. how fast you send it)'}
+HINTS={'HF_KEY':'Higgsfield API key, key-id:key-secret','PUBLIC_BASE_URL':'Where this app is reachable from the internet (optional; tunnel is used otherwise)','DEFAULT_MESSAGE':'Template for the Airbnb message. Tokens: {host_name} {listing_title} {city} {search_phrase} {reel_link}. Keep it link-free — Airbnb filters URLs before a booking','GOOGLE_CLIENT_ID':'OAuth client ID from Google Cloud Console (Web application)','GOOGLE_CLIENT_SECRET':'OAuth client secret','GDRIVE_FOLDER':'Drive folder name for uploads (default: Listing Reels)','CHECKOUT_STARTER':'REUSABLE checkout link for Starter ($100) — PayPal, Razorpay or Dodo. Not a Skydo InstaLink: those are single use, so attach one per order in Orders above','CHECKOUT_COMMERCIAL':'REUSABLE checkout link for Commercial ($500). Same rule: a single-use link belongs on an order, not here','BILLING_WEBHOOK_SECRET':'Shared secret your payment provider signs webhooks with','BILLING_NOTE':'Line shown to customers who choose invoice (e.g. how fast you send it)'}
 DAILY_CAP=int(os.getenv('OUTREACH_DAILY_CAP','5'))
 COHOST_MESSAGE=("Hi {name} — I'm Hemant from ReelSieve (Braivex). I make short cinematic walkthrough videos for short-let "
  "listings, built from the photos and reviews already on them. I made one for a {city} property this week and thought of you.\n\n"
@@ -292,7 +292,8 @@ async def signup_post(request:Request):
 @app.get('/upgrade',response_class=HTMLResponse)
 def upgrade(request:Request,plan:str='',ref:str=''):
     return tpl.TemplateResponse(request,'upgrade.html',{'plan':plan,'plans':plans.public_plans(),
-        'link':billing.checkout_link(plan) if plan else '','ref':ref,'order':billing.get_order(ref) if ref else None,
+        'link':billing.checkout_link(plan) if plan else '','ref':ref,
+        'order':billing.get_order_for(ref,request.state.user,is_admin(request)) if ref else None,
         'billing_note':os.getenv('BILLING_NOTE') or 'We send the invoice within a few hours and add your credits the moment it clears.',
         'csrf':auth.csrf_token(request.cookies.get(auth.COOKIE,'')),
         'account':plans.account_view(request.state.user) if request.state.user else None,
@@ -311,7 +312,7 @@ async def billing_start(request:Request):
     return {'ok':True,'order':o,'pay_url':billing.pay_url(pl,o['ref'],base)}
 @app.get('/upgrade/paid',response_class=HTMLResponse)
 def upgrade_paid(request:Request,ref:str=''):
-    o=billing.get_order(ref) if ref else None
+    o=billing.get_order_for(ref,request.state.user,is_admin(request)) if ref else None
     if o and o['user']==request.state.user:o=billing.mark_reported(ref)
     return tpl.TemplateResponse(request,'upgrade.html',{'plan':(o or {}).get('plan',''),'plans':plans.public_plans(),
         'link':'','ref':ref,'order':o,'reported':True,
@@ -340,6 +341,14 @@ async def billing_settle(request:Request):
 async def billing_cancel(request:Request):
     _require_admin(request);b=await request.json()
     return {'ok':True,'order':billing.cancel((b.get('ref') or '').strip(),b.get('note') or 'cancelled')}
+@app.post('/api/billing/link')
+async def billing_link(request:Request):
+    """Attach a minted per-payment link to one order. Providers like Skydo issue a single-use InstaLink with no
+    reference field of our own, so the link itself is the tenant mapping: one link, one order, one customer."""
+    _require_admin(request);b=await request.json()
+    try:o=billing.set_pay_link((b.get('ref') or '').strip(),b.get('url') or '')
+    except ValueError as e:raise HTTPException(400,str(e))
+    return {'ok':True,'order':o}
 @app.post('/api/billing/webhook/{provider}')
 async def billing_webhook(provider:str,request:Request):
     """Provider-agnostic: HMAC-SHA256 over the raw body, our order ref anywhere in the payload."""
