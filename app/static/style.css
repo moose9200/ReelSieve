@@ -818,3 +818,11 @@ body.lp-page { display: block; font-size: 15px; }
   .or-table .or-actions { flex: 1; }
   .or-actions .btn { min-height: 44px; flex: 1 1 auto; }
 }
+
+/* landing: footer legal links need a 44px hit area at 390px */
+.lp-bottom a { display: inline-block; padding: 10px 4px; line-height: 24px; }
+
+.plan-strip { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 14px; margin-bottom: 14px; border-radius: var(--radius-control); box-shadow: var(--sink-sm); font-size: 13px; }
+.plan-strip .plan-left { color: var(--muted); } .plan-strip.is-empty .plan-left { color: var(--neg); }
+.plan-strip .btn { margin-left: auto; }
+@media (max-width: 720px) { .plan-strip .btn { margin-left: 0; width: 100%; } }

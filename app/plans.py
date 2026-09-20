@@ -33,17 +33,22 @@ ORDER=['free','starter','commercial','enterprise']
 FREE_LIFETIME=int(os.getenv('FREE_LIFETIME','2'))
 FREE_PER_NET=int(os.getenv('FREE_PER_NET','3'))
 FREE_PER_DEVICE=int(os.getenv('FREE_PER_DEVICE','2'))
-FREE_COOLDOWN_H=float(os.getenv('FREE_COOLDOWN_H','12'))
+FREE_COOLDOWN_H=float(os.getenv('FREE_COOLDOWN_H','0'))  # 2 lifetime videos is the real cap; a cooldown only hurts first-run UX
 DISPOSABLE=set('''mailinator.com guerrillamail.com 10minutemail.com tempmail.com temp-mail.org yopmail.com throwawaymail.com
 sharklasers.com getnada.com trashmail.com maildrop.cc dispostable.com fakeinbox.com mailnesia.com mintemail.com
 moakt.com emailondeck.com tempr.email discard.email spamgourmet.com mytemp.email burnermail.io grr.la spam4.me
 mailcatch.com inboxbear.com tempmailo.com tmpmail.org luxusmail.org anonbox.net'''.split())
 ROLE_LOCAL={'admin','info','support','contact','sales','billing','noreply','no-reply','postmaster','webmaster','abuse','test'}
+def _default_plan(user):
+    """Admins (the people running this install) are never metered; everyone else starts free."""
+    try:
+        from app import auth;return 'enterprise' if auth.role(user)=='admin' else 'free'
+    except Exception:return 'free'
 def plan_of(user):
     a=store.get_account(user) or {}
     return PLANS.get(a.get('plan') or 'free',PLANS['free'])
 def account_view(user):
-    a=store.ensure_account(user);p=PLANS.get(a.get('plan') or 'free',PLANS['free'])
+    a=store.ensure_account(user,_default_plan(user));p=PLANS.get(a.get('plan') or 'free',PLANS['free'])
     used=store.count_usage(user=user)
     if p['key']=='free':remaining=max(0,FREE_LIFETIME-used)
     elif p['videos'] is None:remaining=None
@@ -67,7 +72,7 @@ def signup_guard(email,ip,fp):
     return None
 def can_generate(user,listing_url,ip=None,fp=None):
     """(ok, reason, meta). Paid: needs credits. Free: layered guardrails. Same listing never costs twice."""
-    a=store.ensure_account(user);p=PLANS.get(a.get('plan') or 'free',PLANS['free'])
+    a=store.ensure_account(user,_default_plan(user));p=PLANS.get(a.get('plan') or 'free',PLANS['free'])
     if a.get('blocked'):return False,'This account is on hold. Email hello@braivex.com.',{}
     if store.count_usage(user=user,listing_url=listing_url)>0:
         return True,None,{'free_rerun':True,'reason':'same listing already generated — no credit used'}
@@ -88,7 +93,7 @@ def can_generate(user,listing_url,ip=None,fp=None):
         return False,f'Free plan makes one video every {int(FREE_COOLDOWN_H)} hours — next one in about {max(1,int(wait))} h. Starter removes the wait.',{'upgrade':True}
     return True,None,{'free_remaining':FREE_LIFETIME-used-1}
 def consume(user,listing_url,job_id,ip=None,fp=None):
-    a=store.ensure_account(user);p=PLANS.get(a.get('plan') or 'free',PLANS['free'])
+    a=store.ensure_account(user,_default_plan(user));p=PLANS.get(a.get('plan') or 'free',PLANS['free'])
     if store.count_usage(user=user,listing_url=listing_url)>0:
         store.record_usage(user,p['key'],listing_url,job_id,ip,fp,kind='rerun',credits=0);return
     store.record_usage(user,p['key'],listing_url,job_id,ip,fp,kind='video',credits=1)

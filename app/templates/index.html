@@ -7,6 +7,13 @@
   <p class="sub">We pull the photos and reviews, build a 30-second walkthrough with captions and music, and prepare an Airbnb message to the host with the reel link. You press Send.</p>
 </section>
 
+{% if account %}
+<section class="plan-strip{% if account.remaining is not none and account.remaining <= 0 %} is-empty{% endif %}">
+  <span class="pill {{ 'pill-done' if account.plan != 'free' else 'pill-skipped' }}">{{ account.plan_name }}</span>
+  <span class="plan-left">{% if account.remaining is none %}Unlimited videos{% elif account.remaining > 0 %}{{ account.remaining }} video{{ 's' if account.remaining != 1 }} left{% else %}No videos left{% endif %}</span>
+  {% if account.plan == 'free' %}<a class="btn btn-secondary btn-sm" href="/#pricing">Get 3 with AI motion — $100</a>{% elif account.remaining is not none and account.remaining <= 1 %}<a class="btn btn-secondary btn-sm" href="/#pricing">Top up</a>{% endif %}
+</section>
+{% endif %}
 <section class="card form-card search-card">
   <p class="eyebrow">Find a listing</p>
   <form id="search-form" novalidate>
