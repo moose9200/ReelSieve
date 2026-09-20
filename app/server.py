@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Listing Reel by Braivex — paste an Airbnb URL, get a 30 s cinematic reel, hand it to the host via Airbnb messaging.
 Run: .venv/bin/uvicorn app.server:app --port 8787   (from the project root)"""
-import os,re,json,uuid,threading,time,traceback,secrets
+import os,re,json,uuid,threading,time,traceback,secrets,hashlib
 from pathlib import Path
 from fastapi import FastAPI,Request,HTTPException
 from fastapi.responses import HTMLResponse,JSONResponse,RedirectResponse,FileResponse
@@ -64,8 +64,17 @@ def _set_session(resp,request,user,long=True):
     tok,ttl=auth.issue(user,long);resp.set_cookie(auth.COOKIE,tok,max_age=ttl,httponly=True,samesite='lax',secure=_secure(request));return resp
 @app.get('/favicon.ico')
 def favicon():return FileResponse(HERE/'static'/'brand'/'favicon.ico',media_type='image/x-icon')
+def build_id():
+    """Content hash of the app source. Lets us prove which code a deployment is actually serving,
+    which 'the deploy said SUCCESS' does not."""
+    h=hashlib.sha256()
+    for f in sorted(list(HERE.glob('*.py'))+list((HERE/'templates').glob('*.html'))+[HERE/'static'/'app.js']):
+        try:h.update(f.read_bytes())
+        except Exception:pass
+    return h.hexdigest()[:12]
+BUILD=build_id()
 @app.get('/healthz')
-def healthz():return {'ok':True}
+def healthz():return {'ok':True,'build':BUILD}
 @app.get('/setup',response_class=HTMLResponse)
 def setup_page(request:Request,next:str='/app'):
     if auth.has_account():return RedirectResponse('/login?notice=exists',status_code=303)
