@@ -607,8 +607,6 @@ body.lp-page { display: block; font-size: 15px; }
 .lp-header {
   position: sticky; top: 0; z-index: 30;
   background: var(--ground);
-  background: color-mix(in srgb, var(--ground) 84%, transparent);
-  backdrop-filter: blur(14px) saturate(140%);
   box-shadow: 0 14px 30px -26px var(--shadow-dark);
 }
 .lp-header-in { display: flex; align-items: center; gap: 16px; min-height: 68px; }
@@ -826,3 +824,19 @@ body.lp-page { display: block; font-size: 15px; }
 .plan-strip .plan-left { color: var(--muted); } .plan-strip.is-empty .plan-left { color: var(--neg); }
 .plan-strip .btn { margin-left: auto; }
 @media (max-width: 720px) { .plan-strip .btn { margin-left: 0; width: 100%; } }
+
+/* outreach: keep the 3 row actions on one line while the table is a table */
+@media (min-width: 721px) {
+  .or-table td[data-label="Actions"] { width: 1%; white-space: nowrap; }
+  .or-table .or-actions { flex-wrap: nowrap; }
+}
+/* outreach: stacked-card cells put the secondary line under the value, not beside it */
+@media (max-width: 720px) {
+  .or-table td { flex-wrap: wrap; }
+  .or-table td .or-sub { flex: 0 0 100%; padding-left: 88px; margin-top: 2px; }
+}
+/* outreach: at 390 the tracker's stat pills take their own line under the heading */
+@media (max-width: 720px) {
+  #tracker-card .section-head { flex-wrap: wrap; }
+  #tracker-card .or-stats { flex: 1 0 100%; }
+}

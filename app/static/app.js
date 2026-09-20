@@ -493,9 +493,11 @@
     function orSay(el, msg, bad) { if (!el) return; el.className = "form-status" + (bad ? " is-error" : ""); el.textContent = msg || ""; }
     function orNum(v) { var n = parseInt(v, 10); return isNaN(n) ? v : n; }
     function orTokens(tpl, ctx) {
-      return String(tpl == null ? "" : tpl).replace(/\{(name|city|listing_title|company)\}/g, function (m, k) {
+      var out = String(tpl == null ? "" : tpl).replace(/\{(name|city|listing_title|company)\}/g, function (m, k) {
         var v = ctx[k]; return v == null ? "" : String(v);
       });
+      // an empty token must not leave a double space or a stranded comma
+      return out.replace(/[ \t]{2,}/g, " ").replace(/[ \t]+([,.!?;:])/g, "$1").replace(/[ \t]+$/gm, "");
     }
     function orCopy(text, done) {
       var t = String(text == null ? "" : text);
@@ -570,7 +572,7 @@
           name: it.name || "",
           url: it.url || "",
           city: city,
-          message: orTokens(tpl, { name: it.name || "", city: city, listing_title: it.listing_title || it.tagline || "" })
+          message: orTokens(tpl, { name: it.name || "", city: city, listing_title: it.listing_title || it.title || "" })
         };
       });
     }
@@ -785,6 +787,10 @@
     });
 
     // --- C. Tracker ---
+    // rows carry scraped URLs: never let a non-http(s) scheme stay clickable
+    Array.prototype.forEach.call(document.querySelectorAll("#tracker-card a[href]"), function (a) {
+      if (!/^https?:\/\//i.test(a.getAttribute("href") || "")) { a.removeAttribute("href"); a.setAttribute("aria-disabled", "true"); a.classList.add("is-disabled"); a.title = "Link removed: not an http(s) address"; }
+    });
     var trChan = document.getElementById("tr-channel"), trStat = document.getElementById("tr-status"), trSearch = document.getElementById("tr-search");
     var trTable = document.getElementById("tr-table"), trNone = document.getElementById("tr-none");
     function trFilter() {

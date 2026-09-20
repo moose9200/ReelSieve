@@ -164,14 +164,24 @@ def drive_fields(j):
     fid=j.get('drive_id')
     if not fid:return {}
     return {'drive_embed':f'https://drive.google.com/file/d/{fid}/preview','drive_download':f'https://drive.google.com/uc?export=download&id={fid}','drive_thumb':f'https://drive.google.com/thumbnail?id={fid}&sz=w640'}
+def is_admin(request):
+    try:return auth.role(request.state.user)=='admin'
+    except Exception:return False
+def _deny():raise HTTPException(404)
+def owns(j,user,admin=False):
+    """A job belongs to the user who made it. Legacy jobs (no user field) belong to admins only."""
+    o=(j or {}).get('user')
+    return bool(admin) if not o else (o==user)
 def job_public(j):return {k:v for k,v in j.items() if k!='thread'}
 def persist(j):(JOBS/j['id']/'job.json').write_text(json.dumps(job_public(j),indent=1))
-def load_jobs():
+def load_jobs(user=None,admin=False):
     out=[]
     for d in sorted(JOBS.iterdir(),key=lambda p:p.stat().st_mtime,reverse=True):
         f=d/'job.json'
         if f.exists():
-            try:out.append(json.loads(f.read_text()))
+            try:
+                j=json.loads(f.read_text())
+                if user is None or owns(j,user,admin):out.append(j)
             except Exception:pass
     return out
 def reel_link_for(j):
@@ -192,8 +202,7 @@ def enrich(j):
     """Derived, non-persisted fields for the UI."""
     j=dict(j);lid=(j.get('listing') or {}).get('id') or (re.search(r'/rooms/(\d+)',j.get('url','')) or [None,None])[1]
     j.update(drive_fields(j));j['contact_url']=hostmsg.contact_url(lid) if lid else None;j['reel_link']=reel_link_for(j);j['search_phrase']=search_phrase(j);j['youtube_title']=search_phrase(j).replace(' ReelSieve',' — by ReelSieve');j['message_final']=finalize_message(j);return j
-def run_job(jid,url,ai_motion,renderer='v2'):
-    os.environ['MAX_SECONDS']=str((_jobs.get(jid) or {}).get('max_seconds') or 60)
+def run_job(jid,url,ai_motion,renderer='v2',max_seconds=None):
     j=_jobs[jid];steps=['Fetching','Reviews','Downloaded','Scored','Audit','AI motion plan','Seedance','Estimating depth','Rendering','Rendered','Uploading']
     def cb(msg):
         with _lock:
@@ -203,7 +212,7 @@ def run_job(jid,url,ai_motion,renderer='v2'):
             persist(j)
     try:
         j['status']='running';persist(j)
-        res=pipeline.run(url,JOBS/jid,None,ai_motion,cb,None,renderer)
+        res=pipeline.run(url,JOBS/jid,None,ai_motion,cb,None,renderer,max_seconds)
         with _lock:
             j.update(status='done',progress=100,step='Done',video_url=f"/media/{jid}/{Path(res['video']).name}",listing={**res['listing'],'location':res['listing'].get('city')},duration=res['duration'],audit=res.get('audit'),ai_plan=res.get('ai_plan'),selection=res.get('selection'),photo_scores=res.get('photo_scores'))
             if j.get('send_to_host'):
@@ -228,6 +237,23 @@ def run_job(jid,url,ai_motion,renderer='v2'):
     except Exception as e:
         with _lock:j.update(status='failed',error=f'{type(e).__name__}: {str(e)[:300]}',step='Failed');j['log'].append(traceback.format_exc()[-600:])
     persist(j)
+def _migrate_jobs_owner():
+    """Jobs made before multi-user existed have no owner. Give them to the first admin so they stay visible
+    to the operator and invisible to everyone else. Runs once at startup, cheap and idempotent."""
+    try:
+        admins=[u['user'] for u in auth.users() if u.get('role')=='admin']
+        if not admins:return 0
+        owner=admins[0];n=0
+        for d in JOBS.iterdir():
+            f=d/'job.json'
+            if not f.exists():continue
+            try:j=json.loads(f.read_text())
+            except Exception:continue
+            if not j.get('user'):
+                j['user']=owner;f.write_text(json.dumps(j,indent=1));n+=1
+        return n
+    except Exception:return 0
+_MIGRATED=_migrate_jobs_owner()
 @app.get('/',response_class=HTMLResponse)
 def landing(request:Request):
     return tpl.TemplateResponse(request,'landing.html',{'signed_in':bool(request.state.user),'user':request.state.user,
@@ -251,7 +277,7 @@ async def signup_post(request:Request):
     if guard:return ctx(guard)
     try:auth.create_user(u,p1,'member')
     except ValueError as e:return ctx(str(e))
-    store.ensure_account(u,'free',ip,fp)
+    store.ensure_account(u,plans._default_plan(u),ip,fp)   # first signup on a fresh install is the admin, and admins aren't metered
     nxt='/app'+(('?url='+quote(url)) if url else '')
     if plan in ('starter','commercial'):nxt='/upgrade?plan='+plan
     return _set_session(RedirectResponse(nxt,status_code=303),request,u,True)
@@ -262,7 +288,7 @@ def upgrade(request:Request,plan:str=''):
         'account':plans.account_view(request.state.user) if request.state.user else None})
 @app.get('/app',response_class=HTMLResponse)
 def index(request:Request,url:str=''):
-    jobs=[{'id':j['id'],'status':j['status'],'title':(j.get('listing') or {}).get('title') or j.get('url'),'location':(j.get('listing') or {}).get('location'),'created':j.get('created'),'video_url':j.get('video_url')} for j in load_jobs()[:12]]
+    jobs=[{'id':j['id'],'status':j['status'],'title':(j.get('listing') or {}).get('title') or j.get('url'),'location':(j.get('listing') or {}).get('location'),'created':j.get('created'),'video_url':j.get('video_url')} for j in load_jobs(request.state.user,is_admin(request))[:12]]
     return tpl.TemplateResponse(request,'index.html',{'jobs':jobs,'hf_configured':bool(os.getenv('HF_KEY')),'airbnb_connected':airbnb_status().get('connected',False),'public_url_ok':bool(hostmsg.public_base()),'default_message':default_message(),'prefill_url':url,'account':plans.account_view(request.state.user)})
 @app.post('/api/jobs')
 async def create_job(request:Request):
@@ -278,22 +304,25 @@ async def create_job(request:Request):
     jid=uuid.uuid4().hex[:10];(JOBS/jid).mkdir(parents=True,exist_ok=True)
     plans.consume(user,url,jid,ip,fp)
     j={'id':jid,'url':url,'ai_motion':ai,'style':renderer,'user':user,'plan':acct['plan'],'max_seconds':P['max_seconds'],'send_to_host':bool(b.get('send_to_host',True)),'message':(b.get('message') or default_message()).strip(),'status':'queued','progress':2,'step':'Queued','log':[],'video_url':None,'error':None,'listing':{'url':url},'created':time.strftime('%Y-%m-%d %H:%M'),'host_status':None,'host_error':None}
-    _jobs[jid]=j;persist(j);threading.Thread(target=run_job,args=(jid,url,ai,renderer),daemon=True).start();return {'id':jid,'account':plans.account_view(user)}
-def get_job(jid):
+    _jobs[jid]=j;persist(j);threading.Thread(target=run_job,args=(jid,url,ai,renderer,P['max_seconds']),daemon=True).start();return {'id':jid,'account':plans.account_view(user)}
+def get_job(jid,user=None,admin=False):
     j=_jobs.get(jid)
     if j:
-        with _lock:return job_public(j)
-    f=JOBS/jid/'job.json'
-    if not f.exists():raise HTTPException(404)
-    return json.loads(f.read_text())
+        with _lock:j=job_public(j)
+    else:
+        f=JOBS/jid/'job.json'
+        if not f.exists():raise HTTPException(404)
+        j=json.loads(f.read_text())
+    if user is not None and not owns(j,user,admin):raise HTTPException(404)
+    return j
 @app.get('/api/jobs/{jid}')
-def job_api(jid:str):return enrich(get_job(jid))
+def job_api(request:Request,jid:str):return enrich(get_job(jid,request.state.user,is_admin(request)))
 @app.get('/jobs/{jid}',response_class=HTMLResponse)
-def job_page(request:Request,jid:str):return tpl.TemplateResponse(request,'job.html',{'job':enrich(get_job(jid))})
+def job_page(request:Request,jid:str):return tpl.TemplateResponse(request,'job.html',{'job':enrich(get_job(jid,request.state.user,is_admin(request)))})
 @app.post('/api/jobs/{jid}/send-to-host')
 async def send_to_host(jid:str,request:Request):
     """Opens Airbnb's contact-host form pre-filled in a headed browser using the connected Airbnb session. Never presses Send."""
-    b=await request.json();j=_jobs.get(jid) or get_job(jid)
+    b=await request.json();j=_jobs.get(jid) or get_job(jid);_=owns(j,request.state.user,is_admin(request)) or _deny()
     if j.get('status')!='done':raise HTTPException(400,'Reel not ready yet')
     if not airbnb_status(max_age=0).get('connected'):raise HTTPException(400,'Airbnb not connected — connect it in Settings')
     lid=(j.get('listing') or {}).get('id') or pipeline.listing_id(j['url']);msg=(b.get('message') or '').strip() or finalize_message(j)
@@ -306,7 +335,7 @@ async def send_to_host(jid:str,request:Request):
 @app.post('/api/jobs/{jid}/opened-in-browser')
 async def opened_in_browser(jid:str,request:Request):
     """Records that the user opened the contact form in their own browser; the message was copied client-side."""
-    b=await request.json();j=_jobs.get(jid) or get_job(jid);msg=(b.get('message') or '').strip() or finalize_message(j)
+    b=await request.json();j=_jobs.get(jid) or get_job(jid);_=owns(j,request.state.user,is_admin(request)) or _deny();msg=(b.get('message') or '').strip() or finalize_message(j)
     upd=dict(host_status='draft',host_error='opened in your browser — paste and press Send',message=msg)
     if jid in _jobs:_jobs[jid].update(upd);persist(_jobs[jid]);return enrich(job_public(_jobs[jid]))
     j.update(upd);(JOBS/jid/'job.json').write_text(json.dumps(j,indent=1));return enrich(j)
@@ -360,8 +389,9 @@ def gdrive_status():return gdrive.status()
 @app.post('/api/gdrive/disconnect')
 def gdrive_disconnect():gdrive.disconnect();return gdrive.status()
 @app.post('/api/jobs/{jid}/upload-drive')
-def upload_drive(jid:str):
+def upload_drive(request:Request,jid:str):
     j=_jobs.get(jid) or get_job(jid)
+    if not owns(j,request.state.user,is_admin(request)):raise HTTPException(404)
     if j.get('status')!='done':raise HTTPException(400,'Reel not ready')
     if not gdrive.status().get('connected'):raise HTTPException(400,'Google Drive not connected')
     vid=JOBS/jid/Path(j['video_url']).name
@@ -381,9 +411,9 @@ def poster_for(j):
     if not pos.exists() and vid.exists():
         import subprocess;subprocess.run(['ffmpeg','-y','-v','error','-ss','2','-i',str(vid),'-frames:v','1','-vf','scale=640:-2',str(pos)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     return f"/media/{j['id']}/poster.jpg" if pos.exists() else None
-def library():
+def library(user=None,admin=False):
     groups={};order=[]
-    for j in load_jobs():
+    for j in load_jobs(user,admin):
         lid=listing_id_of(j) or j.get('url')
         if lid not in groups:
             L=dict(j.get('listing') or {});L.setdefault('id',lid);L.setdefault('url',j.get('url'));groups[lid]={'listing':L,'jobs':[],'latest':j,'poster':None};order.append(lid)
@@ -393,15 +423,15 @@ def library():
     return [groups[k] for k in order]
 @app.get('/reels',response_class=HTMLResponse)
 def reels_page(request:Request):
-    groups=library()
+    groups=library(request.state.user,is_admin(request))
     for g in groups:
         for j in g['jobs']:j.update(drive_fields(j))
     return tpl.TemplateResponse(request,'reels.html',{'groups':groups})
 @app.get('/api/reels/index')
-def reels_index():
-    """listing id → reels (for the search results 'Reel ready' marker)."""
+def reels_index(request:Request):
+    """listing id → reels (for the search results 'Reel ready' marker). Scoped to the signed-in user."""
     out={}
-    for j in load_jobs():
+    for j in load_jobs(request.state.user,is_admin(request)):
         lid=listing_id_of(j)
         if lid and j.get('status')=='done':out.setdefault(lid,[]).append({'id':j['id'],'created':j.get('created'),'video_url':j.get('video_url'),'drive_link':j.get('drive_link'),**drive_fields(j)})
     return out
@@ -480,9 +510,15 @@ def media(jid:str,name:str):
     if not p.is_file() or JOBS not in p.parents or p.suffix not in ('.mp4','.jpg'):raise HTTPException(404)
     return FileResponse(p,media_type='image/jpeg' if p.suffix=='.jpg' else 'video/mp4',filename=None if p.suffix=='.jpg' else name)
 @app.get('/settings',response_class=HTMLResponse)
-def settings(request:Request,saved:int=0,flash:str=''):return tpl.TemplateResponse(request,'settings.html',{'s':settings_view(),'saved':bool(saved),'flash':flash,'csrf':auth.csrf_token(request.cookies.get(auth.COOKIE,'')),'is_admin':auth.role(request.state.user)=='admin'})
+def settings(request:Request,saved:int=0,flash:str=''):
+    if not is_admin(request):return RedirectResponse('/account',status_code=303)
+    return tpl.TemplateResponse(request,'settings.html',{'s':settings_view(),'saved':bool(saved),'flash':flash,'csrf':auth.csrf_token(request.cookies.get(auth.COOKIE,'')),'is_admin':auth.role(request.state.user)=='admin'})
+@app.get('/account',response_class=HTMLResponse)
+def account_page(request:Request,saved:int=0):
+    return tpl.TemplateResponse(request,'account.html',{'account':plans.account_view(request.state.user),'plans':plans.public_plans(),'csrf':auth.csrf_token(request.cookies.get(auth.COOKIE,''))})
 @app.post('/settings')
 async def settings_post(request:Request):
+    if not is_admin(request):raise HTTPException(403,'Admin only')
     form=await request.form();save_settings(dict(form));return RedirectResponse('/settings?saved=1',status_code=303)
 @app.get('/api/settings')
 def settings_api():return {k:({'configured':v['configured']} if isinstance(v,dict) and 'configured' in v else v) for k,v in settings_view().items()}

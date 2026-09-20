@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Your account{% endblock %}
+{% block content %}
+<section class="hero"><p class="eyebrow">Account</p><h1>{{ account.user }}</h1>
+  <p class="sub">{{ account.plan_name }}{% if account.remaining is none %} · unlimited videos{% elif account.remaining > 0 %} · {{ account.remaining }} video{{ 's' if account.remaining != 1 }} left{% else %} · no videos left{% endif %}{% if account.used %} · {{ account.used }} made{% endif %}</p>
+</section>
+
+<section class="card">
+  <div class="section-head"><h2>Your plan</h2><span class="pill {{ 'pill-done' if account.plan != 'free' else 'pill-skipped' }}">{{ account.plan_name }}</span></div>
+  <ul class="steps">
+    <li>Up to {{ account.max_seconds }} seconds per video</li>
+    <li>{{ 'AI camera motion included' if account.ai_motion else 'AI camera motion on paid plans' }}</li>
+    <li>{{ '9:16 vertical cut included' if account.vertical else '16:9 widescreen' }}</li>
+  </ul>
+  <div class="actions">
+    <a class="btn btn-primary" href="/#pricing">{{ 'See plans' if account.plan != 'free' else 'Get 3 videos with AI motion — $100' }}</a>
+    <a class="btn btn-secondary" href="/app">Make a reel</a>
+  </div>
+</section>
+
+<section class="card">
+  <div class="section-head"><h2>Password</h2></div>
+  <div class="grid-2">
+    <div class="field"><label for="pw-current">Current password</label><input type="password" id="pw-current" autocomplete="current-password"></div>
+    <div class="field"><label for="pw-new">New password (min 8)</label><input type="password" id="pw-new" autocomplete="new-password"></div>
+  </div>
+  <div class="actions"><button type="button" class="btn btn-secondary" id="pw-btn">Change password</button><a class="btn btn-secondary" href="/logout">Log out</a><span class="form-status" id="pw-status"></span></div>
+</section>
+
+<section class="card">
+  <div class="section-head"><h2>Your data</h2></div>
+  <p class="hint">Your reels and outreach are visible only to you. We store a one-way hash of your network and device to keep the free tier fair — never the raw values — and delete them after 90 days. See <a href="/privacy">Privacy</a>.</p>
+  <p class="hint">Need your account deleted? Email <a href="mailto:hello@braivex.com?subject=Delete%20my%20ReelSieve%20account">hello@braivex.com</a> and it's done within a day.</p>
+</section>
+{% endblock %}

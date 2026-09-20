@@ -288,7 +288,7 @@ def email_html(d,link,dur):
 {'<p><a href="'+link+'" style="background:#00f0ff;color:#04070a;padding:12px 18px;border-radius:10px;font-weight:700;text-decoration:none">Watch the 1080p reel</a></p>' if link else ''}
 <p style="color:#8a8a8a;font-size:12px">A 720p copy is attached when under 20 MB. Made with ReelSieve, a Braivex product · braivex.com</p></div>"""
 # ---------------- orchestration ----------------
-def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer='v2'):
+def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer='v2',max_seconds=None):
     out_dir=Path(out_dir);out_dir.mkdir(parents=True,exist_ok=True);work=out_dir/'work';work.mkdir(exist_ok=True)
     if is_airbnb(url):
         d=scrape_listing(url,cb);revs=scrape_reviews(url,cb)
@@ -343,7 +343,7 @@ def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer
             if any(sc.get('clip') for sc in m['scenes']):m['transition_seconds']=0   # hard cuts between generated clips (no dissolves)
             else:m['scenes']=full_scenes;log(cb,'No AI clips were generated — using the full photo set with parallax motion')
         if not any(sc.get('clip') for sc in m['scenes']) and len(m['scenes'])<len(full_scenes):m['scenes']=full_scenes;log(cb,'AI motion not run — using the full photo set')
-    cap=float(os.getenv('MAX_SECONDS','0') or 0)
+    cap=float(max_seconds or os.getenv('MAX_SECONDS','0') or 0)
     if cap:
         per=float(m.get('scene_seconds',4.5));fixed=float(m.get('intro_seconds',4.5))+float(m.get('outro_seconds',5.5))+float((m.get('trust') or {}).get('seconds',0))+float((m.get('reviews') or {}).get('seconds',0))
         room=max(3,int((cap-fixed)//per))
