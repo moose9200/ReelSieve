@@ -53,11 +53,16 @@ def checkout_link(plan_key):
 def create_order(user,plan_key,provider='invoice',note='',meta=None):
     p=plans.PLANS.get(plan_key)
     if not p or p['price_usd'] in (None,0):raise ValueError('That plan is not purchasable here')
-    ref='RS-'+time.strftime('%y%m%d')+'-'+secrets.token_hex(3).upper()
-    with store._lock,store.conn() as c:
-        c.execute('INSERT INTO orders(ref,ts,user,plan,amount_usd,provider,status,note,meta) VALUES(?,?,?,?,?,?,?,?,?)',
-                  (ref,time.time(),user,plan_key,float(p['price_usd']),provider,'pending',note[:400],json.dumps(meta or {})));c.commit()
-    return get_order(ref)
+    import sqlite3
+    for _ in range(6):   # ref is UNIQUE; a collision must retry, not 500 at the moment someone tries to pay
+        ref='RS-'+time.strftime('%y%m%d')+'-'+secrets.token_hex(3).upper()
+        try:
+            with store._lock,store.conn() as c:
+                c.execute('INSERT INTO orders(ref,ts,user,plan,amount_usd,provider,status,note,meta) VALUES(?,?,?,?,?,?,?,?,?)',
+                          (ref,time.time(),user,plan_key,float(p['price_usd']),provider,'pending',note[:400],json.dumps(meta or {})));c.commit()
+            return get_order(ref)
+        except sqlite3.IntegrityError:continue
+    raise ValueError('Could not allocate an order reference — try again')
 def get_order(ref):
     with store._lock,store.conn() as c:
         r=c.execute('SELECT * FROM orders WHERE ref=?',(ref,)).fetchone();return dict(r) if r else None
@@ -114,6 +119,11 @@ def settle(ref,by='admin',provider=None):
                   (time.time(),f' · settled by {by}',provider,ref));c.commit()
     return get_order(ref)
 def cancel(ref,note=''):
+    """A paid order is a record of money received; cancelling it would erase that and, because settle()
+    skips cancelled orders, cancel-then-settle would leave a paying customer with nothing."""
+    o=get_order(ref)
+    if not o:raise ValueError('No such order')
+    if o['status']=='paid':raise ValueError(f'{ref} is already paid — refund it in your provider instead')
     with store._lock,store.conn() as c:
         c.execute('UPDATE orders SET status="cancelled",note=COALESCE(note,"")||? WHERE ref=?',(' · '+note[:200],ref));c.commit()
     return get_order(ref)

@@ -35,7 +35,10 @@ from starlette.middleware.base import BaseHTTPMiddleware
 def _role_admin(user):
     try:return bool(user) and auth.role(user)=='admin'
     except Exception:return False
-PUBLIC_PREFIXES=('/static/','/media/','/oauth/google/callback','/favicon.ico')
+# The webhook authenticates with an HMAC signature over the raw body, not a session, so it has to sit
+# outside the login gate — behind it every provider callback is rejected 401 before the signature is read,
+# and a customer who paid is never credited. verify() returns False when no secret is set, so it stays closed.
+PUBLIC_PREFIXES=('/static/','/media/','/oauth/google/callback','/favicon.ico','/api/billing/webhook/')
 PUBLIC_EXACT=('/','/login','/signup','/setup','/logout','/forgot','/healthz','/privacy','/terms')
 class LoginGate(BaseHTTPMiddleware):
     async def dispatch(self,request,call_next):
