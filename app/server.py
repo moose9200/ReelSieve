@@ -297,6 +297,28 @@ def upgrade(request:Request,plan:str='',ref:str=''):
         'csrf':auth.csrf_token(request.cookies.get(auth.COOKIE,'')),
         'account':plans.account_view(request.state.user) if request.state.user else None,
         'orders':billing.orders(request.state.user)[:5] if request.state.user else []})
+@app.post('/api/billing/start')
+async def billing_start(request:Request):
+    """Create the order FIRST, then hand back a pay URL that carries its reference — that is what maps
+    an incoming payment back to this tenant when the provider link is a single static one."""
+    b=await request.json();pl=(b.get('plan') or '').strip()
+    if pl not in ('starter','commercial'):raise HTTPException(400,'Choose Starter or Commercial')
+    link=billing.checkout_link(pl)
+    if not link:raise HTTPException(400,'No payment link configured for that plan — request an invoice instead')
+    try:o=billing.create_order(request.state.user,pl,'link',(b.get('note') or '')[:400],{'ip':_ip(request)})
+    except ValueError as e:raise HTTPException(400,str(e))
+    base=(os.getenv('PUBLIC_BASE_URL') or str(request.base_url)).rstrip('/')
+    return {'ok':True,'order':o,'pay_url':billing.pay_url(pl,o['ref'],base)}
+@app.get('/upgrade/paid',response_class=HTMLResponse)
+def upgrade_paid(request:Request,ref:str=''):
+    o=billing.get_order(ref) if ref else None
+    if o and o['user']==request.state.user:o=billing.mark_reported(ref)
+    return tpl.TemplateResponse(request,'upgrade.html',{'plan':(o or {}).get('plan',''),'plans':plans.public_plans(),
+        'link':'','ref':ref,'order':o,'reported':True,
+        'billing_note':os.getenv('BILLING_NOTE') or 'We confirm the payment and add your credits, usually within a few hours.',
+        'csrf':auth.csrf_token(request.cookies.get(auth.COOKIE,'')),
+        'account':plans.account_view(request.state.user) if request.state.user else None,
+        'orders':billing.orders(request.state.user)[:5] if request.state.user else []})
 @app.post('/api/billing/request')
 async def billing_request(request:Request):
     b=await request.json();pl=(b.get('plan') or '').strip()

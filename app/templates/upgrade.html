@@ -10,9 +10,15 @@
 
 {% if order %}
 <section class="card">
-  <div class="section-head"><h2>Invoice requested</h2><span class="pill {{ 'pill-done' if order.status == 'paid' else 'pill-running' }}">{{ order.status }}</span></div>
+  <div class="section-head"><h2>{{ 'Payment reported' if order.status == 'reported' else ('Paid' if order.status == 'paid' else 'Invoice requested') }}</h2>
+    <span class="pill {{ 'pill-done' if order.status == 'paid' else 'pill-running' }}">{{ order.status }}</span></div>
   <p class="sub">Reference <strong>{{ order.ref }}</strong> · {{ order.plan|capitalize }} · ${{ order.amount_usd|round|int }}</p>
-  <p class="hint">{{ billing_note }}</p>
+  {% if order.status == 'paid' %}
+    <p class="hint">Credits are on your account. <a href="/app">Make a reel</a>.</p>
+  {% else %}
+    <p class="hint">Quote <strong>{{ order.ref }}</strong> as the payment reference if your bank or card page asks for one — it is how we match your payment to this account.</p>
+    <p class="hint">{{ billing_note }}</p>
+  {% endif %}
   <div class="actions"><a class="btn btn-secondary" href="/app">Back to the app</a><a class="btn btn-secondary" href="mailto:hello@braivex.com?subject=ReelSieve%20order%20{{ order.ref }}">Email us about {{ order.ref }}</a></div>
 </section>
 {% elif p %}
@@ -24,8 +30,8 @@
 <section class="card">
   <div class="section-head"><h2>Pay</h2></div>
   {% if link %}
-    <p class="hint">Card or bank transfer through our payment provider. Credits are added as soon as it clears.</p>
-    <div class="actions"><a class="btn btn-primary" href="{{ link }}" rel="noopener">Pay ${{ p.price_usd }} now</a></div>
+    <p class="hint">Card or bank transfer. We create your order first so the payment is matched to your account automatically — you'll see a reference to quote.</p>
+    <div class="actions"><button type="button" class="btn btn-primary" id="bill-pay" data-plan="{{ p.key }}">Pay ${{ p.price_usd }} now</button><span class="form-status" id="bill-pay-status"></span></div>
     <p class="hint">Prefer an invoice for your accounts team? Request one below.</p>
   {% else %}
     <p class="hint">We invoice for this plan. Request one and we'll send a secure payment link you can pay by card or bank transfer.</p>

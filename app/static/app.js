@@ -899,4 +899,14 @@
     function load() { getJSON("/api/billing/orders?all=1").then(renderOrders).catch(function () {}); }
     load();
   }
+
+  var payBtn = document.getElementById("bill-pay");
+  if (payBtn) {
+    payBtn.addEventListener("click", function () {
+      var out = document.getElementById("bill-pay-status"); out.className = "form-status"; payBtn.disabled = true; out.textContent = "Creating your order…";
+      postJSON("/api/billing/start", { plan: payBtn.getAttribute("data-plan"), csrf: (document.getElementById("bill-csrf") || {}).value })
+        .then(function (d) { out.textContent = "Reference " + d.order.ref + " — taking you to payment…"; window.location.href = d.pay_url; })
+        .catch(function (e) { out.textContent = e.message || "Could not start the payment."; out.classList.add("is-error"); payBtn.disabled = false; });
+    });
+  }
 })();

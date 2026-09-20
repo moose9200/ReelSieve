@@ -10,7 +10,7 @@ Every path ends in `settle()`, so the customer experience is identical however t
 Fee note (Skydo public pricing, Sep 2026): flat $19 up to $2,000, $29 to $10,000, 0.3% above. Flat fees hurt
 small tickets — $19 on a $100 sale is 19%, versus 3.8% on $500. Prefer cards for Starter, Skydo for Commercial+.
 """
-import os,json,time,hmac,hashlib,secrets
+import os,re,json,time,hmac,hashlib,secrets
 from app import store,plans
 PROVIDERS={
  'skydo':{'name':'Skydo InstaLink','kind':'link','note':'RBI-authorised, zero FX markup, flat fee. Best above $300.'},
@@ -26,8 +26,14 @@ def _schema():
           amount_usd REAL, provider TEXT, status TEXT DEFAULT 'pending', paid_at REAL, note TEXT, meta TEXT)""")
         c.execute('CREATE INDEX IF NOT EXISTS ix_orders_user ON orders(user)');c.commit()
 _schema()
+PLACEHOLDER=re.compile(r'(example\.|localhost|127\.0\.0\.1|abc123|your[-_]?link|xxxx|placeholder|<|\{)',re.I)
 def checkout_link(plan_key):
-    return (os.getenv(f'CHECKOUT_{plan_key.upper()}') or '').strip()
+    """The configured hosted-checkout link, or '' if it is missing or obviously a placeholder.
+    Treating a bad link as unset sends the customer down the invoice path, which works,
+    instead of to a dead payment page with money in hand."""
+    v=(os.getenv(f'CHECKOUT_{plan_key.upper()}') or '').strip()
+    if not v.startswith('https://') or PLACEHOLDER.search(v):return ''
+    return v
 def create_order(user,plan_key,provider='invoice',note='',meta=None):
     p=plans.PLANS.get(plan_key)
     if not p or p['price_usd'] in (None,0):raise ValueError('That plan is not purchasable here')
@@ -45,12 +51,27 @@ def orders(user=None,limit=200):
     q+=' ORDER BY ts DESC LIMIT ?';a.append(limit)
     with store._lock,store.conn() as c:return [dict(r) for r in c.execute(q,a).fetchall()]
 def pending_count():
-    with store._lock,store.conn() as c:return c.execute("SELECT COUNT(*) n FROM orders WHERE status='pending'").fetchone()['n']
+    with store._lock,store.conn() as c:return c.execute("SELECT COUNT(*) n FROM orders WHERE status IN ('pending','reported')").fetchone()['n']
+def pay_url(plan_key,ref,base):
+    """Static provider links can't tell tenants apart, so every order carries its own reference.
+    We append it in the shapes the common providers read, and show it to the customer to quote."""
+    link=checkout_link(plan_key)
+    if not link:return None
+    sep='&' if '?' in link else '?'
+    from urllib.parse import quote as q
+    ret=f'{base.rstrip("/")}/upgrade/paid?ref={q(ref)}'
+    return f'{link}{sep}ref={q(ref)}&client_reference_id={q(ref)}&reference={q(ref)}&redirect_url={q(ret)}'
+def mark_reported(ref):
+    o=get_order(ref)
+    if not o or o['status']!='pending':return o
+    with store._lock,store.conn() as c:
+        c.execute("UPDATE orders SET status='reported' WHERE ref=? AND status='pending'",(ref,));c.commit()
+    return get_order(ref)
 def settle(ref,by='admin',provider=None):
     """Mark paid and grant the plan's credits. Idempotent — settling twice never double-credits."""
     o=get_order(ref)
     if not o:raise ValueError('No such order')
-    if o['status']=='paid':return o
+    if o['status'] in ('paid','cancelled'):return o
     p=plans.PLANS[o['plan']]
     store.ensure_account(o['user'])
     store.set_plan(o['user'],o['plan'],credits=int((store.get_account(o['user']) or {}).get('credits') or 0)+int(p['videos'] or 0))
