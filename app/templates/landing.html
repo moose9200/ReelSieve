@@ -105,9 +105,8 @@
   <meta name="twitter:title" content="ReelSieve: Airbnb walkthrough videos from a listing link">
   <meta name="twitter:description" content="{{ description }}">
   <meta name="twitter:image" content="{{ canonical }}static/sample/poster.jpg">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Assistant:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link rel="preload" href="/static/fonts/assistant-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/static/fonts.css?v={{ asset_version }}">
   <link rel="preload" as="image" href="{{ poster_src }}">
   <link rel="stylesheet" href="/static/landing.css?v={{ asset_version }}">
   <script type="application/ld+json">
