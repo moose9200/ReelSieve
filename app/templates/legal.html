@@ -1,31 +1,110 @@
 {% extends "base.html" %}
-{% block title %}{{ 'Privacy' if kind == 'privacy' else 'Terms' }}{% endblock %}
+{% block title %}{{ 'Privacy notice' if kind == 'privacy' else 'Terms' }}{% endblock %}
 {% block robots %}<link rel="canonical" href="{{ site_url() }}/{{ kind }}">{% endblock %}
 {% block content %}
-<section class="hero"><p class="eyebrow">ReelSieve by Braivex</p><h1>{{ 'Privacy' if kind == 'privacy' else 'Terms of use' }}</h1></section>
-<section class="card">
+<section class="hero"><p class="eyebrow">ReelSieve by Braivex</p><h1>{{ 'Privacy notice' if kind == 'privacy' else 'Terms of use' }}</h1></section>
 {% if kind == 'privacy' %}
-  <p class="sub">What we keep, and for how long.</p>
+<section class="card legal">
+  <p class="sub">Last updated 27 Sep 2026.</p>
+  <p>This notice explains what personal data ReelSieve uses, why, how long we keep it and what you can do about it. It covers people who use ReelSieve, visitors to this site, and Airbnb hosts and guests whose public listing details pass through the service.</p>
+
+  <h2>Who we are</h2>
+  <p>ReelSieve is run by Hemant Kumar Sain, a sole proprietor trading as Braivex. Registered office: Yog Nagar, Street No 08, Alwar, Rajasthan 301001, India. Braivex is the controller of the personal data described here.</p>
+  <p>Contact: <a href="mailto:hello@braivex.com">hello@braivex.com</a>, or use the <a href="/privacy/request">privacy request form</a>. We have not appointed a data protection officer.</p>
+
+  <h2>What we use, why, and for how long</h2>
+  <div class="or-table-wrap">
+  <table class="or-table">
+    <thead><tr><th>Data</th><th>Why we use it</th><th>Lawful basis</th><th>How long we keep it</th></tr></thead>
+    <tbody>
+      <tr><td>Your email address and a salted hash of your password</td><td>To run your account and sign you in</td><td>Contract</td><td>While your account is open. Deleted when you delete your account. An account an admin deactivates is erased 30 days later.</td></tr>
+      <tr><td>Your plan, credits and which listings you have made reels from</td><td>To count your videos and apply your plan's limits</td><td>Contract</td><td>While your account is open</td></tr>
+      <tr><td>Your reels: listing links, job status, progress log and Drive delivery records</td><td>To make your videos, deliver them and show your reel history</td><td>Contract</td><td>While your account is open. Host names, messages drafted for hosts and review details are removed from job records 30 days after the job ends.</td></tr>
+      <tr><td>Your Google account email and ID, and an encrypted Google access token</td><td>To save finished videos to your Google Drive</td><td>Contract</td><td>Until you disconnect Google Drive or delete your account</td></tr>
+      <tr><td>A pseudonymised, keyed hash of the network part of your IP address (free plan only)</td><td>To stop people farming free videos</td><td>Legitimate interests (preventing fraud and abuse)</td><td>90 days</td></tr>
+      <tr><td>A keyed hash of your IP address after a failed sign-in</td><td>To slow down password-guessing attacks</td><td>Legitimate interests (keeping the service secure)</td><td>24 hours</td></tr>
+      <tr><td>Orders: reference, plan, amount, date, payment status and, for paid orders, your billing email</td><td>To take payment and keep the records Indian tax law requires</td><td>Contract, then legitimate interests (meeting our tax obligations)</td><td>Paid orders: 8 years. Unpaid or cancelled orders: deleted when you delete your account.</td></tr>
+      <tr><td>Outreach records you create: names, public Airbnb profile and listing links, your notes and message drafts</td><td>To let you track the messages you send yourself</td><td>Legitimate interests (see "If you are an Airbnb host or guest")</td><td>12 months after the record last changed</td></tr>
+      <tr><td>Privacy requests and complaints: your name, email and message</td><td>To answer your request and show we did</td><td>Legal obligation, and legitimate interests</td><td>2 years after we close the request</td></tr>
+      <tr><td>A record of actions our admins take on your account (for example a plan change or password reset)</td><td>Accountability and security</td><td>Legitimate interests</td><td>2 years</td></tr>
+      <tr><td>Request logs kept by our hosting provider, including IP addresses</td><td>Security and keeping the service running</td><td>Legitimate interests</td><td>Up to 90 days, set by Railway. Our own application does not log IP addresses.</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>You need to give us an email address and password to create an account, and connect Google Drive to receive videos. Without them we cannot provide the service. We make no decisions about you by purely automated means that have legal or similarly significant effects. If the free-plan limit stops you, <a href="/privacy/request">tell us</a> and a person will look at it.</p>
+
+  <h2>Listing content and your videos</h2>
+  <p>When you paste a listing link, our servers fetch the public listing page: its photos, title, host first name and public guest reviews. We use them only to build that video. The working files are deleted from our servers as soon as the job ends. Videos show the text, star rating and month of a guest review, but not the reviewer's name. Finished videos go to your own Google Drive and stay there under your control.</p>
+  <p>Listing photos shown inside ReelSieve are loaded through our own server, so Airbnb does not receive your IP address when you look at them. Our fonts are served from our own server too.</p>
+
+  <h2>Cookies</h2>
+  <p>We set two cookies, both strictly necessary, so we do not ask for consent:</p>
   <ul class="steps">
-    <li><strong>Account:</strong> your email and a salted hash of your password. Nothing else is required.</li>
-    <li><strong>Usage:</strong> which listing you made a video from, when, and which plan. Used for your credit count.</li>
-    <li><strong>Abuse signals:</strong> we never store your IP address or device details. We store a one-way keyed hash of your network and device so the free tier can't be farmed. These are unreadable, cannot be reversed to an IP, and are deleted after 90 days.</li>
-    <li><strong>Listing content:</strong> photos and reviews are fetched from the listing page you give us, used to build your video, and removed from our servers once the video is delivered to your Google Drive.</li>
-    <li><strong>Google Drive:</strong> finished videos are delivered to your own Drive, private unless you choose to share one. We use the <code>drive.file</code> scope — we can only see files this app created, never the rest of your Drive. Your Google credentials are stored encrypted and removed when you disconnect.</li>
-    <li><strong>No selling, no ad tracking, no third-party analytics.</strong></li>
+    <li><strong>Session cookie:</strong> keeps you signed in. It lasts 12 hours, or 30 days if you choose to stay signed in.</li>
+    <li><strong>Security cookie:</strong> protects forms against cross-site request forgery. It lasts 30 days.</li>
   </ul>
-  <p class="hint">Questions or a deletion request: <a href="mailto:hello@braivex.com">hello@braivex.com</a>.</p>
+  <p>We use no analytics, advertising or tracking cookies, and we do not sell personal data.</p>
+
+  <h2>Who we share data with</h2>
+  <ul class="steps">
+    <li><strong>Railway</strong> hosts the website, the video workers and the database, in the United States. Railway processes data only on our instructions under its data processing agreement.</li>
+    <li><strong>Google</strong> receives your finished videos when we save them to your Drive. Google acts as an independent controller under its own terms.</li>
+    <li><strong>Higgsfield</strong> receives listing photos only if you switch on AI camera motion for a reel. It uses them to generate the video clips. Higgsfield acts as its own controller, and its privacy policy says it may use inputs to improve its AI models. Leave AI camera motion off if you do not want your photos shared.</li>
+    <li><strong>Stripe</strong> takes card payments when card checkout is switched on. Stripe receives your email and payment details directly and acts as its own controller for payment data. Card details never reach our servers.</li>
+  </ul>
+  <p>We may also share data where the law requires it, for example with a tax authority.</p>
+
+  <h2>International transfers</h2>
+  <p>Braivex is based in India, and our hosting is in the United States. When we pass personal data from the UK or the EU to Railway or Stripe, we rely on the UK International Data Transfer Addendum and the EU Standard Contractual Clauses in their data processing agreements, and on their certification under the EU-US Data Privacy Framework and its UK Extension. Google transfers are covered by Google's controller terms. Ask us for a copy of the safeguards through the <a href="/privacy/request">privacy request form</a>.</p>
+
+  <h2>Your rights</h2>
+  <p>You can ask us to give you a copy of your data, correct it, delete it, restrict how we use it, or send it to you in a machine-readable form. You can also object to our use of it where we rely on legitimate interests.</p>
+  <ul class="steps">
+    <li><strong>Download your data:</strong> Account, then "Download my data".</li>
+    <li><strong>Delete your account:</strong> Account, then "Delete my account". We delete or anonymise your data at once. We keep paid-order records for the period above, and your videos stay in your own Google Drive.</li>
+    <li><strong>Anything else:</strong> use the <a href="/privacy/request">privacy request form</a>. The form acknowledges your request straight away with a reference. We reply within one month. If a request is complex we may extend that by up to two months and will tell you why within the first month. We may ask you to confirm your identity first.</li>
+  </ul>
+
+  <h2>Complaints</h2>
+  <p>Please complain to us first, using the <a href="/privacy/request">privacy request form</a>. In the UK you can also complain to the Information Commissioner's Office: <a href="https://ico.org.uk/make-a-complaint/" target="_blank" rel="noopener">ico.org.uk/make-a-complaint</a>, helpline 0303 123 1113. In the EU you can complain to the data protection authority where you live or work.</p>
+
+  <h2>If you are an Airbnb host or guest</h2>
+  <p>ReelSieve users can make videos from public Airbnb listings, and can track hosts they choose to contact. So some of your details may pass through ReelSieve even if you have never used it.</p>
+  <ul class="steps">
+    <li><strong>What we get:</strong> for hosts, first name, public Airbnb profile link, listing link, listing photos and title. For guests, the text, rating, month and first name shown on a public review.</li>
+    <li><strong>Where it comes from:</strong> public Airbnb listing and profile pages.</li>
+    <li><strong>Why:</strong> to make videos our users request, and to let users keep a record of hosts they message themselves. We rely on legitimate interests.</li>
+    <li><strong>How long:</strong> listing content is deleted when the video job ends. Host names and review details are removed from job records after 30 days. Outreach records are deleted 12 months after they last changed. Guest names never appear in videos.</li>
+    <li><strong>Your right to object:</strong> you can object at any time, and we will stop. Use the <a href="/privacy/request">privacy request form</a> and choose "Object to outreach", giving your Airbnb profile link. We add you to a permanent do-not-contact list that stores only a keyed hash, and ReelSieve will no longer show you to any user as someone to contact.</li>
+  </ul>
+  <p>ReelSieve never sends messages. Users who contact hosts do so from their own accounts and are responsible for doing so lawfully.</p>
+
+  <h2>Google user data</h2>
+  <p>ReelSieve asks Google only for the <code>drive.file</code> permission. We use it to create the finished video files in your Google Drive and to change their sharing when you ask us to. We cannot see any other files in your Drive. We store an encrypted access token until you disconnect or delete your account. We do not use Google data for advertising or to train AI models, and we do not sell or transfer it except as needed to provide the service. ReelSieve's use of information received from Google APIs will adhere to the <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noopener">Google API Services User Data Policy</a>, including the Limited Use requirements. You can disconnect Google Drive at any time from your Account page, and remove ReelSieve's access in your Google Account settings.</p>
+
+  <h2>Security</h2>
+  <p>Passwords are stored as salted PBKDF2 hashes. Google tokens are encrypted. The site is served only over HTTPS, every form is protected against request forgery, and each customer can reach only their own data. If a breach puts your rights at risk, we will tell you and the relevant regulator as the law requires.</p>
+
+  <h2>Children</h2>
+  <p>ReelSieve is for businesses and adults. It is not meant for anyone under 18.</p>
+
+  <h2>Changes</h2>
+  <p>We will update this page when our use of data changes, and change the date at the top.</p>
+</section>
 {% else %}
+<section class="card">
   <p class="sub">The short version.</p>
   <ul class="steps">
     <li>Use photos you own or are licensed to use, and follow the source platform's terms. You are responsible for the rights in the material you submit.</li>
     <li>You keep full rights to the videos ReelSieve produces for you.</li>
     <li>Credits are one-off packs, not subscriptions, and don't expire. Unused credits aren't refundable once a video has been generated.</li>
-    <li>Don't use ReelSieve to send unsolicited bulk messages on any platform. Outreach tools here only draft messages — you send each one yourself, from your own account.</li>
+    <li>Don't use ReelSieve to send unsolicited bulk messages on any platform. Outreach tools here only draft messages. You send each one yourself, from your own account.</li>
+    <li>In the UK, direct messages on platforms such as Airbnb and LinkedIn count as electronic mail for marketing law. Only message individuals or sole traders who have agreed to hear from you, and stop when anyone asks. Airbnb's own terms also forbid commercial messages without the recipient's consent.</li>
+    <li>When you use ReelSieve you decide which listings and people to work with, and you are responsible for having a lawful reason to do so. Our <a href="/privacy">privacy notice</a> explains how we handle personal data.</li>
     <li>Service is provided as is. We'll fix what breaks, but we don't guarantee any commercial outcome.</li>
     <li>ReelSieve is an independent third party and is not endorsed by or associated with Airbnb, Inc. or its affiliates.</li>
   </ul>
-  <p class="hint">Braivex · <a href="https://braivex.com" target="_blank" rel="noopener">braivex.com</a></p>
-{% endif %}
+  <p class="hint">Hemant Kumar Sain trading as Braivex · <a href="https://braivex.com" target="_blank" rel="noopener">braivex.com</a> · <a href="mailto:hello@braivex.com">hello@braivex.com</a></p>
 </section>
+{% endif %}
 {% endblock %}

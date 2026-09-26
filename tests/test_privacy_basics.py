@@ -10,3 +10,15 @@ def test_no_page_loads_fonts_or_assets_from_google():
     assert offenders == []
     assert (APP / 'static' / 'fonts' / 'assistant-latin.woff2').stat().st_size > 10_000
     assert 'assistant-latin.woff2' in (APP / 'static' / 'fonts.css').read_text()
+
+
+def test_privacy_notice_keeps_the_items_the_law_requires(db):
+    from fastapi.testclient import TestClient
+    from app import server
+    text = TestClient(server.app).get('/privacy').text
+    for required in ['Hemant Kumar Sain', 'Alwar, Rajasthan', 'hello@braivex.com', '/privacy/request',
+                     'Lawful basis', 'How long we keep it', 'Railway', 'Higgsfield', 'Stripe',
+                     'International Data Transfer Addendum', 'Standard Contractual Clauses',
+                     'ico.org.uk/make-a-complaint', 'within one month', 'Object to outreach',
+                     'strictly necessary', 'Limited Use requirements', 'drive.file', 'under 18']:
+        assert required in text, required
