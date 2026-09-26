@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ 'Privacy' if kind == 'privacy' else 'Terms' }}{% endblock %}
+{% block robots %}<link rel="canonical" href="{{ site_url() }}/{{ kind }}">{% endblock %}
 {% block content %}
 <section class="hero"><p class="eyebrow">ReelSieve by Braivex</p><h1>{{ 'Privacy' if kind == 'privacy' else 'Terms of use' }}</h1></section>
 <section class="card">

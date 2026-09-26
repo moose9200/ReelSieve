@@ -14,10 +14,11 @@ import secrets
 import time
 from pathlib import Path
 from urllib.parse import quote
+from xml.sax.saxutils import escape
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse,
-                               StreamingResponse)
+                               Response, StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -29,7 +30,8 @@ HERE = Path(__file__).resolve().parent
 REQUIRED = ('DATABASE_URL', 'SESSION_SECRET', 'TOKEN_ENCRYPTION_KEY')
 CSRF_COOKIE = 'reelsieve_csrf'
 PUBLIC_PREFIXES = ('/static/', '/oauth/google/callback', '/favicon.ico', '/api/billing/webhook/')
-PUBLIC_EXACT = ('/', '/login', '/signup', '/setup', '/forgot', '/healthz', '/privacy', '/terms')
+PUBLIC_EXACT = ('/', '/login', '/signup', '/setup', '/forgot', '/healthz', '/privacy', '/terms',
+                '/robots.txt', '/sitemap.xml', '/llms.txt')
 DAILY_CAP = int(os.getenv('OUTREACH_DAILY_CAP', '5'))
 TRUSTED_HOPS = int(os.getenv('TRUSTED_PROXY_HOPS', '1'))
 COHOST_MESSAGE = ("Hi {name} — I'm Hemant from ReelSieve (Braivex). I make short cinematic walkthrough videos for short-let "
@@ -74,6 +76,14 @@ def public_base():
     if not b and os.getenv('RAILWAY_PUBLIC_DOMAIN'):
         b = 'https://' + os.environ['RAILWAY_PUBLIC_DOMAIN']
     return b
+
+
+def site_url():
+    """Canonical origin for crawlers and canonical links: configured, never taken from the request's Host header."""
+    return public_base() or 'https://www.reelsieve.braivex.com'
+
+
+tpl.env.globals['site_url'] = site_url
 
 
 def _secure(request):
@@ -147,6 +157,21 @@ class Gate(BaseHTTPMiddleware):
 
 app.add_middleware(Gate)
 
+SECURITY_HEADERS ={'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'strict-origin-when-cross-origin',
+                    'X-Frame-Options': 'DENY'}
+
+
+@app.middleware('http')
+async def security_headers(request, call_next):
+    """Registered after Gate, so it wraps it: the Gate's redirects and refusals carry these headers too."""
+    response = await call_next(request)
+    for k, v in SECURITY_HEADERS.items():
+        response.headers.setdefault(k, v)
+    if request.url.path.startswith('/static/') and response.status_code < 400:
+        # File names are not fingerprinted: one day caps how long a deploy's CSS/JS can be stale; then the ETag gives a 304.
+        response.headers.setdefault('Cache-Control', 'public, max-age=86400')
+    return response
+
 
 async def _form(request):
     return request.scope.get('_form') or dict(await request.form())
@@ -188,6 +213,76 @@ def healthz():
     except Exception:
         return JSONResponse({'ok': False, 'build': BUILD, 'db': False}, status_code=503)
     return {'ok': True, 'build': BUILD, 'db': True}
+
+
+# ---------------- search and AI answer engines ----------------
+
+PRIVATE_PATHS = ('/app', '/api/', '/jobs/', '/reels', '/outreach', '/settings', '/account', '/upgrade', '/oauth/', '/logout')
+# Google: list only the URLs you want in search results. /login and /forgot are bare forms, so they are noindex and absent.
+INDEXABLE = {'/': 'landing.html', '/signup': 'signup.html', '/privacy': 'legal.html', '/terms': 'legal.html'}
+LLMS_TXT = """# ReelSieve
+
+> ReelSieve, made by Braivex, turns an Airbnb listing link into a cinematic walkthrough video built from the listing's own photos and real guest reviews.
+
+For now it accepts only Airbnb listing links, the kind with /rooms/ in the address.
+Each video has an intro, a rating card, the rooms in walking order with captions, a real guest review card and an outro.
+There are two styles: 16:9 cinematic and 9:16 vertical.
+Every listing photo is scored and the best frame for each room is used.
+Paid plans can add AI camera motion.
+
+Finished videos go to the customer's own Google Drive, and ReelSieve keeps no copy.
+The only Drive permission it asks for is drive.file.
+Videos stay private unless the customer chooses to share them.
+
+ReelSieve also drafts a message for the listing's host, with no links in it.
+The customer sends it from their own Airbnb account.
+ReelSieve never sends messages itself.
+
+Plans are one-off packs, priced in US dollars:
+
+{plans}
+
+If a render fails, the credit is refunded.
+
+ReelSieve is independent and is not endorsed by or associated with Airbnb, Inc.
+
+## Pages
+
+- [Home]({base}/): What ReelSieve does
+- [Sign up]({base}/signup): Create an account
+- [Privacy]({base}/privacy): What ReelSieve stores and for how long
+- [Terms]({base}/terms): Terms of use
+
+## Optional
+
+- [Braivex](https://braivex.com): The studio behind ReelSieve
+"""
+
+
+@app.get('/robots.txt')
+def robots_txt():
+    # Disallow lines come first so first-match parsers agree with Google's longest-match rule.
+    rules = ''.join(f'Disallow: {p}\n' for p in PRIVATE_PATHS)
+    return PlainTextResponse(f'User-agent: *\n{rules}Allow: /\n\nSitemap: {site_url()}/sitemap.xml\n')
+
+
+@app.get('/sitemap.xml')
+def sitemap_xml():
+    """lastmod is each page template's file date; a fresh build can move it even when the page did not change."""
+    def entry(path, template):
+        day = time.strftime('%Y-%m-%d', time.gmtime((HERE / 'templates' / template).stat().st_mtime))
+        return f'<url><loc>{escape(site_url() + path)}</loc><lastmod>{day}</lastmod></url>'
+    urls = ''.join(entry(p, t) for p, t in INDEXABLE.items())
+    return Response('<?xml version="1.0" encoding="UTF-8"?>\n'
+                    f'<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">{urls}</urlset>\n', media_type='application/xml')
+
+
+@app.get('/llms.txt')
+def llms_txt():
+    """https://llmstxt.org format. Prices come from plans.PLANS on every request."""
+    lines = '\n'.join(f"- {p['name']}: {p['price_label']} for {p['videos']} videos" if p['price_usd'] is not None
+                      else f"- {p['name']}: priced on request" for p in plans.public_plans())
+    return PlainTextResponse(LLMS_TXT.format(plans=lines, base=site_url()))
 
 
 # ---------------- identity ----------------
