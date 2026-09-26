@@ -53,6 +53,7 @@
   <p class="eyebrow">LINKEDIN</p>
   <div class="section-head"><h2>LinkedIn prospects</h2><span class="pill pill-skipped">Manual send</span></div>
   <p class="hint">LinkedIn's terms forbid automated sending, so ReelSieve prepares the list and the words — you paste and send. Copy each message, or export the list as CSV.</p>
+  <p class="hint">Airbnb shows hosts by first name only, so ReelSieve can't know anyone's exact LinkedIn profile. <b>Search LinkedIn</b> opens a people search for that name in that city; check who you pick against their <b>Airbnb profile</b> before you connect.</p>
 
   <div class="or-find-row or-find-row-3">
     <div class="field">
@@ -144,7 +145,8 @@
           </td>
           <td data-label="Actions">
             <div class="or-actions">
-              {% if r.url %}<a class="btn btn-secondary btn-sm" href="{{ r.url }}" target="_blank" rel="noopener">Open ↗</a>{% endif %}
+              {% if r.url %}<a class="btn btn-secondary btn-sm" href="{{ r.url }}" target="_blank" rel="noopener">{{ r.link_label }}</a>{% endif %}
+              {% if r.airbnb_profile %}<a class="btn btn-secondary btn-sm" href="{{ r.airbnb_profile }}" target="_blank" rel="noopener">Airbnb profile ↗</a>{% endif %}
               <button type="button" class="btn btn-secondary btn-sm tr-copy" data-msg="{{ r.message or '' }}">Copy message</button>
               <button type="button" class="btn btn-secondary btn-sm tr-note" data-id="{{ r.id }}" data-note="{{ r.note or '' }}">Note</button>
             </div>

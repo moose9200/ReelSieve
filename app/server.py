@@ -942,8 +942,10 @@ def gdrive_disconnect(request: Request):
 @app.get('/outreach', response_class=HTMLResponse)
 def outreach_page(request: Request):
     u = request.state.user
+    rows = [{**r, 'link_label': linkedin.link_label(r['url']), 'airbnb_profile': linkedin.airbnb_profile_of(r)}
+            for r in store.outreach_rows(u)]
     return tpl.TemplateResponse(request, 'outreach.html', {
-        'csrf': csrf_for(request), 'stats': store.outreach_stats(u), 'cities': store.cities(u), 'rows': store.outreach_rows(u),
+        'csrf': csrf_for(request), 'stats': store.outreach_stats(u), 'cities': store.cities(u), 'rows': rows,
         'default_message': os.getenv('COHOST_MESSAGE') or COHOST_MESSAGE, 'linkedin_default': linkedin.CONNECT_DEFAULT,
         'daily_cap': DAILY_CAP, 'cap': DAILY_CAP, 'sent_today': store.sent_today(u)})
 
@@ -973,7 +975,9 @@ async def api_queue(request: Request):
     b, u = await request.json(), request.state.user
     ch = b.get('channel') if b.get('channel') in ('cohost', 'linkedin') else 'cohost'
     ids = [store.add_outreach(u, ch, str(it.get('name') or '')[:200], str(it.get('url') or '')[:500], str(it.get('city') or '')[:120],
-                              str(it.get('message') or '')[:3000], meta={k: it.get(k) for k in ('id', 'listing_title', 'company') if k in it})
+                              str(it.get('message') or '')[:3000],
+                              meta={**{k: it.get(k) for k in ('id', 'listing_title', 'company') if k in it},
+                                    'airbnb_profile': linkedin.airbnb_profile(it.get('airbnb_profile'))})
            for it in (b.get('items') or [])[:25]]
     return {'ok': True, 'ids': ids, 'rows': store.outreach_rows(u), 'stats': store.outreach_stats(u)}
 
