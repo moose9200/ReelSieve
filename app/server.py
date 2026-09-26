@@ -935,7 +935,8 @@ def _image_type(body):
 def image_proxy(u: str = ''):
     """Signed-in only (the Gate). https to IMG_HOSTS only, every redirect re-checked (app.fetch), size-capped."""
     try:
-        _, body = fetch.get(u, headers={'User-Agent': listing_search.UA['User-Agent'], 'Accept': 'image/avif,image/webp,image/*'},
+        # WebP, not AVIF: the CDN answers AVIF when asked, which Safari before 16 cannot show.
+        _, body = fetch.get(u, headers={'User-Agent': listing_search.UA['User-Agent'], 'Accept': 'image/webp,image/jpeg,image/png'},
                             timeout=20, max_bytes=IMG_MAX, hosts=IMG_HOSTS)
     except ValueError:
         raise HTTPException(400, 'Not an allowed image')
