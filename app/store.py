@@ -1,7 +1,8 @@
 """PostgreSQL business records. Owner IDs are durable; email remains the API boundary.
 
 Usage rows are kept: lifetime free quotas and no-double-charge reruns depend on them.
-Network/device signals are HMACs, never raw addresses, and are cleared after SIGNAL_DAYS (privacy page).
+Network signals are pseudonymised (keyed HMACs of the /24 or /64 network, never raw addresses), kept only on free
+videos, where the free-tier guard counts them, and cleared after SIGNAL_DAYS (privacy page).
 """
 import time
 import hmac
@@ -9,13 +10,15 @@ import hashlib
 import json
 import ipaddress
 from psycopg import sql
+from psycopg.types.json import Jsonb
 from app import database
 
 # Compatibility name for callers; this is a real psycopg transaction context.
 conn = database.connect
 
 def _key():
-    from app import auth;return auth.secret().encode()
+    """Key for network signals only: derived from SESSION_SECRET under its own purpose label, so it signs nothing else."""
+    from app import auth;return hmac.new(auth.secret().encode(),b'reelsieve:abuse-signal-key:v1',hashlib.sha256).digest()
 def net_of(ip):
     """Group by network so a phone/office NAT isn't one identity per device, and IPv6 rotation doesn't defeat it."""
     try:
@@ -26,7 +29,6 @@ def h(value):
     if not value:return None
     return hmac.new(_key(),str(value).encode(),hashlib.sha256).hexdigest()[:32]
 def ip_hash(ip):return h('ip:'+net_of(ip))
-def fp_hash(fp):return h('fp:'+str(fp)[:400]) if fp else None
 def listing_key(url):
     import re
     u=re.sub(r'[?#].*$','',(url or '').strip().lower().rstrip('/'))
@@ -37,7 +39,7 @@ SIGNAL_DAYS = 90
 
 
 def purge_signals(days=SIGNAL_DAYS):
-    """Clear network/device hashes older than the published retention; usage and accounts stay."""
+    """Clear network hashes (and legacy device hashes) older than the published retention; usage and accounts stay."""
     cutoff = time.time() - days * 86400
     with database.connect() as c:
         c.execute('UPDATE usage SET ip_hash=NULL,fp_hash=NULL WHERE ts<%s AND (ip_hash IS NOT NULL OR fp_hash IS NOT NULL)', (cutoff,))
@@ -50,11 +52,11 @@ def get_account(user, conn=None):
                          ((user or '').strip().lower(),)).fetchone()
 
 
-def ensure_account(user, plan='free', ip=None, fp=None, conn=None):
+def ensure_account(user, plan='free', conn=None):
     with database.transaction(conn) as c:
         owner = database.user_id(user, c)
-        c.execute('INSERT INTO accounts(owner_id,plan,created,ip_hash,fp_hash) VALUES(%s,%s,%s,%s,%s) ON CONFLICT(owner_id) DO NOTHING',
-                  (owner, plan, time.time(), ip_hash(ip) if ip else None, fp_hash(fp)))
+        c.execute('INSERT INTO accounts(owner_id,plan,created) VALUES(%s,%s,%s) ON CONFLICT(owner_id) DO NOTHING',
+                  (owner, plan, time.time()))
         return get_account(user, c)
 
 
@@ -83,19 +85,19 @@ def set_blocked(user, blocked=1):
         c.execute('UPDATE accounts SET blocked=%s WHERE owner_id=%s', (int(bool(blocked)), database.user_id(user, c)))
 
 
-def record_usage(user, plan, listing_url, job_id, ip=None, fp=None, kind='video', credits=1, conn=None, debited=False):
+def record_usage(user, plan, listing_url, job_id, ip=None, kind='video', credits=1, conn=None, debited=False):
     with database.transaction(conn) as c:
-        c.execute('INSERT INTO usage(ts,owner_id,plan,kind,listing_key,job_id,ip_hash,fp_hash,credits,debited) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',
+        c.execute('INSERT INTO usage(ts,owner_id,plan,kind,listing_key,job_id,ip_hash,credits,debited) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)',
                   (time.time(), database.user_id(user, c), plan, kind, listing_key(listing_url), job_id,
-                   ip_hash(ip) if ip else None, fp_hash(fp), credits, debited))
+                   ip_hash(ip) if ip else None, credits, debited))
 
 
-def count_usage(user=None, ip=None, fp=None, since_days=None, listing_url=None, conn=None):
+def count_usage(user=None, ip=None, since_days=None, listing_url=None, conn=None):
     q = "SELECT count(*) AS n FROM usage WHERE kind='video' AND refunded_at IS NULL"
     args = []
     with database.transaction(conn) as c:
         for column, value in [('owner_id', database.user_id(user, c) if user else None),
-                              ('ip_hash', ip_hash(ip) if ip else None), ('fp_hash', fp_hash(fp) if fp else None),
+                              ('ip_hash', ip_hash(ip) if ip else None),
                               ('listing_key', listing_key(listing_url) if listing_url else None)]:
             if value is not None:
                 q += f' AND {column}=%s'
@@ -129,8 +131,9 @@ def usage_rows(user=None, limit=200):
 
 def add_outreach(user, channel, name, url, city, message, meta=None, status='queued'):
     with database.connect() as c:
-        return c.execute('INSERT INTO outreach(ts,owner_id,channel,name,url,city,message,status,meta) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id',
-                         (time.time(), database.user_id(user, c), channel, name, url, city, message, status, json.dumps(meta or {}))).fetchone()['id']
+        now = time.time()
+        return c.execute('INSERT INTO outreach(ts,updated,owner_id,channel,name,url,city,message,status,meta) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id',
+                         (now, now, database.user_id(user, c), channel, name, url, city, message, status, json.dumps(meta or {}))).fetchone()['id']
 
 
 def outreach_rows(user=None, limit=500):
@@ -154,13 +157,58 @@ def outreach_set(rid, user=None, **kw):
     if not set(kw) <= allowed:
         raise ValueError('Unsupported outreach field')
     with database.connect() as c:
-        q = sql.SQL('UPDATE outreach SET {} WHERE id=%s').format(
+        q = sql.SQL('UPDATE outreach SET {},updated=%s WHERE id=%s').format(
             sql.SQL(',').join(sql.SQL('{}=%s').format(sql.Identifier(k)) for k in kw))
-        args = [*kw.values(), rid]
+        args = [*kw.values(), time.time(), rid]
         if user:
             q += sql.SQL(' AND owner_id=%s')
             args.append(database.user_id(user, c))
         c.execute(q, args)
+
+
+def outreach_delete(rid, user):
+    with database.connect() as c:
+        c.execute('DELETE FROM outreach WHERE id=%s AND owner_id=%s', (rid, database.user_id(user, c)))
+
+
+def _suppression_key():
+    # ponytail: derived from SESSION_SECRET like the signal key, so rotating that secret stops old objections
+    # matching. Re-key outreach_suppressions (or pin this key) before any rotation.
+    from app import auth;return hmac.new(auth.secret().encode(),b'reelsieve:outreach-suppression:v1',hashlib.sha256).digest()
+
+
+def suppression_keys(item):
+    """How a prospect is known: their Airbnb user id when we have it, and their name with a listing."""
+    import re
+    ids, pid = [], str(item.get('id') or '')
+    m = re.search(r'/users/show/(\d{1,20})', str(item.get('airbnb_profile') or item.get('profile_url') or ''))
+    uid = m.group(1) if m else (pid[1:] if re.fullmatch(r'u\d{1,20}', pid) else None)
+    if uid:
+        ids.append('user:' + uid)
+    m = re.search(r'/(?:rooms|contact_host)/(\d{1,20})', f"{item.get('listing_url') or ''} {item.get('url') or ''}")
+    listing = m.group(1) if m else (pid if re.fullmatch(r'\d{1,20}', pid) else None)
+    name = ' '.join(str(item.get('name') or '').lower().split())
+    if name and listing:
+        ids.append(f'name:{name}|listing:{listing}')
+    return [hmac.new(_suppression_key(), i.encode(), hashlib.sha256).hexdigest() for i in ids]
+
+
+def suppress(item):
+    """Do not contact this prospect again, for any user. Stores hashes only."""
+    with database.connect() as c:
+        for key in suppression_keys(item):
+            c.execute('INSERT INTO outreach_suppressions(key,ts) VALUES(%s,%s) ON CONFLICT (key) DO NOTHING', (key, time.time()))
+
+
+def unsuppressed(items):
+    """The prospects nobody has asked us to stop contacting."""
+    keyed = [(it, set(suppression_keys(it))) for it in items]
+    wanted = sorted(set().union(*(k for _, k in keyed))) if keyed else []
+    if not wanted:
+        return list(items)
+    with database.connect() as c:
+        hit = {r['key'] for r in c.execute('SELECT key FROM outreach_suppressions WHERE key=ANY(%s)', (wanted,)).fetchall()}
+    return [it for it, k in keyed if not k & hit]
 
 
 def outreach_stats(user=None):
@@ -193,3 +241,97 @@ def cities(user=None, limit=12):
             q += ' AND owner_id=%s'
             args.append(database.user_id(user, c))
         return [r['city'] for r in c.execute(q + ' GROUP BY city ORDER BY n DESC LIMIT %s', args + [limit]).fetchall()]
+
+
+def admin_event(action, actor=None, target=None, conn=None, **detail):
+    """Accountability trail. actor/target are emails (actor None: operator console or retention); detail never holds secrets."""
+    with database.transaction(conn) as c:
+        c.execute('INSERT INTO admin_events(ts,actor_id,target_id,action,detail) VALUES(%s,%s,%s,%s,%s)',
+                  (time.time(), database.user_id(actor, c) if actor else None, database.user_id(target, c) if target else None,
+                   action, Jsonb(detail)))
+
+
+TEAM_CHANGE_LABELS = {'plan': 'Plan or credits changed by our team', 'password_reset': 'Password reset by our team',
+                      'order_settle': 'Order marked paid by our team', 'order_cancel': 'Order cancelled by our team',
+                      'order_link': 'Payment link added to an order by our team',
+                      'privacy_request_handled': 'Privacy request closed by our team'}
+
+
+def team_changes(user, limit=10):
+    """What admins changed on this account, newest first, without saying which admin (shown on the Account page)."""
+    with database.connect() as c:
+        rows = c.execute('SELECT ts,action FROM admin_events WHERE target_id=%s ORDER BY ts DESC,id DESC LIMIT %s',
+                         (database.user_id(user, c), limit)).fetchall()
+    return [{'ts': r['ts'], 'label': TEAM_CHANGE_LABELS.get(r['action'], 'Account changed by our team')} for r in rows]
+
+
+def admin_events(limit=50):
+    with database.connect() as c:
+        return c.execute('SELECT e.ts,e.action,e.detail,a.email AS actor,t.email AS target FROM admin_events e '
+                         'LEFT JOIN users a ON a.id=e.actor_id LEFT JOIN users t ON t.id=e.target_id '
+                         'ORDER BY e.ts DESC,e.id DESC LIMIT %s', (limit,)).fetchall()
+
+
+def export(user):
+    """Everything held about one owner, every table (UK/EU GDPR Art 15 and 20; Account > Download my data).
+    Never password material, Drive credentials, OAuth state hashes or other people's identities."""
+    with database.connect() as c:
+        o = {'o': database.user_id(user, c)}
+        rows = lambda q: c.execute(q, o).fetchall()  # noqa: E731
+        return {
+            'users': rows('SELECT id,email,role,created,changed,active,deactivated_at,erased_at FROM users WHERE id=%(o)s'),
+            'accounts': rows('SELECT * FROM accounts WHERE owner_id=%(o)s'),
+            'usage': rows('SELECT * FROM usage WHERE owner_id=%(o)s ORDER BY ts'),
+            'jobs': rows('SELECT id,url,params,status,progress,step,log,meta,error,created,updated,finished_at '
+                         'FROM jobs WHERE owner_id=%(o)s ORDER BY created'),
+            'orders': rows('SELECT ref,ts,plan,amount_usd,provider,status,paid_at,note,meta,pay_link,billing_email '
+                           'FROM orders WHERE owner_id=%(o)s ORDER BY ts'),
+            'outreach': rows('SELECT * FROM outreach WHERE owner_id=%(o)s ORDER BY ts'),
+            'drive_connections': rows('SELECT status,google_email,google_sub,scope,folder_id,connected_at,updated '
+                                      'FROM drive_connections WHERE owner_id=%(o)s'),
+            'drive_uploads': rows('SELECT job_id,variant,file_id,status,name,web_view_link,size,sharing,created,confirmed_at '
+                                  'FROM drive_uploads WHERE owner_id=%(o)s ORDER BY created'),
+            'drive_oauth_states': rows('SELECT redirect_uri,created,expires_at FROM drive_oauth_states WHERE owner_id=%(o)s'),
+            'admin_events': rows('SELECT ts,action,detail,actor_id=%(o)s AS by_you,target_id=%(o)s AS about_you '
+                                 'FROM admin_events WHERE actor_id=%(o)s OR target_id=%(o)s ORDER BY ts'),
+            'privacy_requests': rows('SELECT ref,ts,type,name,details,airbnb_profile_id,status,due_at,handled_at FROM privacy_requests '
+                                     'WHERE lower(email)=(SELECT email FROM users WHERE id=%(o)s) ORDER BY ts'),
+        }
+
+
+PRIVACY_REQUEST_TYPES = {'access': 'Access', 'erasure': 'Erasure', 'rectification': 'Rectification',
+                         'objection': 'Objection to outreach', 'complaint': 'Complaint', 'other': 'Other'}
+
+
+def one_month_after(ts):
+    """UK GDPR Art 12(3) 'within one month of receipt': the same day next month, or that month's last day."""
+    import calendar
+    import datetime as dt
+    d = dt.datetime.fromtimestamp(ts, dt.timezone.utc)
+    y, m = (d.year + 1, 1) if d.month == 12 else (d.year, d.month + 1)
+    return d.replace(year=y, month=m, day=min(d.day, calendar.monthrange(y, m)[1])).timestamp()
+
+
+def add_privacy_request(kind, email, name, details, airbnb_profile_id=None):
+    """Store a request and return (ref, received ts). The on-screen reference is the acknowledgement."""
+    import secrets
+    now = time.time()
+    for _ in range(6):
+        ref = 'PR-' + time.strftime('%y%m%d', time.gmtime(now)) + '-' + secrets.token_hex(3).upper()
+        with database.connect() as c:
+            if c.execute('INSERT INTO privacy_requests(ref,ts,type,email,name,details,airbnb_profile_id,due_at) '
+                         'VALUES(%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (ref) DO NOTHING RETURNING ref',
+                         (ref, now, kind, email, name, details, airbnb_profile_id, one_month_after(now))).fetchone():
+                return ref, now
+    raise RuntimeError('Could not allocate a request reference')
+
+
+def open_privacy_requests():
+    with database.connect() as c:
+        return c.execute("SELECT * FROM privacy_requests WHERE status='open' ORDER BY due_at").fetchall()
+
+
+def handle_privacy_request(ref):
+    with database.connect() as c:
+        return c.execute("UPDATE privacy_requests SET status='handled',handled_at=%s WHERE ref=%s AND status='open' RETURNING ref",
+                         (time.time(), ref)).fetchone()

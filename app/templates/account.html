@@ -33,7 +33,23 @@
 
 <section class="card">
   <div class="section-head"><h2>Your data</h2></div>
-  <p class="hint">Your reels and outreach are visible only to you. Finished reels live in your own Google Drive, not on our servers. We store a one-way hash of your network and device to keep the free tier fair — never the raw values. See <a href="/privacy">Privacy</a>.</p>
-  <p class="hint">Need your account deleted? Email <a href="mailto:hello@braivex.com?subject=Delete%20my%20ReelSieve%20account">hello@braivex.com</a> and it's done within a day.</p>
+  <p class="hint">Your reels and outreach are visible only to you. Finished reels live in your own Google Drive, not on our servers. For free videos we keep a pseudonymised code for your network (a keyed hash of your IP address range, never the address itself) to keep the free tier fair, and delete it after 90 days. See <a href="/privacy">Privacy</a>.</p>
+  <div class="actions"><a class="btn btn-secondary" href="/api/account/export" download>Download my data</a></div>
+  <p class="hint">One JSON file with everything we hold about your account: plan, reels, orders, outreach, your Google Drive connection (never its keys) and any admin changes to your account.</p>
+  {% if team_changes %}
+  <h3>Changes our team made to your account</h3>
+  <ul class="steps">{% for e in team_changes %}<li>{{ e.ts|day }}: {{ e.label }}</li>{% endfor %}</ul>
+  <p class="hint">If you did not expect one of these, <a href="/privacy/request">tell us</a>.</p>
+  {% endif %}
+</section>
+
+<section class="card" id="delete-card">
+  <div class="section-head"><h2>Delete your account</h2></div>
+  <p class="hint">This signs you out, stops reels in progress, disconnects Google Drive and deletes your reels list, outreach and account details. Paid orders are kept for {{ records_years }} years for tax records, with only the reference, date, plan, amount and your billing email. Reels already in your Google Drive stay there: they are your files. This cannot be undone.</p>
+  <div class="grid-2">
+    <div class="field"><label for="del-password">Password</label><input type="password" id="del-password" autocomplete="current-password"></div>
+    <div class="field"><label for="del-confirm">Type DELETE to confirm</label><input type="text" id="del-confirm" autocomplete="off" autocapitalize="characters" spellcheck="false"></div>
+  </div>
+  <div class="actions"><button type="button" class="btn btn-danger" id="del-btn">Delete my account</button><span class="form-status" id="del-status" role="status" aria-live="polite"></span></div>
 </section>
 {% endblock %}

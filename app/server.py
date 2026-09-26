@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import quote
 from xml.sax.saxutils import escape
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse,
                                Response, StreamingResponse)
@@ -23,18 +24,18 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app import admin, auth, billing, cohost, database, gdrive, hostmsg, jobs, linkedin, plans, store
+from app import admin, auth, billing, cohost, database, fetch, gdrive, hostmsg, jobs, linkedin, plans, retention, store
 from app import search as listing_search
 
 HERE = Path(__file__).resolve().parent
 REQUIRED = ('DATABASE_URL', 'SESSION_SECRET', 'TOKEN_ENCRYPTION_KEY')
 CSRF_COOKIE = 'reelsieve_csrf'
 PUBLIC_PREFIXES = ('/static/', '/oauth/google/callback', '/favicon.ico', '/api/billing/webhook/')
-PUBLIC_EXACT = ('/', '/login', '/signup', '/setup', '/forgot', '/healthz', '/privacy', '/terms',
+PUBLIC_EXACT = ('/', '/login', '/signup', '/setup', '/forgot', '/healthz', '/privacy', '/terms', '/privacy/request',
                 '/robots.txt', '/sitemap.xml', '/llms.txt')
 DAILY_CAP = int(os.getenv('OUTREACH_DAILY_CAP', '5'))
 TRUSTED_HOPS = int(os.getenv('TRUSTED_PROXY_HOPS', '1'))
-COHOST_MESSAGE = ("Hi {name} — I'm Hemant from ReelSieve (Braivex). I make short cinematic walkthrough videos for short-let "
+COHOST_MESSAGE = ("Hi {name} — I make short cinematic walkthrough videos for short-let "
                   "listings, built from the photos and reviews already on them. I made one for a {city} property this week and thought of you.\n\n"
                   "Happy to make one for {listing_title} free so you can see it — no strings, no card. If it is useful I do them at volume for operators.\n\n"
                   "If you'd rather I sent it elsewhere, tell me where and I will.")
@@ -87,6 +88,7 @@ def site_url():
 
 tpl.env.globals['site_url'] = site_url
 tpl.env.filters['day'] = lambda ts: time.strftime('%d %b %Y', time.gmtime(ts or 0))
+tpl.env.filters['when'] = lambda ts: time.strftime('%d %b %Y %H:%M UTC', time.gmtime(ts or 0))
 
 
 def _secure(request):
@@ -309,7 +311,8 @@ def login_page(request: Request, next: str = '/app', notice: str = ''):
     if request.state.user:
         return RedirectResponse(_safe_next(next), status_code=303)
     msg = {'out': 'You have been signed out.', 'created': 'Account created — sign in.',
-           'pw': 'Password changed — sign in with the new one.'}.get(notice, '')
+           'pw': 'Password changed — sign in with the new one.',
+           'deleted': 'Your account has been deleted.'}.get(notice, '')
     return tpl.TemplateResponse(request, 'login.html', {'next': _safe_next(next), 'notice': msg})
 
 
@@ -352,18 +355,18 @@ def signup_page(request: Request, plan: str = '', url: str = ''):
 async def signup_post(request: Request):
     f = await _form(request)
     u, p1, p2 = (f.get('user') or '').strip(), f.get('password') or '', f.get('password2') or ''
-    plan, url, ip, fp = (f.get('plan') or 'free').strip(), (f.get('url') or '').strip()[:500], _ip(request), (f.get('fp') or '')[:400]
+    plan, url, ip = (f.get('plan') or 'free').strip(), (f.get('url') or '').strip()[:500], _ip(request)
     ctx = lambda err: tpl.TemplateResponse(request, 'signup.html', {'user': u, 'plan': plan, 'url': url, 'error': err, 'plans': plans.public_plans()}, status_code=400)  # noqa: E731
     if p2 and p1 != p2:
         return ctx('Passwords do not match')
-    guard = plans.signup_guard(u, ip, fp)
+    guard = plans.signup_guard(u, ip)
     if guard:
         return ctx(guard)
     try:
         auth.create_user(u, p1, 'member')
     except ValueError as e:
         return ctx(str(e))
-    store.ensure_account(u, 'free', ip, fp)
+    store.ensure_account(u, 'free')
     nxt = '/app' + (('?url=' + quote(url)) if url else '')
     if plan in ('starter', 'commercial'):
         nxt = '/upgrade?plan=' + plan
@@ -389,6 +392,32 @@ def api_account(request: Request):
     return plans.account_view(request.state.user)
 
 
+@app.get('/api/account/export')
+def account_export(request: Request):
+    """Download my data (UK/EU GDPR Art 15 and 20): every table's rows for the signed-in owner, as JSON."""
+    data = {'exported_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'privacy_notice': site_url() + '/privacy',
+            **store.export(request.state.user)}
+    return Response(json.dumps(data, indent=1, default=str), media_type='application/json',
+                    headers={'Content-Disposition': 'attachment; filename="reelsieve-my-data.json"', 'Cache-Control': 'private, no-store'})
+
+
+@app.post('/api/account/delete')
+async def account_delete(request: Request):
+    """Delete my account (Art 17 / DPDP s12) after a password re-check and a typed DELETE."""
+    b = await request.json()
+    if (b.get('confirm') or '').strip() != 'DELETE':
+        raise HTTPException(400, 'Type DELETE to confirm')
+    if not auth.verify(request.state.user, b.get('password') or ''):
+        raise HTTPException(400, 'Password is wrong')
+    try:
+        warning = admin.erase(request.state.user, request.state.user)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    resp = JSONResponse({'ok': True, 'warning': warning, 'redirect': '/login?notice=deleted'})
+    resp.delete_cookie(auth.COOKIE)
+    return resp
+
+
 @app.post('/api/users/plan')
 async def api_user_plan(request: Request):
     _require_admin(request)
@@ -406,7 +435,8 @@ async def api_user_plan(request: Request):
     if u not in {x['user'] for x in auth.users()}:
         raise HTTPException(404, 'No such user')
     store.ensure_account(u)
-    store.set_plan(u, pl, credits, note=f'set by {request.state.user}')
+    store.set_plan(u, pl, credits, note='set by admin')
+    store.admin_event('plan', request.state.user, u, plan=pl, credits=credits)
     return {'ok': True, 'account': plans.account_view(u)}
 
 
@@ -441,6 +471,18 @@ async def api_users_del(request: Request):
     return {'users': auth.users(), 'warning': warning}
 
 
+@app.post('/api/users/erase')
+async def api_users_erase(request: Request):
+    """Erase, unlike Remove: personal data deleted or anonymised; paid orders kept for the tax record period."""
+    _require_admin(request)
+    target = ((await request.json()).get('user') or '').strip().lower()
+    try:
+        warning = admin.erase(target, request.state.user)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {'users': auth.users(), 'warning': warning}
+
+
 @app.post('/api/users/password')
 async def api_users_pw(request: Request):
     _require_admin(request)
@@ -449,6 +491,7 @@ async def api_users_pw(request: Request):
         auth.set_password(b.get('user', ''), b.get('password', ''))
     except ValueError as e:
         raise HTTPException(400, str(e))
+    store.admin_event('password_reset', request.state.user, b.get('user', ''))
     return {'ok': True}
 
 
@@ -474,6 +517,49 @@ def privacy(request: Request):
 @app.get('/terms', response_class=HTMLResponse)
 def terms(request: Request):
     return tpl.TemplateResponse(request, 'legal.html', {'kind': 'terms'})
+
+
+def _request_page(request, status=200, **ctx):
+    return tpl.TemplateResponse(request, 'privacy_request.html', {'types': store.PRIVACY_REQUEST_TYPES, 'f': {}, **ctx},
+                                status_code=status)
+
+
+@app.get('/privacy/request', response_class=HTMLResponse)
+def privacy_request_page(request: Request):
+    """Rights requests and complaints from anyone, signed in or not (UK DPA 2018 s.164A; Art 12: one month)."""
+    return _request_page(request)
+
+
+@app.post('/privacy/request')
+async def privacy_request_post(request: Request):
+    f = {k: (v or '').strip() for k, v in (await _form(request)).items() if k != 'csrf'}
+    ip = _ip(request)
+    if auth.too_many(ip, 'privacy'):
+        return _request_page(request, 429, f=f, error='Too many requests from this network. Try again in 10 minutes, or email hello@braivex.com.')
+    profile = linkedin.airbnb_profile(f.get('airbnb_profile', ''))
+    error = ('Choose what the request is about' if f.get('type') not in store.PRIVACY_REQUEST_TYPES else
+             'Enter a valid email address so we can reply' if not auth.EMAIL.match(f.get('email', '')) else
+             'Tell us what you would like us to do' if not f.get('details') else
+             'Paste the link to your Airbnb profile (airbnb.co.uk/users/show/<number>), or leave it empty'
+             if f.get('airbnb_profile') and not profile else None)
+    if error:
+        return _request_page(request, 400, f=f, error=error)
+    auth.record_fail(ip, 'privacy')  # counts submissions, not failures
+    ref, received = store.add_privacy_request(f['type'], auth.norm(f['email']), f.get('name', '')[:200] or None, f['details'][:4000],
+                                              profile.rsplit('/', 1)[-1] if profile else None)
+    if f['type'] == 'objection' and profile:
+        store.suppress({'airbnb_profile': profile})  # stop outreach to them at once, for every user
+    return _request_page(request, ack={'ref': ref, 'received': received, 'due': store.one_month_after(received)})
+
+
+@app.post('/api/privacy-requests/handled')
+async def privacy_request_handled(request: Request):
+    _require_admin(request)
+    ref = ((await request.json()).get('ref') or '').strip()
+    if not store.handle_privacy_request(ref):
+        raise HTTPException(404, 'No open request with that reference')
+    store.admin_event('privacy_request_handled', request.state.user, None, ref=ref)
+    return {'ok': True}
 
 
 def _upgrade_page(request, plan='', order=None, note='We send the invoice within a few hours and add your credits the moment it clears.', **extra):
@@ -527,14 +613,14 @@ async def billing_start(request: Request):
             o, url = billing.start_stripe_checkout(request.state.user, pl, base)
         except RuntimeError as e:
             raise HTTPException(502, str(e))
-        return {'ok': True, 'order': o, 'pay_url': url}
+        return {'ok': True, 'order': billing.view(o), 'pay_url': url}
     if not billing.checkout_link(pl):
         raise HTTPException(400, 'No payment link configured for that plan — request an invoice instead')
     try:
-        o = billing.create_order(request.state.user, pl, 'link', (b.get('note') or '')[:400], {'ip': _ip(request)})
+        o = billing.create_order(request.state.user, pl, 'link', (b.get('note') or '')[:400])
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return {'ok': True, 'order': o, 'pay_url': billing.pay_url(pl, o['ref'], base)}
+    return {'ok': True, 'order': billing.view(o), 'pay_url': billing.pay_url(pl, o['ref'], base)}
 
 
 @app.post('/api/billing/request')
@@ -544,10 +630,10 @@ async def billing_request(request: Request):
     if pl not in ('starter', 'commercial'):
         raise HTTPException(400, 'Choose Starter or Commercial')
     try:
-        o = billing.create_order(request.state.user, pl, b.get('provider') or 'invoice', (b.get('note') or '')[:400], {'ip': _ip(request)})
+        o = billing.create_order(request.state.user, pl, b.get('provider') or 'invoice', (b.get('note') or '')[:400])
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return {'ok': True, 'order': o}
+    return {'ok': True, 'order': billing.view(o)}
 
 
 @app.get('/api/billing/orders')
@@ -562,17 +648,20 @@ async def billing_settle(request: Request):
     _require_admin(request)
     b = await request.json()
     try:
-        o = billing.settle((b.get('ref') or '').strip(), by=request.state.user)
+        o = billing.settle((b.get('ref') or '').strip(), by='admin')
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return {'ok': True, 'order': o, 'account': plans.account_view(o['user'])}
+    store.admin_event('order_settle', request.state.user, o['user'], ref=o['ref'])
+    return {'ok': True, 'order': billing.view(o), 'account': plans.account_view(o['user'])}
 
 
 @app.post('/api/billing/cancel')
 async def billing_cancel(request: Request):
     _require_admin(request)
     b = await request.json()
-    return {'ok': True, 'order': billing.cancel((b.get('ref') or '').strip(), b.get('note') or 'cancelled')}
+    o = billing.cancel((b.get('ref') or '').strip(), b.get('note') or 'cancelled')
+    store.admin_event('order_cancel', request.state.user, o['user'], ref=o['ref'])
+    return {'ok': True, 'order': billing.view(o)}
 
 
 @app.post('/api/billing/link')
@@ -584,7 +673,8 @@ async def billing_link(request: Request):
         o = billing.set_pay_link((b.get('ref') or '').strip(), b.get('url') or '')
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return {'ok': True, 'order': o}
+    store.admin_event('order_link', request.state.user, o['user'], ref=o['ref'])
+    return {'ok': True, 'order': billing.view(o)}
 
 
 @app.post('/api/billing/webhook/{provider}')
@@ -676,7 +766,8 @@ def job_view(j, receipts=None):
         'stream_url': f"/api/jobs/{j['id']}/video" if primary else None,
         'download_url': f"/api/jobs/{j['id']}/video?download=1" if primary else None,
         'drive_link': primary['webViewLink'] if primary else None, 'shared': shared, 'reel_link': link,
-        'poster': listing.get('photo'), 'host_status': m.get('host_status'), 'host_error': m.get('host_error'),
+        'poster': img_src(listing['photo'] + ('?im_w=1200' if '?' not in listing['photo'] else '')) if listing.get('photo') else None,
+        'host_status': m.get('host_status'), 'host_error': m.get('host_error'),
         'message': msg, 'message_final': final, 'search_phrase': phrase,
         'youtube_title': phrase.replace(' ReelSieve', ' — by ReelSieve'),
         'contact_url': hostmsg.contact_url(lid) if lid else None}
@@ -711,7 +802,7 @@ async def create_job(request: Request):
     b = await request.json()
     try:
         j = jobs.admit(request.state.user, b.get('url'), b, request.headers.get('idempotency-key') or b.get('idempotency_key'),
-                       _ip(request), (b.get('fp') or '')[:400])
+                       _ip(request))
     except jobs.AdmissionError as e:
         raise HTTPException(e.status, str(e))
     return {'id': j['id'], 'account': plans.account_view(request.state.user)}
@@ -817,6 +908,46 @@ def reels_index(request: Request):
         if lid and v['status'] == 'done':
             out.setdefault(lid, []).append({'id': v['id'], 'created': v['created'], 'drive_link': v['drive_link']})
     return out
+
+
+# ---------------- listing photos ----------------
+
+# ponytail: the one Airbnb CDN host seen in listing, search and co-host data; add a host here when another appears.
+IMG_HOSTS = ('a0.muscache.com',)
+IMG_MAX = 8 * 1024 * 1024
+IMG_MAGIC = ((b'\xff\xd8\xff', 'image/jpeg'), (b'\x89PNG\r\n\x1a\n', 'image/png'), (b'GIF87a', 'image/gif'), (b'GIF89a', 'image/gif'))
+
+
+def img_src(url):
+    """Pages show listing photos through /img, so a visitor's browser never contacts Airbnb's CDN."""
+    return '/img?u=' + quote(url, safe='') if url else None
+
+
+def _image_type(body):
+    """From the bytes, not the upstream header: only raster formats a browser shows (never SVG or HTML)."""
+    for magic, kind in IMG_MAGIC:
+        if body.startswith(magic):
+            return kind
+    if body[:4] == b'RIFF' and body[8:12] == b'WEBP':
+        return 'image/webp'
+    return 'image/avif' if body[4:12] in (b'ftypavif', b'ftypavis') else None
+
+
+@app.get('/img')
+def image_proxy(u: str = ''):
+    """Signed-in only (the Gate). https to IMG_HOSTS only, every redirect re-checked (app.fetch), size-capped."""
+    try:
+        # WebP, not AVIF: the CDN answers AVIF when asked, which Safari before 16 cannot show.
+        _, body = fetch.get(u, headers={'User-Agent': listing_search.UA['User-Agent'], 'Accept': 'image/webp,image/jpeg,image/png'},
+                            timeout=20, max_bytes=IMG_MAX, hosts=IMG_HOSTS)
+    except ValueError:
+        raise HTTPException(400, 'Not an allowed image')
+    except httpx.HTTPError:
+        raise HTTPException(502, 'Image unavailable')
+    kind = _image_type(body)
+    if not kind:
+        raise HTTPException(400, 'Not an allowed image')
+    return Response(body, media_type=kind, headers={'Cache-Control': 'private, max-age=86400'})
 
 
 # ---------------- listing search ----------------
@@ -957,9 +1088,10 @@ def api_cohosts(city: str = ''):
     if not city.strip():
         raise HTTPException(400, 'Enter a city')
     try:
-        return cohost.discover(city.strip()[:120])
+        res = cohost.discover(city.strip()[:120])
     except Exception:
         raise HTTPException(502, 'Lookup failed — try again')
+    return {**res, 'items': store.unsuppressed(res.get('items') or [])}  # people who objected never reappear
 
 
 @app.get('/api/outreach/linkedin')
@@ -967,9 +1099,10 @@ def api_linkedin(city: str = '', role: str = 'property manager'):
     if not city.strip():
         raise HTTPException(400, 'Enter a city')
     try:
-        return linkedin.build(city.strip()[:120], (role.strip() or 'property manager')[:80])
+        res = linkedin.build(city.strip()[:120], (role.strip() or 'property manager')[:80])
     except Exception:
         raise HTTPException(502, 'Lookup failed — try again')
+    return {**res, 'items': store.unsuppressed(res.get('items') or [])}
 
 
 @app.post('/api/outreach/queue')
@@ -979,9 +1112,26 @@ async def api_queue(request: Request):
     ids = [store.add_outreach(u, ch, str(it.get('name') or '')[:200], str(it.get('url') or '')[:500], str(it.get('city') or '')[:120],
                               str(it.get('message') or '')[:3000],
                               meta={**{k: it.get(k) for k in ('id', 'listing_title', 'company') if k in it},
+                                    'listing_url': str(it.get('listing_url') or '')[:300],
                                     'airbnb_profile': linkedin.airbnb_profile(it.get('airbnb_profile'))})
-           for it in (b.get('items') or [])[:25]]
+           for it in store.unsuppressed([it for it in (b.get('items') or [])[:25] if isinstance(it, dict)])]
     return {'ok': True, 'ids': ids, 'rows': store.outreach_rows(u), 'stats': store.outreach_stats(u)}
+
+
+@app.post('/api/outreach/suppress')
+async def api_out_suppress(request: Request):
+    """Do not contact: the prospect objected. Suppressed for every user (hashes only) and this row deleted."""
+    b, u = await request.json(), request.state.user
+    r = store.outreach_get(int(b.get('id') or 0), u)
+    if not r:
+        raise HTTPException(404)
+    try:
+        meta = json.loads(r.get('meta') or '{}')
+    except ValueError:
+        meta = {}
+    store.suppress({**(meta if isinstance(meta, dict) else {}), 'name': r['name'], 'url': r['url']})
+    store.outreach_delete(r['id'], u)
+    return {'ok': True, 'stats': store.outreach_stats(u)}
 
 
 @app.post('/api/outreach/status')
@@ -1015,6 +1165,11 @@ def api_out_csv(request: Request):
 
 # ---------------- settings ----------------
 
+EVENT_LABELS = {'plan': 'Plan or credits changed', 'password_reset': 'Password reset', 'deactivate': 'Removed (deactivated)',
+                'erase': 'Account erased', 'order_settle': 'Order marked paid', 'order_cancel': 'Order cancelled',
+                'order_link': 'Pay link set', 'privacy_request_handled': 'Privacy request handled'}
+
+
 def settings_view():
     """Cloud-managed configuration, read-only: secrets show only whether they are set."""
     return [{'key': k, 'configured': bool((os.getenv(k) or '').strip()), 'secret': secret, 'hint': hint,
@@ -1027,6 +1182,8 @@ def settings(request: Request, saved: int = 0, flash: str = ''):
         return RedirectResponse('/account' + (('?flash=' + quote(flash)) if flash else ('?saved=1' if saved else '')), status_code=303)
     return tpl.TemplateResponse(request, 'settings.html', {
         'settings': settings_view(), 'gdrive': gdrive.status(request.state.user), 'saved': bool(saved), 'flash': flash[:400],
+        'events': store.admin_events(50), 'event_labels': EVENT_LABELS,
+        'requests': store.open_privacy_requests(), 'request_types': store.PRIVACY_REQUEST_TYPES, 'now': time.time(),
         'redirect_uri': _redirect_uri(request), 'webhook_base': (public_base() or str(request.base_url).rstrip('/'))})
 
 
@@ -1040,4 +1197,5 @@ def settings_api(request: Request):
 def account_page(request: Request, saved: int = 0, flash: str = ''):
     return tpl.TemplateResponse(request, 'account.html', {
         'account': plans.account_view(request.state.user), 'plans': plans.public_plans(),
-        'gdrive': gdrive.status(request.state.user), 'saved': bool(saved), 'flash': flash[:400]})
+        'gdrive': gdrive.status(request.state.user), 'saved': bool(saved), 'flash': flash[:400],
+        'records_years': retention.FINANCIAL_RECORDS_YEARS, 'team_changes': store.team_changes(request.state.user)})

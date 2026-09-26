@@ -253,20 +253,20 @@ def test_reservation_idempotency_owner_and_listing_match(db):
         plans.reserve(ALICE, 'https://example.test/one', 'same-job')
 
 
-def test_free_device_budget_is_atomic_across_owners(db, monkeypatch):
+def test_free_network_budget_is_atomic_across_owners(db, monkeypatch):
     from app import store, plans
-    monkeypatch.setattr(plans, 'FREE_PER_DEVICE', 1)
+    monkeypatch.setattr(plans, 'FREE_PER_NET', 1)
     account()
     account(BOB)
     def reserve(user):
         try:
-            plans.reserve(user, 'https://example.test/' + user, 'job-' + user, fp='shared-device')
+            plans.reserve(user, 'https://example.test/' + user, 'job-' + user, ip='203.0.113.9')
             return True
         except ValueError:
             return False
     with ThreadPoolExecutor(max_workers=2) as pool:
         assert sum(pool.map(reserve, [ALICE, BOB])) == 1
-    assert store.count_usage(fp='shared-device') == 1
+    assert store.count_usage(ip='203.0.113.9') == 1
 
 
 def test_outreach_mutations_are_owner_scoped(db):
@@ -310,9 +310,11 @@ def test_settle_concurrently_grants_once_and_rollback_is_atomic(db):
 def test_network_and_device_signals_expire_after_retention(db):
     from app import auth, store
     auth.create_user('old@example.test', 'long-initial-password')
-    store.ensure_account('old@example.test', 'free', '203.0.113.9', 'device-print')
-    store.record_usage('old@example.test', 'free', 'https://www.airbnb.co.uk/rooms/1', 'job-old', '203.0.113.9', 'device-print')
+    store.ensure_account('old@example.test', 'free')
+    store.record_usage('old@example.test', 'free', 'https://www.airbnb.co.uk/rooms/1', 'job-old', '203.0.113.9')
     with db.connect() as c:
+        c.execute("UPDATE accounts SET ip_hash='legacy-net',fp_hash='legacy-device'")  # imported legacy values
+        c.execute("UPDATE usage SET fp_hash='legacy-device'")
         c.execute('UPDATE usage SET ts=ts-%s', (91 * 86400,))
         c.execute('UPDATE accounts SET created=created-%s', (91 * 86400,))
     store.purge_signals()

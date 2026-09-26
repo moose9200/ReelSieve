@@ -48,7 +48,7 @@ def _request_hash(url, params):
     return hashlib.sha256(json.dumps({'url': url, **params}, sort_keys=True).encode()).hexdigest()
 
 
-def admit(user, url, requested, idempotency_key=None, ip=None, fp=None):
+def admit(user, url, requested, idempotency_key=None, ip=None):
     """Create a job for the signed-in owner. Same key + same input returns the original job."""
     url = canonical_listing(url)
     requested = {
@@ -75,7 +75,7 @@ def admit(user, url, requested, idempotency_key=None, ip=None, fp=None):
         if generation is None:
             raise AdmissionError('Connect your Google Drive in Account first — finished reels are delivered there', 412)
         try:
-            plans.reserve(user, url, job_id, ip, fp, conn=c)
+            plans.reserve(user, url, job_id, ip, conn=c)
         except ValueError as e:
             raise AdmissionError(str(e), 402) from None
         plan = plans.PLANS.get(store.get_account(user, c)['plan'], plans.PLANS['free'])

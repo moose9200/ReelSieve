@@ -262,6 +262,8 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px
 .btn:active { box-shadow: var(--sink-sm); }
 .btn:disabled, .btn[aria-disabled="true"] { opacity: .5; cursor: not-allowed; box-shadow: var(--raise-sm); }
 .btn-secondary { background: var(--surface); color: var(--ink); }
+.btn-danger { background: var(--neg-soft); color: var(--neg); }
+#delete-card .grid-2 { margin-top: 16px; }
 
 /* pills */
 .pill {

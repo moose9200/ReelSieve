@@ -22,7 +22,9 @@ from app import database, migrate_cloud
 
 
 def commands():
-    web = [sys.executable, '-m', 'uvicorn', 'app.server:app', '--host', '0.0.0.0', '--port', os.getenv('PORT', '8787')]
+    # No access log: it would print client addresses and full query strings (OAuth code/state, Stripe session id).
+    web = [sys.executable, '-m', 'uvicorn', 'app.server:app', '--host', '0.0.0.0', '--port', os.getenv('PORT', '8787'),
+           '--no-access-log']
     worker = [sys.executable, '-m', 'app.worker']
     cmds = ([web] if os.getenv('WEB_ENABLED', '1') == '1' else []) + ([worker] if os.getenv('WORKER_ENABLED', '1') == '1' else [])
     if not cmds:

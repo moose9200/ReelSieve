@@ -87,8 +87,12 @@ def set_pay_link(ref,url):
         return get_order(ref,conn=c)
 
 
+VIEW=('ref','ts','plan','amount_usd','provider','status','paid_at','pay_link','note','user')
+def view(o):
+    """What order pages and JSON responses show: no owner id and no payer or payment-session metadata."""
+    return {k:o[k] for k in VIEW} if o else o
 def orders(user=None,limit=200):
-    return store._owned_rows('orders',user,limit)
+    return [view(o) for o in store._owned_rows('orders',user,limit)]
 
 
 def pending_count():
@@ -121,7 +125,11 @@ def settle(ref,by='admin',provider=None):
                   (o['owner_id'],time.time()))
         c.execute('UPDATE accounts SET plan=%s,credits=credits+%s WHERE owner_id=%s',
                   (o['plan'],int(p['videos'] or 0),o['owner_id']))
-        c.execute("UPDATE orders SET status='paid',paid_at=%s,note=COALESCE(note,'')||%s,provider=COALESCE(%s,provider) WHERE ref=%s",
+        # billing_email: the tax-record snapshot that survives account erasure (retention.FINANCIAL_RECORDS_YEARS).
+        # An erased account's snapshot was taken at erasure; never replace it with the anonymised address.
+        c.execute("UPDATE orders SET status='paid',paid_at=%s,note=COALESCE(note,'')||%s,provider=COALESCE(%s,provider),"
+                  "billing_email=COALESCE(billing_email,(SELECT email FROM users WHERE id=orders.owner_id AND erased_at IS NULL)) "
+                  "WHERE ref=%s",
                   (time.time(),f' · settled by {by}',provider,ref))
         return get_order(ref,conn=c)
 

@@ -2,12 +2,12 @@
 
 Layered abuse prevention (industry practice: never rely on one signal):
   1. account        — free tier gets FREE_LIFETIME videos, ever
-  2. IP network     — HMAC of /24 (v4) or /64 (v6): FREE_PER_NET free videos per 30 days across all accounts
-  3. device         — HMAC of a client fingerprint: FREE_PER_DEVICE free videos
-  4. cooldown       — at most one free video per FREE_COOLDOWN_H hours per account
-  5. email hygiene  — disposable/temporary domains refused at signup
-  6. idempotent     — re-running the SAME listing never costs a second free credit
-Raw IPs/fingerprints are never stored (see store.py). Paid plans skip 2–4; they are spend-limited by credits.
+  2. IP network     — keyed HMAC of /24 (v4) or /64 (v6): FREE_PER_NET free videos per 30 days across all accounts
+  3. cooldown       — at most one free video per FREE_COOLDOWN_H hours per account
+  4. email hygiene  — disposable/temporary domains refused at signup
+  5. idempotent     — re-running the SAME listing never costs a second free credit
+Raw IPs are never stored; the network hash is pseudonymised, kept on free videos only (see store.py). No device
+fingerprint is collected. Paid plans skip 2–3; they are spend-limited by credits.
 """
 import os,re,time
 from app import store, database
@@ -40,7 +40,6 @@ for _p in PLANS.values():
 ORDER=['free','starter','commercial','enterprise']
 FREE_LIFETIME=int(os.getenv('FREE_LIFETIME','2'))
 FREE_PER_NET=int(os.getenv('FREE_PER_NET','12'))  # offices and mobile carriers share a /24; the per-account cap is the real control
-FREE_PER_DEVICE=int(os.getenv('FREE_PER_DEVICE','2'))
 FREE_COOLDOWN_H=float(os.getenv('FREE_COOLDOWN_H','0'))  # 2 lifetime videos is the real cap; a cooldown only hurts first-run UX
 DISPOSABLE=set('''mailinator.com guerrillamail.com 10minutemail.com tempmail.com temp-mail.org yopmail.com throwawaymail.com
 sharklasers.com getnada.com trashmail.com maildrop.cc dispostable.com fakeinbox.com mailnesia.com mintemail.com
@@ -71,14 +70,14 @@ def check_email(email):
     if local in ROLE_LOCAL:return 'Please use a personal work address rather than a shared inbox'
     if len(local)<2:return 'Enter a valid email address'
     return None
-def signup_guard(email,ip,fp):
+def signup_guard(email,ip):
     """Refuse obvious multi-account farming at the door. Returns None or a message."""
     err=check_email(email)
     if err:return err
     if store.count_usage(ip=ip,since_days=30)>=FREE_PER_NET*2:
         return 'This network has made a lot of free videos today. Choose a plan, or email hello@braivex.com and we will lift it.'
     return None
-def can_generate(user,listing_url,ip=None,fp=None,conn=None):
+def can_generate(user,listing_url,ip=None,conn=None):
     """(ok, reason, meta). Paid: needs credits. Free: layered guardrails. Same listing never costs twice."""
     with database.transaction(conn) as c:
         identity=c.execute('SELECT active FROM users WHERE id=%s', (database.user_id(user,c),)).fetchone()
@@ -96,14 +95,12 @@ def can_generate(user,listing_url,ip=None,fp=None,conn=None):
         return False,f'Free plan covers {FREE_LIFETIME} videos and you have used them. Starter is $100 for 3 with AI camera motion.',{'upgrade':True}
     if ip and store.count_usage(ip=ip,since_days=30,conn=conn)>=FREE_PER_NET:
         return False,'A lot of free videos have come from this network. Choose a plan, or email hello@braivex.com and we will lift it.',{'upgrade':True}
-    if fp and store.count_usage(fp=fp,conn=conn)>=FREE_PER_DEVICE:
-        return False,'The free allowance for this device is used up. Choose a plan to continue.',{'upgrade':True}
     last=store.last_usage_ts(user,conn=conn)
     if last and (time.time()-last)<FREE_COOLDOWN_H*3600:
         wait=FREE_COOLDOWN_H-(time.time()-last)/3600
         return False,f'Free plan makes one video every {int(FREE_COOLDOWN_H)} hours — next one in about {max(1,int(wait))} h. Starter removes the wait.',{'upgrade':True}
     return True,None,{'free_remaining':FREE_LIFETIME-used-1}
-def reserve(user, listing_url, job_id, ip=None, fp=None, conn=None):
+def reserve(user, listing_url, job_id, ip=None, conn=None):
     """Validate and reserve once. A caller can atomically insert its job using conn."""
     if not job_id:
         raise ValueError('A job ID is required')
@@ -114,12 +111,10 @@ def reserve(user, listing_url, job_id, ip=None, fp=None, conn=None):
         if not identity['active']:
             raise ValueError('This account is no longer active')
         # All quota signals use deterministic advisory locks, including cross-owner
-        # free network/device budgets. The row lock also coordinates billing/admin edits.
+        # free network budgets. The row lock also coordinates billing/admin edits.
         keys = ['job:' + job_id, 'owner:' + owner]
         if ip:
             keys.append('net:' + store.ip_hash(ip))
-        if fp:
-            keys.append('device:' + store.fp_hash(fp))
         for key in sorted(keys):
             c.execute('SELECT pg_advisory_xact_lock(hashtext(%s))', (key,))
         existing = c.execute('SELECT * FROM usage WHERE job_id=%s', (job_id,)).fetchone()
@@ -131,7 +126,7 @@ def reserve(user, listing_url, job_id, ip=None, fp=None, conn=None):
             return {'free_rerun': existing['kind'] == 'rerun', 'reserved': True}
         store.ensure_account(user, _default_plan(user, c), conn=c)
         a = c.execute('SELECT * FROM accounts WHERE owner_id=%s FOR UPDATE', (owner,)).fetchone()
-        ok, reason, meta = can_generate(user, listing_url, ip, fp, conn=c)
+        ok, reason, meta = can_generate(user, listing_url, ip, conn=c)
         if not ok:
             raise ValueError(reason)
         p = PLANS.get(a['plan'], PLANS['free'])
@@ -139,14 +134,15 @@ def reserve(user, listing_url, job_id, ip=None, fp=None, conn=None):
         debited = not rerun and p['key'] != 'free' and p['videos'] is not None
         if debited:
             c.execute('UPDATE accounts SET credits=credits-1 WHERE owner_id=%s', (owner,))
-        store.record_usage(user, p['key'], listing_url, job_id, ip, fp,
+        # The network hash is kept only where the free-tier guard counts it: free videos, not reruns or paid plans.
+        store.record_usage(user, p['key'], listing_url, job_id, ip if p['key'] == 'free' and not rerun else None,
                            kind='rerun' if rerun else 'video', credits=0 if rerun else 1,
                            debited=debited, conn=c)
         return {**meta, 'reserved': True}
 
 
-def consume(user, listing_url, job_id, ip=None, fp=None):
-    reserve(user, listing_url, job_id, ip, fp)
+def consume(user, listing_url, job_id, ip=None):
+    reserve(user, listing_url, job_id, ip)
 
 
 def refund(job_id, conn=None):

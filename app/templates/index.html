@@ -94,6 +94,7 @@
         <input type="checkbox" id="ai_motion" name="ai_motion"{% if not ai_ok %} disabled{% endif %}>
         <span>AI camera motion — real generated camera moves through each room instead of a pan over a still.</span>
       </label>
+      <p class="hint" id="ai-provider">With AI camera motion on, the listing photos are sent to Higgsfield, our AI video provider, to generate the clips.</p>
       {% if adm %}
       <div class="grid-2 ai-opts{% if not hf_configured %} is-disabled{% endif %}">
         <div class="field"><label for="ai_resolution">Clip resolution</label><select id="ai_resolution" name="ai_resolution"><option value="1080p" selected>1080p — ≈$3.40 per 5 s clip</option><option value="720p">720p — ≈$1.51 per 5 s clip</option></select></div>

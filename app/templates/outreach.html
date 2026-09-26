@@ -13,10 +13,15 @@
 
 <input type="hidden" id="or-csrf" value="{{ csrf_for(request) }}">
 
+<section class="card" id="outreach-rules">
+  <div class="section-head"><h2>Before you message anyone</h2></div>
+  <p class="hint">UK law (PECR) treats direct messages on platforms such as Airbnb and LinkedIn as electronic mail. Message individuals and sole traders only if they have given consent to hear from you, and respect every opt-out straight away. Airbnb's Terms do not allow commercial messages without the recipient's consent. You send every message yourself, from your own account, and you are responsible for it.</p>
+</section>
+
 <section class="card" id="cohost-card">
   <p class="eyebrow">AIRBNB CO-HOST NETWORK</p>
   <div class="section-head"><h2>Find co-hosts</h2><span class="pill pill-skipped">You send each one</span></div>
-  <p class="hint">Co-hosts and property managers list themselves here to be contacted. Find them by city, personalise, add them to the tracker, then open each one and send the message from your own Airbnb account. ReelSieve never sends for you — keep it to about {{ cap }} a day so it stays human.</p>
+  <p class="hint">Hosts come from Airbnb's Co-Host Network page for the city when Airbnb shows it, otherwise from the hosts behind the city's best-reviewed listings. Find them by city, personalise, add them to the tracker, then open each one and send the message from your own Airbnb account. ReelSieve never sends for you — keep it to about {{ cap }} a day so it stays human.</p>
   <p class="hint">Marked sent today: <span id="sent-today">{{ sent_today }}</span>.</p>
 
   <div class="or-find-row">
@@ -149,6 +154,7 @@
               {% if r.airbnb_profile %}<a class="btn btn-secondary btn-sm" href="{{ r.airbnb_profile }}" target="_blank" rel="noopener">Airbnb profile ↗</a>{% endif %}
               <button type="button" class="btn btn-secondary btn-sm tr-copy" data-msg="{{ r.message or '' }}">Copy message</button>
               <button type="button" class="btn btn-secondary btn-sm tr-note" data-id="{{ r.id }}" data-note="{{ r.note or '' }}">Note</button>
+              <button type="button" class="btn btn-danger btn-sm tr-suppress" data-id="{{ r.id }}" title="They asked not to be contacted: removes them here and from every ReelSieve user's results">Do not contact</button>
             </div>
           </td>
         </tr>

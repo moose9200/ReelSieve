@@ -35,6 +35,8 @@
       });
     });
   }
+  // Listing photos come through our own server, so the visitor's browser never contacts Airbnb's CDN.
+  function imgSrc(u) { return "/img?u=" + encodeURIComponent(u); }
   function getJSON(url) {
     return fetch(url, { headers: { "Accept": "application/json" } }).then(function (r) {
       if (!r.ok) throw new Error("HTTP " + r.status); return r.json();
@@ -78,7 +80,7 @@
       data.items.forEach(function (it) {
         var el = document.createElement("article"); el.className = "result"; el.setAttribute("data-id", it.id);
         var rating = it.rating != null ? "★ " + it.rating + (it.reviews != null ? " (" + it.reviews + ")" : "") : "New";
-        el.innerHTML = (it.photo ? '<img loading="lazy" src="' + esc(it.photo) + '?im_w=720" alt="">' : "") +
+        el.innerHTML = (it.photo ? '<img loading="lazy" src="' + esc(imgSrc(it.photo + "?im_w=720")) + '" alt="">' : "") +
           '<div class="rb"><div class="rn">' + esc(it.name || it.title) + "</div>" +
           '<div class="rt">' + esc(it.title) + "</div>" + (it.summary ? '<div class="rs">' + esc(it.summary) + "</div>" : "") +
           (it.badges && it.badges.length ? '<div><span class="badge">' + esc(it.badges[0]) + "</span></div>" : "") +
@@ -452,7 +454,11 @@
         acts.appendChild(rp);
         if (u.user !== d.me) { var rm = document.createElement("button"); rm.type = "button"; rm.className = "btn btn-secondary btn-sm"; rm.textContent = "Remove";
           rm.addEventListener("click", function () { if (!confirm("Remove " + u.user + "?")) return; postJSON("/api/users/delete", { user: u.user }).then(function (dd) { getJSON("/api/users").then(renderUsers); nuStatus.textContent = dd.warning ? u.user + " removed. " + dd.warning : u.user + " removed; their Drive access was revoked."; }).catch(function (e) { nuStatus.textContent = e.message; }); });
-          acts.appendChild(rm); }
+          acts.appendChild(rm);
+          // Erase is not Remove: personal data goes now; paid orders stay for the tax record period.
+          var er = document.createElement("button"); er.type = "button"; er.className = "btn btn-danger btn-sm"; er.textContent = "Erase";
+          er.addEventListener("click", function () { var typed = prompt("Erase " + u.user + " for good? Their reels list, outreach and account details are deleted; paid orders are kept for tax records.\nType ERASE to confirm:"); if (typed !== "ERASE") return; postJSON("/api/users/erase", { user: u.user }).then(function (dd) { getJSON("/api/users").then(renderUsers); nuStatus.textContent = u.user + " erased." + (dd.warning ? " " + dd.warning : ""); }).catch(function (e) { nuStatus.textContent = e.message; }); });
+          acts.appendChild(er); }
         li.appendChild(pl);
         userList.appendChild(li);
       });
@@ -471,6 +477,19 @@
     postJSON("/api/account/password", { current: document.getElementById("pw-current").value, new: document.getElementById("pw-new").value })
       .then(function (d) { out.textContent = "Password changed — signing you in again…"; setTimeout(function () { window.location.href = (d && d.relogin) || "/login"; }, 800); })
       .catch(function (err) { out.textContent = err.message; out.classList.add("is-error"); });
+  });
+  var delBtn = document.getElementById("del-btn");
+  if (delBtn) delBtn.addEventListener("click", function () {
+    var out = document.getElementById("del-status"), confirmed = document.getElementById("del-confirm").value.trim();
+    out.className = "form-status";
+    if (confirmed !== "DELETE") { out.textContent = "Type DELETE to confirm."; out.classList.add("is-error"); return; }
+    delBtn.disabled = true; out.textContent = "Deleting your account…";
+    postJSON("/api/account/delete", { password: document.getElementById("del-password").value, confirm: confirmed })
+      .then(function (d) {
+        out.textContent = "Account deleted." + (d.warning ? " " + d.warning : "");
+        setTimeout(function () { window.location.href = d.redirect || "/login"; }, d.warning ? 5000 : 800);
+      })
+      .catch(function (err) { out.textContent = err.message; out.classList.add("is-error"); delBtn.disabled = false; });
   });
   // Google consent opens in a new tab; when the person comes back here, show the new Drive status.
   var gdForm = document.getElementById("gdrive-form");
@@ -576,6 +595,8 @@
           id: it.id != null ? it.id : null,
           name: it.name || "",
           url: it.url || "",
+          airbnb_profile: it.profile_url || "",
+          listing_url: it.listing_url || "",
           city: city,
           message: orTokens(tpl, { name: it.name || "", city: city, listing_title: it.listing_title || it.title || "" })
         };
@@ -595,7 +616,7 @@
         row.className = "or-row";
         row.innerHTML =
           '<label class="or-check"><input type="checkbox" class="or-pick" data-i="' + i + '" checked aria-label="Include ' + orEsc(it.name || "this co-host") + '"></label>' +
-          (it.avatar ? '<img class="or-avatar" loading="lazy" alt="" src="' + orEsc(it.avatar) + '">' : "") +
+          (it.avatar ? '<img class="or-avatar" loading="lazy" alt="" src="' + orEsc(imgSrc(it.avatar)) + '">' : "") +
           '<div class="or-row-body"><span class="or-name">' + orEsc(it.name || "Co-host") + "</span>" +
           (it.listings != null ? '<span class="or-badge">' + orEsc(it.listings) + " listings</span>" : "") +
           (it.tagline ? '<span class="or-sub">' + orEsc(it.tagline) + "</span>" : "") + "</div>" +
@@ -704,7 +725,7 @@
           b.disabled = true;
           orPost("/api/outreach/queue", {
             channel: "linkedin",
-            items: [{ id: it.id != null ? it.id : null, name: it.name || "", url: it.url || "", city: liCity(it), message: liNote(it), airbnb_profile: it.airbnb_profile || "" }]
+            items: [{ id: it.id != null ? it.id : null, name: it.name || "", url: it.url || "", city: liCity(it), message: liNote(it), airbnb_profile: it.airbnb_profile || "", listing_url: it.listing_url || "" }]
           })
             .then(function (d) { orStats(d && d.stats); b.textContent = "Queued"; orSay(liStatus, (it.name || "Prospect") + " added to the tracker — reload to see the row."); })
             .catch(function (err) { orSay(liStatus, err.message, true); b.disabled = false; });
@@ -777,6 +798,17 @@
       });
     });
 
+    // Do not contact: an objection is honoured for every ReelSieve user, and the row goes.
+    Array.prototype.forEach.call(document.querySelectorAll(".tr-suppress"), function (b) {
+      b.addEventListener("click", function () {
+        if (!window.confirm("They asked not to be contacted? This removes them from your tracker and from every ReelSieve user's results.")) return;
+        b.disabled = true;
+        orPost("/api/outreach/suppress", { id: orNum(b.getAttribute("data-id")) })
+          .then(function (d) { orStats(d && d.stats); var row = b.closest ? b.closest("tr") : null; if (row) row.parentNode.removeChild(row); trFilter(); })
+          .catch(function (err) { window.alert(err.message); b.disabled = false; });
+      });
+    });
+
     Array.prototype.forEach.call(document.querySelectorAll(".tr-note"), function (b) {
       b.addEventListener("click", function () {
         var note = window.prompt("Note for this prospect:", b.getAttribute("data-note") || "");
@@ -807,6 +839,18 @@
         .catch(function (e) { out.textContent = e.message || "Could not create the order."; out.classList.add("is-error"); billBtn.disabled = false; });
     });
   }
+
+  // ---------- admin: privacy requests ----------
+  Array.prototype.forEach.call(document.querySelectorAll(".req-done"), function (b) {
+    b.addEventListener("click", function () {
+      var out = document.getElementById("req-status"), ref = b.getAttribute("data-ref");
+      if (!confirm("Mark " + ref + " handled? Do this once you have replied.")) return;
+      b.disabled = true; out.className = "form-status";
+      postJSON("/api/privacy-requests/handled", { ref: ref })
+        .then(function () { var li = b.closest("li"); if (li) li.parentNode.removeChild(li); out.textContent = ref + " marked handled."; })
+        .catch(function (e) { out.textContent = e.message; out.classList.add("is-error"); b.disabled = false; });
+    });
+  });
 
   // ---------- admin: orders ----------
   var ordList = document.getElementById("ord-list");

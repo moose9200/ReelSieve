@@ -15,13 +15,16 @@ COOKIE = 'reelsieve_session'
 LONG_TTL = int(os.getenv('SESSION_TTL_DAYS', '30')) * 86400
 SHORT_TTL = 12 * 3600
 EMAIL = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+# OWASP Password Storage Cheat Sheet (fetched 26 Sep 2026): "PBKDF2-HMAC-SHA256: 600,000 iterations (recommended)".
+# Older hashes keep their own count and are upgraded on the next successful sign-in.
+ITERATIONS = 600_000
 
 
 def norm(user):
     return (user or '').strip().lower()
 
 
-def _hash(pw, salt, iterations=200_000):
+def _hash(pw, salt, iterations=ITERATIONS):
     return hashlib.pbkdf2_hmac('sha256', pw.encode(), bytes.fromhex(salt), iterations).hex()
 
 
@@ -59,8 +62,8 @@ def create_user(user, pw, role='member'):
     salt = secrets.token_hex(16)
     try:
         with database.connect() as c:
-            c.execute('INSERT INTO users(id,email,salt,hash,role,created) VALUES(%s,%s,%s,%s,%s,%s)',
-                      (str(uuid.uuid4()), user, salt, _hash(pw, salt), role, time.time()))
+            c.execute('INSERT INTO users(id,email,salt,hash,iterations,role,created) VALUES(%s,%s,%s,%s,%s,%s,%s)',
+                      (str(uuid.uuid4()), user, salt, _hash(pw, salt), ITERATIONS, role, time.time()))
     except UniqueViolation:
         raise ValueError('That email already has an account') from None
 
@@ -86,12 +89,33 @@ def delete_user(user, by):
         c.execute('UPDATE users SET active=FALSE,deactivated_at=%s,session_version=session_version+1 WHERE email=%s', (time.time(), user))
 
 
+def begin_erase(user, by=None):
+    """First step of erasure: end sign-in for good (the account may already be deactivated). Returns the owner id.
+    by: the admin doing it, the account itself (self-service) or None (operator console, retention)."""
+    user, by = norm(user), (norm(by) if by is not None else None)
+    with database.connect() as c:
+        c.execute("SELECT pg_advisory_xact_lock(hashtext('reelsieve-admin-membership'))")
+        if by is not None and by != user:
+            actor = c.execute('SELECT role FROM users WHERE email=%s AND active', (by,)).fetchone()
+            if not actor or actor['role'] != 'admin':
+                raise ValueError('Admin only')
+        row = c.execute('SELECT id,role,active FROM users WHERE email=%s AND erased_at IS NULL FOR UPDATE', (user,)).fetchone()
+        if not row:
+            raise ValueError('No such user')
+        if row['active'] and row['role'] == 'admin' and \
+                c.execute("SELECT count(*) AS n FROM users WHERE role='admin' AND active").fetchone()['n'] <= 1:
+            raise ValueError('Keep at least one admin')
+        c.execute('UPDATE users SET active=FALSE,deactivated_at=COALESCE(deactivated_at,%s),session_version=session_version+1 '
+                  'WHERE id=%s', (time.time(), row['id']))
+        return row['id']
+
+
 def set_password(user, pw):
     validate_password(pw)
     salt = secrets.token_hex(16)
     with database.connect() as c:
-        row = c.execute('UPDATE users SET salt=%s,hash=%s,iterations=200000,changed=%s,session_version=session_version+1 WHERE email=%s AND active RETURNING id',
-                        (salt, _hash(pw, salt), time.time(), norm(user))).fetchone()
+        row = c.execute('UPDATE users SET salt=%s,hash=%s,iterations=%s,changed=%s,session_version=session_version+1 WHERE email=%s AND active RETURNING id',
+                        (salt, _hash(pw, salt), ITERATIONS, time.time(), norm(user))).fetchone()
         if not row:
             raise ValueError('No such user')
 
@@ -104,27 +128,36 @@ def role(user):
 
 def verify(user, pw):
     with database.connect() as c:
-        row = c.execute('SELECT salt,hash,iterations FROM users WHERE email=%s AND active', (norm(user),)).fetchone()
+        row = c.execute('SELECT id,salt,hash,iterations FROM users WHERE email=%s AND active', (norm(user),)).fetchone()
     if not row:
         _hash(pw, '00' * 16)
         return False
-    return hmac.compare_digest(_hash(pw, row['salt'], row['iterations']), row['hash'])
+    if not hmac.compare_digest(_hash(pw, row['salt'], row['iterations']), row['hash']):
+        return False
+    if row['iterations'] < ITERATIONS:
+        # Same password, stronger hash. Not a password change: the session version stays, nobody is signed out.
+        salt = secrets.token_hex(16)
+        with database.connect() as c:
+            c.execute('UPDATE users SET salt=%s,hash=%s,iterations=%s WHERE id=%s AND hash=%s',
+                      (salt, _hash(pw, salt), ITERATIONS, row['id'], row['hash']))
+    return True
 
 
-def _ip_key(ip):
-    return hmac.new(secret().encode(), ('login|' + str(ip)).encode(), hashlib.sha256).hexdigest()
+def _ip_key(ip, purpose='login'):
+    return hmac.new(secret().encode(), (purpose + '|' + str(ip)).encode(), hashlib.sha256).hexdigest()
 
 
-def too_many(ip):
+def too_many(ip, purpose='login'):
+    """5 per 10 minutes per address. purpose keeps limits apart: 'login' failures, 'privacy' request submissions."""
     with database.connect() as c:
         return c.execute('SELECT count(*) AS n FROM login_failures WHERE ip_hash=%s AND ts>%s',
-                         (_ip_key(ip), time.time() - 600)).fetchone()['n'] >= 5
+                         (_ip_key(ip, purpose), time.time() - 600)).fetchone()['n'] >= 5
 
 
-def record_fail(ip):
+def record_fail(ip, purpose='login'):
     with database.connect() as c:
         c.execute('DELETE FROM login_failures WHERE ts<%s', (time.time() - 600,))
-        c.execute('INSERT INTO login_failures(ip_hash,ts) VALUES(%s,%s)', (_ip_key(ip), time.time()))
+        c.execute('INSERT INTO login_failures(ip_hash,ts) VALUES(%s,%s)', (_ip_key(ip, purpose), time.time()))
 
 
 def clear_fails(ip):

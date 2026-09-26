@@ -30,3 +30,15 @@ def test_https_responses_carry_hsts_and_plain_http_does_not(db):
     c = TestClient(server.app)
     assert c.get('/healthz', headers={'x-forwarded-proto': 'https'}).headers.get('strict-transport-security') == 'max-age=31536000'
     assert 'strict-transport-security' not in c.get('/healthz').headers
+
+
+def test_account_page_shows_changes_our_team_made_without_naming_the_admin(owners, db):
+    from fastapi.testclient import TestClient
+    from app import auth, server, store
+    store.admin_event('password_reset', 'bob@example.test', 'alice@example.test')
+    store.admin_event('plan', 'bob@example.test', 'alice@example.test', plan='starter', credits=3)
+    with TestClient(server.app) as client:
+        client.cookies.set(auth.COOKIE, owners['alice'])
+        text = client.get('/account').text
+    assert 'Password reset by our team' in text and 'Plan or credits changed by our team' in text
+    assert 'bob@example.test' not in text
