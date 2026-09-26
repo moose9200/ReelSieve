@@ -15,13 +15,16 @@ COOKIE = 'reelsieve_session'
 LONG_TTL = int(os.getenv('SESSION_TTL_DAYS', '30')) * 86400
 SHORT_TTL = 12 * 3600
 EMAIL = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+# OWASP Password Storage Cheat Sheet (fetched 26 Sep 2026): "PBKDF2-HMAC-SHA256: 600,000 iterations (recommended)".
+# Older hashes keep their own count and are upgraded on the next successful sign-in.
+ITERATIONS = 600_000
 
 
 def norm(user):
     return (user or '').strip().lower()
 
 
-def _hash(pw, salt, iterations=200_000):
+def _hash(pw, salt, iterations=ITERATIONS):
     return hashlib.pbkdf2_hmac('sha256', pw.encode(), bytes.fromhex(salt), iterations).hex()
 
 
@@ -59,8 +62,8 @@ def create_user(user, pw, role='member'):
     salt = secrets.token_hex(16)
     try:
         with database.connect() as c:
-            c.execute('INSERT INTO users(id,email,salt,hash,role,created) VALUES(%s,%s,%s,%s,%s,%s)',
-                      (str(uuid.uuid4()), user, salt, _hash(pw, salt), role, time.time()))
+            c.execute('INSERT INTO users(id,email,salt,hash,iterations,role,created) VALUES(%s,%s,%s,%s,%s,%s,%s)',
+                      (str(uuid.uuid4()), user, salt, _hash(pw, salt), ITERATIONS, role, time.time()))
     except UniqueViolation:
         raise ValueError('That email already has an account') from None
 
@@ -90,8 +93,8 @@ def set_password(user, pw):
     validate_password(pw)
     salt = secrets.token_hex(16)
     with database.connect() as c:
-        row = c.execute('UPDATE users SET salt=%s,hash=%s,iterations=200000,changed=%s,session_version=session_version+1 WHERE email=%s AND active RETURNING id',
-                        (salt, _hash(pw, salt), time.time(), norm(user))).fetchone()
+        row = c.execute('UPDATE users SET salt=%s,hash=%s,iterations=%s,changed=%s,session_version=session_version+1 WHERE email=%s AND active RETURNING id',
+                        (salt, _hash(pw, salt), ITERATIONS, time.time(), norm(user))).fetchone()
         if not row:
             raise ValueError('No such user')
 
@@ -104,11 +107,19 @@ def role(user):
 
 def verify(user, pw):
     with database.connect() as c:
-        row = c.execute('SELECT salt,hash,iterations FROM users WHERE email=%s AND active', (norm(user),)).fetchone()
+        row = c.execute('SELECT id,salt,hash,iterations FROM users WHERE email=%s AND active', (norm(user),)).fetchone()
     if not row:
         _hash(pw, '00' * 16)
         return False
-    return hmac.compare_digest(_hash(pw, row['salt'], row['iterations']), row['hash'])
+    if not hmac.compare_digest(_hash(pw, row['salt'], row['iterations']), row['hash']):
+        return False
+    if row['iterations'] < ITERATIONS:
+        # Same password, stronger hash. Not a password change: the session version stays, nobody is signed out.
+        salt = secrets.token_hex(16)
+        with database.connect() as c:
+            c.execute('UPDATE users SET salt=%s,hash=%s,iterations=%s WHERE id=%s AND hash=%s',
+                      (salt, _hash(pw, salt), ITERATIONS, row['id'], row['hash']))
+    return True
 
 
 def _ip_key(ip):
