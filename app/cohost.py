@@ -4,9 +4,9 @@ Airbnb's Co-Host Network profile pages are not served to logged-out fetches, so 
   1. `network`  — the public Co-Host Network page for the city, when Airbnb serves it
   2. `operators`— derived from the city's own listings: the hosts running several listings (the people who
                   actually buy this), with their name, a listing and Airbnb's own contact-host URL
-Sending is deliberately capped and never silent: the caller must pass confirm=True, each send is paced,
-and anything that cannot be automated comes back as 'manual' with the URL so a human finishes it.
-Airbnb's Terms forbid unsolicited commercial messages — keep volume low, make it relevant, stop if asked."""
+ReelSieve never sends these messages: each customer opens Airbnb's contact form in their own browser
+and sends it themselves. Airbnb's Terms forbid unsolicited commercial messages — keep volume low,
+make it relevant, stop if asked."""
 import re,html,time,random
 import httpx
 from app import search as listing_search
@@ -68,53 +68,3 @@ def discover(city,limit=12):
 def render(template,item):
     return (template or '').replace('{name}',item.get('name') or 'there').replace('{city}',item.get('city') or '')\
         .replace('{listing_title}',item.get('listing_title') or 'your listing').replace('{listings}',str(item.get('listings') or ''))
-def send_one(url,message,confirm=False,timeout_ms=45000,shot=None):
-    """Fill Airbnb's contact form in the user's own logged-in browser profile and, only with confirm=True, submit it.
-    Returns (status, info): sent | draft | manual | failed. Never retries a send whose outcome is unknown."""
-    from app import hostmsg
-    from playwright.sync_api import sync_playwright
-    with hostmsg._lock:
-        with sync_playwright() as p:
-            c=hostmsg._ctx(p,headless=True);pg=c.new_page()
-            try:
-                pg.goto(url,wait_until='domcontentloaded',timeout=timeout_ms)
-                if '/login' in pg.url:return 'failed','Airbnb session expired — reconnect in Settings'
-                box=None
-                for sel in [pg.get_by_role('textbox',name=re.compile('message',re.I)),pg.locator('textarea')]:
-                    try:
-                        sel.first.wait_for(timeout=8000);box=sel.first;break
-                    except Exception:continue
-                if box is None:return 'manual','No message box found on this page — open it and send by hand'
-                box.fill(message)
-                if shot:
-                    try:pg.screenshot(path=shot)
-                    except Exception:pass
-                if not confirm:return 'draft','filled, not sent'
-                btn=None
-                for sel in [pg.get_by_role('button',name=re.compile(r'^(send message|send)$',re.I)),pg.locator('button:has-text("Send")')]:
-                    try:
-                        sel.first.wait_for(timeout=6000);btn=sel.first;break
-                    except Exception:continue
-                if btn is None:return 'manual','No send button found — finish it by hand'
-                btn.click()
-                try:pg.wait_for_url(re.compile(r'/(messaging|inbox|guest/messages)'),timeout=25000);return 'sent',pg.url[:120]
-                except Exception:
-                    pg.wait_for_timeout(4000)
-                    try:still=box.input_value().strip()==message.strip()
-                    except Exception:still=False
-                    if still:return 'failed','Send did not go through — Airbnb may have flagged or rate-limited the message'
-                    return 'sent',pg.url[:120]
-            except Exception as e:return 'failed',f'{type(e).__name__}: {str(e)[:140]}'
-            finally:
-                try:c.close()
-                except Exception:pass
-def send_batch(items,confirm=False,pace=(20,45),cb=None):
-    """items: [{id,url,message}]. Paced, sequential, stops on the first hard failure so one flag doesn't become five."""
-    results=[]
-    for i,it in enumerate(items):
-        st,info=send_one(it['url'],it['message'],confirm=confirm)
-        results.append({'id':it.get('id'),'status':st,'info':info})
-        if cb:cb(f"{it.get('name') or it.get('id')}: {st} — {info}")
-        if st=='failed':break
-        if i<len(items)-1:time.sleep(random.uniform(*pace))
-    return results

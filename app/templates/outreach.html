@@ -11,13 +11,13 @@
   <p class="sub">Two routes to a paying client: Airbnb's Co-Host Network, and property managers on LinkedIn. Everything you send lands in the tracker at the bottom.</p>
 </section>
 
-<input type="hidden" id="or-csrf" value="{{ csrf }}">
+<input type="hidden" id="or-csrf" value="{{ csrf_for(request) }}">
 
 <section class="card" id="cohost-card">
   <p class="eyebrow">AIRBNB CO-HOST NETWORK</p>
-  <div class="section-head"><h2>Find co-hosts</h2><span class="pill pill-skipped">Cap {{ cap }}/day</span></div>
-  <p class="hint">Co-hosts and property managers list themselves here to be contacted. Find them by city, personalise, and send. Capped at {{ cap }} a day so it stays human.</p>
-  <p class="hint">Sent today: <span id="sent-today">{{ sent_n }}</span> of {{ cap }}.</p>
+  <div class="section-head"><h2>Find co-hosts</h2><span class="pill pill-skipped">You send each one</span></div>
+  <p class="hint">Co-hosts and property managers list themselves here to be contacted. Find them by city, personalise, add them to the tracker, then open each one and send the message from your own Airbnb account. ReelSieve never sends for you — keep it to about {{ cap }} a day so it stays human.</p>
+  <p class="hint">Marked sent today: <span id="sent-today">{{ sent_today }}</span>.</p>
 
   <div class="or-find-row">
     <div class="field">
@@ -41,15 +41,12 @@
     <label for="co-message">What each co-host receives</label>
     <textarea id="co-message" rows="6" spellcheck="true">{{ default_message or '' }}</textarea>
   </div>
-  <p class="hint">Tokens: <code>{name}</code> <code>{city}</code> <code>{listing_title}</code>. Each message is personalised per recipient before sending.</p>
+  <p class="hint">Tokens: <code>{name}</code> <code>{city}</code> <code>{listing_title}</code>. Each message is personalised per recipient when it is added.</p>
 
   <div class="actions">
-    <button type="button" class="btn btn-primary" id="co-review" data-cap="{{ cap }}">Review {{ cap }} and send</button>
-    <button type="button" class="btn btn-secondary" id="co-queue">Add to tracker only</button>
+    <button type="button" class="btn btn-primary" id="co-queue">Add to tracker</button>
     <span class="form-status" id="co-send-status" role="status" aria-live="polite"></span>
   </div>
-
-  <div id="co-review-panel" class="or-review hidden"></div>
 </section>
 
 <section class="card" id="li-card">

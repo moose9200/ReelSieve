@@ -12,14 +12,14 @@
   {% for g in groups %}
   <section class="card reel-group" id="listing-{{ g.listing.id }}">
     <div class="rg-head">
-      {% if g.poster %}<a class="rg-poster" href="/jobs/{{ g.latest.id }}"><img src="{{ g.poster }}" alt=""></a>{% endif %}
+      {% if g.poster %}<a class="rg-poster" href="/jobs/{{ g.latest.id }}"><img src="{{ g.poster }}" alt="" loading="lazy" referrerpolicy="no-referrer"></a>{% endif %}
       <div class="rg-meta">
         <h2 class="rg-title">{{ g.listing.title or ("Listing " ~ g.listing.id) }}</h2>
         <p class="rg-sub">{{ g.listing.city or "" }}{% if g.listing.rating %} · ★ {{ g.listing.rating }}{% if g.listing.count %} ({{ g.listing.count }}){% endif %}{% endif %} · {{ g.jobs|length }} reel{{ "s" if g.jobs|length != 1 else "" }}</p>
         <p class="rg-links">
           <a href="/jobs/{{ g.latest.id }}">Latest reel</a>
           <a href="{{ g.listing.url }}" target="_blank" rel="noopener noreferrer">Open on Airbnb ↗</a>
-          <a href="/?url={{ g.listing.url|urlencode }}">Make another</a>
+          <a href="/app?url={{ g.listing.url|urlencode }}">Make another</a>
         </p>
       </div>
     </div>
@@ -32,7 +32,7 @@
         <span class="reel-actions">
           {% if j.status == "done" %}
           <a class="btn btn-secondary btn-sm" href="/jobs/{{ j.id }}">Open</a>
-          {% if j.video_url %}<a class="btn btn-secondary btn-sm" href="{{ j.video_url }}" download>Download</a>{% elif j.drive_download %}<a class="btn btn-secondary btn-sm" href="{{ j.drive_download }}">Download</a>{% endif %}
+          {% if j.download_url %}<a class="btn btn-secondary btn-sm" href="{{ j.download_url }}">Download</a>{% endif %}
           {% if j.drive_link %}<a class="btn btn-secondary btn-sm" href="{{ j.drive_link }}" target="_blank" rel="noopener">Drive ↗</a>{% endif %}
           {% else %}<a class="btn btn-secondary btn-sm" href="/jobs/{{ j.id }}">View</a>{% endif %}
         </span>
@@ -43,6 +43,6 @@
   {% endfor %}
 </div>
 {% else %}
-<section class="card"><p class="empty">No reels yet. <a href="/">Make the first one</a>.</p></section>
+<section class="card"><p class="empty">No reels yet. <a href="/app">Make the first one</a>.</p></section>
 {% endif %}
 {% endblock %}

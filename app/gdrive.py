@@ -365,6 +365,22 @@ def receipt(user, job_id, variant='primary'):
     return _receipt(up) if up else None
 
 
+def receipts_for(user, job_ids):
+    """{job_id: {variant: receipt}} of this owner's confirmed deliveries, in one query."""
+    if not job_ids:
+        return {}
+    with database.connect() as c:
+        row = _row(c, user)
+        if not row:
+            return {}
+        rows = c.execute("SELECT * FROM drive_uploads WHERE owner_id=%s AND job_id=ANY(%s) AND status='confirmed'",
+                         (row['owner_id'], list(job_ids))).fetchall()
+    out = {}
+    for r in rows:
+        out.setdefault(r['job_id'], {})[r['variant']] = _receipt(r)
+    return out
+
+
 def _matches(info, file_id, size, props):
     got = info.get('appProperties') or {}
     return (info.get('id') == file_id and str(info.get('size')) == str(size)
@@ -433,7 +449,7 @@ def upload(path, listing_url, user, description='', chunk=8 * 1024 * 1024, publi
                       "ON CONFLICT (owner_id,job_id,variant) DO UPDATE SET file_id=EXCLUDED.file_id,generation=EXCLUDED.generation "
                       "WHERE drive_uploads.status='pending'",
                       (owner_id, job_id, variant, file_id, generation, time.time()))
-    meta = {'id': file_id, 'name': safe_name(listing_url), 'parents': [_folder(owner_id, token, generation)],
+    meta = {'id': file_id, 'name': safe_name(listing_url, '.mp4' if variant == 'primary' else f'-{variant}.mp4'), 'parents': [_folder(owner_id, token, generation)],
             'description': (description or '')[:900], 'appProperties': props}
     start = _require(_call('upload start', 'POST', UPLOAD, timeout=60, json=meta,
                            params={'uploadType': 'resumable', 'fields': 'id,name,size,webViewLink,appProperties'},

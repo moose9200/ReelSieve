@@ -4,7 +4,7 @@ Zillow, OnTheMarket and agents' own sites all yield a usable photo set. Returns 
 pipeline.scrape_listing so the rest of the pipeline is unchanged."""
 import re,html,json
 from urllib.parse import urljoin,urlparse
-import httpx
+from app import fetch
 UA={'User-Agent':'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36','Accept-Language':'en-GB,en;q=0.9'}
 BAD=re.compile(r'(sprite|logo|icon|favicon|avatar|placeholder|pixel|tracking|banner|badge|flag|star|map-?pin|1x1|blank)',re.I)
 MIN_W=700
@@ -52,7 +52,7 @@ def _photos(t,base):
         seen.add(k);out.append({'label':'','url':u})
     return out[:60]
 def scrape(url,cb=None):
-    r=httpx.get(url,headers=UA,follow_redirects=True,timeout=45);r.raise_for_status();t=r.text;base=str(r.url)
+    base,body=fetch.get(url,headers=UA,max_bytes=8*1024*1024);t=body.decode('utf-8','replace')
     host=urlparse(base).netloc.replace('www.','')
     title=_meta(t,'og:title') or (re.search(r'<title>([^<]{0,140})',t) or [None,''])[1]
     desc=_meta(t,'og:description') or _meta(t,'description')

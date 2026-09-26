@@ -13,10 +13,13 @@
     });
   }
 
-  function postJSON(url, body) {
+  var csrfMeta = document.querySelector('meta[name="csrf-token"]');
+  function postJSON(url, body, extraHeaders) {
+    var headers = { "Content-Type": "application/json", "Accept": "application/json", "X-CSRF-Token": csrfMeta ? csrfMeta.content : "" };
+    Object.keys(extraHeaders || {}).forEach(function (k) { headers[k] = extraHeaders[k]; });
     return fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Accept": "application/json" },
+      headers: headers,
       body: JSON.stringify(body || {})
     }).then(function (r) {
       return r.text().then(function (t) {
@@ -243,6 +246,9 @@
   if (form) {
     var btn = document.getElementById("submit-btn");
     var status = document.getElementById("form-status");
+    var idemKey = null;  // one key per intended reel: a retried or double-clicked submit never charges twice
+    form.addEventListener("input", function () { idemKey = null; });
+    form.addEventListener("change", function () { idemKey = null; });
     form.addEventListener("submit", function (ev) {
       ev.preventDefault();
       var url = form.url.value.trim();
@@ -254,7 +260,8 @@
       if (!url) { status.textContent = "Paste an Airbnb listing URL."; status.classList.add("is-error"); form.url.focus(); return; }
       btn.disabled = true;
       status.textContent = "Starting…";
-      postJSON("/api/jobs", { url: url, send_to_host: sendToHost, message: message, ai_motion: aiMotion, style: style, ai_resolution: (form.ai_resolution ? form.ai_resolution.value : "1080p") })
+      if (!idemKey) idemKey = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2);
+      postJSON("/api/jobs", { url: url, send_to_host: sendToHost, message: message, ai_motion: aiMotion, style: style, ai_resolution: (form.ai_resolution ? form.ai_resolution.value : "1080p") }, { "Idempotency-Key": idemKey })
         .then(function (data) {
           var id = data && (data.id || data.job_id || (data.job && data.job.id));
           if (!id) throw new Error("Server did not return a job id.");
@@ -268,7 +275,7 @@
     });
   }
 
-  // ---------- job: poll + host message ----------
+  // ---------- job: poll, delivery, sharing, cancel, host message ----------
   var jobEl = document.getElementById("job");
   if (jobEl) {
     var jobId = jobEl.getAttribute("data-job-id");
@@ -279,6 +286,7 @@
         hostMsg = el("host-message"), hostStatus = el("host-status"), contactLink = el("contact-link"),
         title = el("listing-title"), loc = el("listing-location"), meta = el("listing-meta");
     var timer = null, lastLogLen = -1, msgTouched = false;
+    var jobUrl = "/api/jobs/" + encodeURIComponent(jobId);
     if (hostMsg) hostMsg.addEventListener("input", function () { msgTouched = true; });
 
     function setPill(node, status) { node.className = "pill pill-" + status; node.textContent = status; }
@@ -286,32 +294,30 @@
       var s = job.host_status || "";
       if (s === "sent") return "Sent to host";
       if (s === "draft") return "Opened in Airbnb — paste and press Send";
-      if (s === "skipped") return "Not sent" + (job.host_error ? " — " + job.host_error : "");
-      if (s === "failed") return "Failed" + (job.host_error ? " — " + job.host_error : "");
       return s || "—";
     }
-    function renderDrive(job) {
-      var dp = el("drive-pill"), dl2 = el("drive-link"), ub = el("drive-upload-btn"); if (!dp) return;
-      var st = job.drive_status || "";
-      dp.className = "pill pill-email pill-" + (st === "uploaded" ? "done" : st === "failed" ? "failed" : "skipped");
-      dp.textContent = st === "uploaded" ? "Uploaded" + (job.drive_name ? " · " + job.drive_name : "") : st === "failed" ? "Failed — " + (job.drive_error || "") : st === "skipped" ? "Not uploaded — " + (job.drive_error || "") : "—";
+    function renderDelivery(job) {
+      var dp = el("drive-pill"), dl2 = el("drive-link"), box = el("share-box");
+      if (dp) {
+        dp.className = "pill pill-email pill-" + (job.drive_link ? "done" : "skipped");
+        dp.textContent = job.drive_link ? "Delivered · " + (job.shared ? "shared by link" : "private") : "—";
+      }
       if (dl2) { dl2.classList.toggle("hidden", !job.drive_link); if (job.drive_link) dl2.href = job.drive_link; }
-      if (ub) ub.classList.toggle("hidden", st === "uploaded");
+      if (dl) { dl.classList.toggle("hidden", !job.download_url); if (job.download_url) dl.href = job.download_url; }
+      if (box) box.classList.toggle("hidden", !job.drive_link);
+      if (reelLink) reelLink.value = job.reel_link || "";
+      var cb = el("copy-link-btn"); if (cb) cb.disabled = !job.reel_link;
+      var sb = el("share-btn"), ub = el("unshare-btn");
+      if (sb) sb.classList.toggle("hidden", !!job.shared);
+      if (ub) ub.classList.toggle("hidden", !job.shared);
+      if (video && job.stream_url && video.getAttribute("src") !== job.stream_url) { video.src = job.stream_url; video.load(); }
     }
-    var driveBtn = el("drive-upload-btn");
-    if (driveBtn) driveBtn.addEventListener("click", function () {
-      driveBtn.disabled = true; driveBtn.textContent = "Uploading…";
-      postJSON("/api/jobs/" + encodeURIComponent(jobId) + "/upload-drive").then(function (d) { renderDrive(d.job || d); renderHost(d.job || d); })
-        .catch(function (err) { alert(err.message || "Upload failed"); }).then(function () { driveBtn.disabled = false; driveBtn.textContent = "Upload to Drive"; });
-    });
     function renderHost(job) {
-      renderDrive(job);
       if (hostPill) {
         hostPill.setAttribute("data-status", job.host_status || "");
-        hostPill.className = "pill pill-email pill-" + (job.host_status === "sent" || job.host_status === "draft" ? "done" : (job.host_status === "failed" ? "failed" : "skipped"));
+        hostPill.className = "pill pill-email pill-" + (job.host_status === "sent" || job.host_status === "draft" ? "done" : "skipped");
         hostPill.textContent = hostText(job);
       }
-      if (reelLink && job.reel_link && reelLink.value !== job.reel_link) reelLink.value = job.reel_link;
       if (hostMsg && !msgTouched && (job.message_final || job.message)) hostMsg.value = job.message_final || job.message;
       var yt = el("yt-title"); if (yt && job.youtube_title) yt.value = job.youtube_title;
       if (contactLink && job.contact_url) contactLink.href = job.contact_url;
@@ -325,6 +331,8 @@
       step.textContent = job.step || "";
       var p = Math.max(0, Math.min(100, Number(job.progress) || 0));
       pct.textContent = p + "%"; fill.style.width = p + "%"; bar.setAttribute("aria-valuenow", p);
+      var cr = el("cancel-row"); if (cr) cr.classList.toggle("hidden", !job.cancellable && !job.cancel_requested);
+      var cbtn = el("cancel-btn"); if (cbtn) cbtn.disabled = !job.cancellable;
 
       if (job.listing) {
         if (job.listing.title && title.textContent !== job.listing.title) title.textContent = job.listing.title;
@@ -345,31 +353,44 @@
         if (atBottom) log.scrollTop = log.scrollHeight;
         lastLogLen = lines.length;
       }
-      if (st === "done" && (job.video_url || job.drive_embed)) {
-        var frame = el("drive-frame"), note = el("local-note");
-        if (job.video_url) {
-          if (video.getAttribute("src") !== job.video_url) { video.src = job.video_url; video.load(); }
-          video.classList.remove("hidden"); if (frame) frame.classList.add("hidden"); dl.href = job.video_url; dl.setAttribute("download", "");
-        } else if (frame) {
-          if (frame.getAttribute("src") !== job.drive_embed) frame.src = job.drive_embed;
-          frame.classList.remove("hidden"); video.classList.add("hidden"); video.removeAttribute("src"); dl.href = job.drive_download || job.drive_link; dl.removeAttribute("download");
-        }
-        if (note) note.classList.toggle("hidden", !job.local_deleted);
+      if (st === "done") {
+        renderDelivery(job);
         videoCard.classList.remove("hidden");
         if (hostCard) hostCard.classList.remove("hidden");
         renderHost(job);
       }
-      if (st === "done" || st === "failed") stop();
+      if (st === "done" || st === "failed" || st === "cancelled") stop();
     }
     function poll() {
-      getJSON("/api/jobs/" + encodeURIComponent(jobId)).then(function (data) { render(data.job || data); }).catch(function () {});
+      getJSON(jobUrl).then(render).catch(function () {});
     }
     function stop() { if (timer) { clearInterval(timer); timer = null; } }
     var initial = jobEl.getAttribute("data-status");
-    if (initial !== "done" && initial !== "failed") {
+    if (initial !== "done" && initial !== "failed" && initial !== "cancelled") {
       poll(); timer = setInterval(poll, 2000);
       document.addEventListener("visibilitychange", function () { if (!document.hidden && timer) poll(); });
     } else { poll(); }
+
+    var cancelBtn = el("cancel-btn");
+    if (cancelBtn) cancelBtn.addEventListener("click", function () {
+      var out = el("cancel-status"); cancelBtn.disabled = true; out.className = "form-status"; out.textContent = "Stopping…";
+      postJSON(jobUrl + "/cancel").then(function (job) {
+        render(job);
+        out.textContent = job.status === "cancelled" ? "Cancelled — nothing was charged." : "Stopping — this takes a few seconds.";
+        if (!timer && job.status !== "cancelled") timer = setInterval(poll, 2000);
+      }).catch(function (err) { out.textContent = err.message; out.classList.add("is-error"); cancelBtn.disabled = false; });
+    });
+    function share(pub) {
+      var out = el("share-status"); out.className = "form-status"; out.textContent = pub ? "Creating the link…" : "Removing the link…";
+      el("share-confirm").classList.add("hidden");
+      postJSON(jobUrl + "/share", { public: pub }).then(function (job) { renderDelivery(job); out.textContent = pub ? "Link created — anyone with it can watch." : "Private again."; })
+        .catch(function (err) { out.textContent = err.message; out.classList.add("is-error"); });
+    }
+    var shareBtn = el("share-btn");
+    if (shareBtn) shareBtn.addEventListener("click", function () { el("share-confirm").classList.remove("hidden"); el("share-yes").focus(); });
+    if (el("share-yes")) el("share-yes").addEventListener("click", function () { share(true); });
+    if (el("share-no")) el("share-no").addEventListener("click", function () { el("share-confirm").classList.add("hidden"); shareBtn.focus(); });
+    if (el("unshare-btn")) el("unshare-btn").addEventListener("click", function () { share(false); });
 
     var ytBtn = el("copy-yt-btn");
     if (ytBtn) ytBtn.addEventListener("click", function () { var f = el("yt-title"); if (!f || !f.value) return; var done = function () { ytBtn.textContent = "Copied"; setTimeout(function () { ytBtn.textContent = "Copy"; }, 1500); }; if (navigator.clipboard) navigator.clipboard.writeText(f.value).then(done, done); else { f.select(); document.execCommand("copy"); done(); } });
@@ -384,44 +405,10 @@
       var msg = hostMsg ? hostMsg.value : "";
       var done = function () { if (hostStatus) { hostStatus.className = "form-status"; hostStatus.textContent = "Message copied — paste it into the Airbnb form (⌘V) and press Send message."; } };
       if (navigator.clipboard && msg) navigator.clipboard.writeText(msg).then(done, done); else done();
-      postJSON("/api/jobs/" + encodeURIComponent(jobId) + "/opened-in-browser", { message: msg }).then(function (d) { renderHost(d.job || d); }).catch(function () {});
-    });
-    var sendBtn = el("send-host-btn");
-    if (sendBtn) sendBtn.addEventListener("click", function () {
-      sendBtn.disabled = true; hostStatus.className = "form-status"; hostStatus.textContent = "Opening Airbnb…";
-      postJSON("/api/jobs/" + encodeURIComponent(jobId) + "/send-to-host", { message: hostMsg ? hostMsg.value : "" })
-        .then(function (data) { renderHost(data.job || data); hostStatus.textContent = (data && (data.host_error || data.message)) || "Opened. Review the message in the Airbnb window and press Send message."; })
-        .catch(function (err) { hostStatus.textContent = err.message || "Could not open Airbnb."; hostStatus.classList.add("is-error"); })
-        .then(function () { sendBtn.disabled = false; });
+      postJSON(jobUrl + "/opened-in-browser", { message: msg }).then(renderHost).catch(function () {});
     });
   }
 
-  // ---------- settings: Airbnb connect + tunnel ----------
-  var connectBtn = document.getElementById("connect-airbnb-btn");
-  if (connectBtn) {
-    var aPill = document.getElementById("airbnb-pill"), aStatus = document.getElementById("airbnb-status"), discBtn = document.getElementById("disconnect-airbnb-btn");
-    function setAirbnb(d) {
-      var ok = !!(d && d.connected);
-      aPill.className = "pill " + (ok ? "pill-done" : "pill-neg"); aPill.textContent = ok ? "Connected" : "Not connected";
-      return ok;
-    }
-    connectBtn.addEventListener("click", function () {
-      connectBtn.disabled = true; aStatus.className = "form-status"; aStatus.textContent = "A Chrome window is opening — log in to Airbnb there, then close it.";
-      postJSON("/api/airbnb/connect").then(function () {
-        var tries = 0;
-        var t = setInterval(function () {
-          tries += 1;
-          getJSON("/api/airbnb/status").then(function (d) {
-            if (setAirbnb(d)) { clearInterval(t); aStatus.textContent = "Connected."; connectBtn.disabled = false; }
-            else if (tries > 60) { clearInterval(t); aStatus.textContent = "Still not connected — try again."; connectBtn.disabled = false; }
-          }).catch(function () {});
-        }, 3000);
-      }).catch(function (err) { aStatus.textContent = err.message; aStatus.classList.add("is-error"); connectBtn.disabled = false; });
-    });
-    if (discBtn) discBtn.addEventListener("click", function () {
-      postJSON("/api/airbnb/disconnect").then(function (d) { setAirbnb(d); aStatus.textContent = "Disconnected."; }).catch(function (err) { aStatus.textContent = err.message; });
-    });
-  }
   Array.prototype.forEach.call(document.querySelectorAll(".pw-toggle"), function (t) {
     t.addEventListener("click", function () { var inp = document.getElementById(t.getAttribute("data-for")); var show = inp.type === "password"; inp.type = show ? "text" : "password"; t.textContent = show ? "Hide" : "Show"; t.setAttribute("aria-label", show ? "Hide password" : "Show password"); });
   });
@@ -439,7 +426,7 @@
         rp.addEventListener("click", function () { var np = prompt("New password for " + u.user + " (min 8):"); if (!np) return; postJSON("/api/users/password", { user: u.user, password: np }).then(function () { nuStatus.textContent = "Password set for " + u.user; }).catch(function (e) { nuStatus.textContent = e.message; }); });
         acts.appendChild(rp);
         if (u.user !== d.me) { var rm = document.createElement("button"); rm.type = "button"; rm.className = "btn btn-secondary btn-sm"; rm.textContent = "Remove";
-          rm.addEventListener("click", function () { if (!confirm("Remove " + u.user + "?")) return; postJSON("/api/users/delete", { user: u.user }).then(function (dd) { renderUsers({ users: dd.users, me: d.me }); }).catch(function (e) { nuStatus.textContent = e.message; }); });
+          rm.addEventListener("click", function () { if (!confirm("Remove " + u.user + "?")) return; postJSON("/api/users/delete", { user: u.user }).then(function (dd) { renderUsers({ users: dd.users, me: d.me }); nuStatus.textContent = dd.warning ? u.user + " removed. " + dd.warning : u.user + " removed; their Drive access was revoked."; }).catch(function (e) { nuStatus.textContent = e.message; }); });
           acts.appendChild(rm); }
         userList.appendChild(li);
       });
@@ -456,33 +443,19 @@
   if (pwBtn) pwBtn.addEventListener("click", function () {
     var out = document.getElementById("pw-status"); out.className = "form-status";
     postJSON("/api/account/password", { current: document.getElementById("pw-current").value, new: document.getElementById("pw-new").value })
-      .then(function () { out.textContent = "Password changed."; document.getElementById("pw-current").value = ""; document.getElementById("pw-new").value = ""; })
+      .then(function (d) { out.textContent = "Password changed — signing you in again…"; setTimeout(function () { window.location.href = (d && d.relogin) || "/login"; }, 800); })
       .catch(function (err) { out.textContent = err.message; out.classList.add("is-error"); });
   });
   var gdDisc = document.getElementById("gdrive-disconnect");
   if (gdDisc) gdDisc.addEventListener("click", function () {
-    postJSON("/api/gdrive/disconnect").then(function (d) { var p = document.getElementById("gdrive-pill"); p.className = "pill pill-neg"; p.textContent = "Not connected"; document.getElementById("gdrive-status").textContent = "Disconnected."; }).catch(function (err) { document.getElementById("gdrive-status").textContent = err.message; });
+    var out = document.getElementById("gdrive-status"); out.className = "form-status"; gdDisc.disabled = true;
+    postJSON("/api/gdrive/disconnect").then(function (d) {
+      var p = document.getElementById("gdrive-pill"); p.className = "pill pill-neg"; p.textContent = "Not connected";
+      gdDisc.classList.add("hidden"); document.getElementById("gdrive-connect").textContent = "Connect Google Drive";
+      out.textContent = d.warning || "Disconnected, and Google confirmed the access was revoked.";
+      if (d.warning) out.classList.add("is-error");
+    }).catch(function (err) { out.textContent = err.message; out.classList.add("is-error"); gdDisc.disabled = false; });
   });
-  var tStart = document.getElementById("tunnel-start-btn");
-  if (tStart) {
-    var tPill = document.getElementById("tunnel-pill"), tUrl = document.getElementById("tunnel-url"), tStatus = document.getElementById("tunnel-status"), tStop = document.getElementById("tunnel-stop-btn");
-    function setTunnel(d) {
-      var on = !!(d && d.running);
-      tPill.className = "pill " + (on ? "pill-done" : "pill-neg"); tPill.textContent = on ? "Tunnel live" : "No tunnel";
-      tUrl.textContent = "";
-      if (d && d.url) { tUrl.appendChild(document.createTextNode("Tunnel URL: ")); var a = document.createElement("a"); a.href = d.url; a.target = "_blank"; a.rel = "noopener"; a.textContent = d.url; tUrl.appendChild(a); }
-      if (d && d.error) { tStatus.textContent = d.error; tStatus.classList.add("is-error"); }
-    }
-    tStart.addEventListener("click", function () {
-      tStart.disabled = true; tStatus.className = "form-status"; tStatus.textContent = "Starting tunnel…";
-      postJSON("/api/tunnel/start").then(function (d) { setTunnel(d); tStatus.textContent = d && d.url ? "Live." : (d && d.error) || "No URL yet — try again."; })
-        .catch(function (err) { tStatus.textContent = err.message; tStatus.classList.add("is-error"); })
-        .then(function () { tStart.disabled = false; });
-    });
-    if (tStop) tStop.addEventListener("click", function () {
-      postJSON("/api/tunnel/stop").then(function (d) { setTunnel(d); tStatus.textContent = "Stopped."; }).catch(function (err) { tStatus.textContent = err.message; });
-    });
-  }
 
   // ---------- outreach console (templates/outreach.html) ----------
   var orCsrfEl = document.getElementById("or-csrf");
@@ -548,9 +521,8 @@
     var coResults = document.getElementById("co-results"), coStatus = document.getElementById("co-status");
     var coCompose = document.getElementById("co-compose-card"), coPickedPill = document.getElementById("co-picked");
     var coMsg = document.getElementById("co-message"), coSendStatus = document.getElementById("co-send-status");
-    var coReview = document.getElementById("co-review"), coPanel = document.getElementById("co-review-panel"), coQueueBtn = document.getElementById("co-queue");
-    var coItems = [], coCityUsed = "", coBatch = [];
-    var OR_CAP = (coReview && parseInt(coReview.getAttribute("data-cap"), 10)) || 5;
+    var coQueueBtn = document.getElementById("co-queue");
+    var coItems = [], coCityUsed = "";
 
     function coChecked() {
       var out = [];
@@ -623,71 +595,6 @@
     });
     if (coCity) coCity.addEventListener("keydown", function (e) { if (e.key === "Enter" && coFind) { e.preventDefault(); coFind.click(); } });
 
-    function coNewIds(rows, queued) {
-      var want = {}, ids = [];
-      queued.forEach(function (q) { want[(q.name || "") + "|" + (q.url || "")] = 1; });
-      (rows || []).forEach(function (r) {
-        if (!r || r.id == null || ids.length >= queued.length) return;
-        if (want[(r.name || "") + "|" + (r.url || "")]) ids.push(r.id);
-      });
-      if (!ids.length) {
-        ids = (rows || []).slice(0, queued.length).map(function (r) { return r && r.id; }).filter(function (x) { return x != null; });
-      }
-      return ids;
-    }
-    function coSend() {
-      if (!coBatch.length) return;
-      if (!window.confirm("Send " + coBatch.length + " message" + (coBatch.length === 1 ? "" : "s") + " on Airbnb now? They go out as you, one per co-host.")) return;
-      var btn = document.getElementById("co-confirm");
-      if (btn) btn.disabled = true;
-      orSay(coSendStatus, "Queueing " + coBatch.length + "…");
-      orPost("/api/outreach/queue", { channel: "cohost", items: coBatch })
-        .then(function (q) {
-          orStats(q && q.stats);
-          var ids = coNewIds(q && q.rows, coBatch);
-          if (!ids.length) throw new Error("Queued, but no tracker ids came back — send them from the tracker.");
-          orSay(coSendStatus, "Sending " + ids.length + " on Airbnb…");
-          return orPost("/api/outreach/send", { ids: ids, confirm: true });
-        })
-        .then(function (d) {
-          orStats(d && d.stats);
-          var sent = (d && d.sent) || 0, failed = (d && d.failed) || [];
-          var todayEl = document.getElementById("sent-today");
-          if (todayEl && d && d.sent_today != null) todayEl.textContent = d.sent_today;
-          var msg = "Sent " + sent + " of " + coBatch.length;
-          if (failed.length) msg += " · " + failed.length + " failed: " + failed.map(function (f) { return (f && f.error) || "error"; }).join("; ");
-          orSay(coSendStatus, msg + " · refreshing…", failed.length > 0);
-          if (coPanel) coPanel.classList.add("hidden");
-          setTimeout(function () { location.reload(); }, 1200);
-        })
-        .catch(function (err) { orSay(coSendStatus, err.message, true); if (btn) btn.disabled = false; });
-    }
-    if (coReview && coPanel) coReview.addEventListener("click", function () {
-      if (!((coMsg && coMsg.value) || "").trim()) { orSay(coSendStatus, "Write a message first.", true); if (coMsg) coMsg.focus(); return; }
-      var picked = coChecked();
-      if (!picked.length) { orSay(coSendStatus, "Tick at least one co-host.", true); return; }
-      coBatch = coPayload(picked.slice(0, OR_CAP));
-      coPanel.innerHTML = "";
-      coBatch.forEach(function (p) {
-        var block = document.createElement("div");
-        block.className = "or-review-item";
-        block.innerHTML = '<div class="or-review-name">' + orEsc(p.name || "Co-host") + (p.city ? ' <span class="or-sub">· ' + orEsc(p.city) + "</span>" : "") + "</div><pre></pre>";
-        block.querySelector("pre").textContent = p.message;
-        coPanel.appendChild(block);
-      });
-      var act = document.createElement("div");
-      act.className = "or-review-actions";
-      act.innerHTML = '<button type="button" class="btn btn-primary" id="co-confirm">Send these ' + coBatch.length + ' on Airbnb</button>' +
-        '<button type="button" class="btn btn-secondary" id="co-cancel">Cancel</button>';
-      coPanel.appendChild(act);
-      coPanel.classList.remove("hidden");
-      orSay(coSendStatus, "Read them, then confirm. " + coBatch.length + " of " + OR_CAP + " in this batch.");
-      document.getElementById("co-confirm").addEventListener("click", coSend);
-      document.getElementById("co-cancel").addEventListener("click", function () {
-        coPanel.classList.add("hidden"); coPanel.innerHTML = ""; coBatch = []; orSay(coSendStatus, "");
-      });
-      coPanel.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    });
     if (coQueueBtn) coQueueBtn.addEventListener("click", function () {
       var picked = coChecked();
       if (!picked.length) { orSay(coSendStatus, "Tick at least one co-host.", true); return; }

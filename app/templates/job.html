@@ -21,39 +21,51 @@
     <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ job.progress or 0 }}" id="progress">
       <div class="progress-fill" id="progress-fill" style="width: {{ job.progress or 0 }}%"></div>
     </div>
-    <p class="error{% if not job.error %} hidden{% endif %}" id="error">{{ job.error or "" }}</p>
+    <p class="error{% if not job.error %} hidden{% endif %}" id="error" role="alert">{{ job.error or "" }}</p>
+    <div class="actions{% if not job.cancellable %} hidden{% endif %}" id="cancel-row">
+      <button type="button" class="btn btn-secondary btn-sm" id="cancel-btn">Cancel this reel</button>
+      <span class="form-status" id="cancel-status" role="status" aria-live="polite">{% if job.cancel_requested %}Stopping…{% endif %}</span>
+    </div>
   </div>
 
   <div class="card video-card{% if job.status != 'done' %} hidden{% endif %}" id="video-card">
     <div class="video-frame">
-      <video id="video" controls playsinline preload="metadata"{% if job.video_url %} src="{{ job.video_url }}"{% endif %}{% if not job.video_url and job.drive_embed %} class="hidden"{% endif %}></video>
-      <iframe id="drive-frame" class="{% if not (job.drive_embed and not job.video_url) %}hidden{% endif %}" src="{{ job.drive_embed if (job.drive_embed and not job.video_url) else '' }}" allow="autoplay; fullscreen" allowfullscreen title="Reel on Google Drive"></iframe>
+      <video id="video" controls playsinline preload="metadata"{% if job.stream_url %} src="{{ job.stream_url }}"{% endif %}{% if job.poster %} poster="{{ job.poster }}"{% endif %}></video>
     </div>
-    <p class="hint{% if not job.local_deleted %} hidden{% endif %}" id="local-note">Stored in Google Drive only — nothing is kept on the server.</p>
+    <p class="hint">Stored in your Google Drive only — ReelSieve keeps no copy.</p>
     <div class="video-actions">
-      <a class="btn btn-primary" id="download-btn" href="{{ job.drive_download if (job.local_deleted and job.drive_download) else (job.video_url or '#') }}"{% if not job.local_deleted %} download{% endif %}>Download reel</a>
+      <a class="btn btn-primary{% if not job.download_url %} hidden{% endif %}" id="download-btn" href="{{ job.download_url or '#' }}">Download reel</a>
       <span class="email-line">
         <span class="eyebrow inline">Google Drive</span>
-        <span class="pill pill-email" id="drive-pill">{{ job.drive_status or '—' }}</span>
+        <span class="pill pill-email pill-{{ 'done' if job.drive_link else 'skipped' }}" id="drive-pill">{{ ('Delivered · ' ~ ('shared by link' if job.shared else 'private')) if job.drive_link else '—' }}</span>
         <a id="drive-link" class="{% if not job.drive_link %}hidden{% endif %}" href="{{ job.drive_link or '#' }}" target="_blank" rel="noopener">Open in Drive ↗</a>
-        <button type="button" class="btn btn-secondary btn-sm{% if job.drive_status == 'uploaded' %} hidden{% endif %}" id="drive-upload-btn">Upload to Drive</button>
       </span>
       <span class="email-line">
         <span class="eyebrow inline">Host message</span>
         <span class="pill pill-email" id="host-pill" data-status="{{ job.host_status or '' }}">{{ job.host_status or "—" }}</span>
       </span>
     </div>
+    <div class="field share-field{% if not job.drive_link %} hidden{% endif %}" id="share-box">
+      <label for="reel-link">Public link</label>
+      <div class="copy-row">
+        <input type="text" id="reel-link" readonly value="{{ job.reel_link or '' }}" placeholder="Private — only you can open this reel">
+        <button type="button" class="btn btn-secondary" id="copy-link-btn"{% if not job.reel_link %} disabled{% endif %}>Copy</button>
+      </div>
+      <div class="actions">
+        <button type="button" class="btn btn-secondary btn-sm{% if job.shared %} hidden{% endif %}" id="share-btn">Create a public link…</button>
+        <button type="button" class="btn btn-secondary btn-sm{% if not job.shared %} hidden{% endif %}" id="unshare-btn">Stop sharing</button>
+        <span class="form-status" id="share-status" role="status" aria-live="polite"></span>
+      </div>
+      <div class="confirm-row hidden" id="share-confirm" role="group" aria-label="Confirm public link">
+        <span class="hint">Anyone with the link will be able to watch this reel in Google Drive.</span>
+        <button type="button" class="btn btn-primary btn-sm" id="share-yes">Yes, create the link</button>
+        <button type="button" class="btn btn-secondary btn-sm" id="share-no">Keep it private</button>
+      </div>
+    </div>
   </div>
 
   <div class="card host-card{% if job.status != 'done' %} hidden{% endif %}" id="host-card">
     <div class="section-head"><h2>Send to the host on Airbnb</h2></div>
-    <div class="field">
-      <label for="reel-link">Public reel link</label>
-      <div class="copy-row">
-        <input type="text" id="reel-link" readonly value="{{ job.reel_link or '' }}" placeholder="No public link — start the tunnel in Settings">
-        <button type="button" class="btn btn-secondary" id="copy-link-btn">Copy</button>
-      </div>
-    </div>
     <div class="field">
       <label for="yt-title">YouTube title to use (so the host can find it by searching)</label>
       <div class="copy-row"><input type="text" id="yt-title" readonly value="{{ job.youtube_title or '' }}"><button type="button" class="btn btn-secondary" id="copy-yt-btn">Copy</button></div>
@@ -66,7 +78,6 @@
     </div>
     <div class="actions">
       <a class="btn btn-primary" id="contact-link" href="{{ job.contact_url or '#' }}" target="_blank" rel="noopener">Message host on Airbnb</a>
-      <button type="button" class="btn btn-secondary" id="send-host-btn" title="Advanced: uses the separate Airbnb session from Settings">Pre-fill via helper window</button>
       <span class="form-status" id="host-status" role="status" aria-live="polite">{{ job.host_error or '' }}</span>
     </div>
   </div>

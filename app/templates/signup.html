@@ -7,7 +7,7 @@
     <h1 class="login-title">Create your ReelSieve account</h1>
     <p class="sub">{% if plan in ('starter','commercial') %}You'll set up payment after this step.{% else %}Two free videos. No card needed.{% endif %}</p>
     <form method="post" action="/signup" autocomplete="on" novalidate>
-      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="csrf" value="{{ csrf_for(request) }}">
       <input type="hidden" name="plan" value="{{ plan }}">
       <input type="hidden" name="url" value="{{ url }}">
       <input type="hidden" name="fp" id="fp-field" value="">

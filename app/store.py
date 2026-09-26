@@ -1,7 +1,7 @@
 """PostgreSQL business records. Owner IDs are durable; email remains the API boundary.
 
-Usage is not age-purged: lifetime free quotas and no-double-charge reruns depend on it.
-Network/device signals are HMACs, never raw addresses.
+Usage rows are kept: lifetime free quotas and no-double-charge reruns depend on them.
+Network/device signals are HMACs, never raw addresses, and are cleared after SIGNAL_DAYS (privacy page).
 """
 import time
 import hmac
@@ -32,6 +32,17 @@ def listing_key(url):
     u=re.sub(r'[?#].*$','',(url or '').strip().lower().rstrip('/'))
     m=re.search(r'/rooms/(\d+)',u)
     return 'airbnb:'+m.group(1) if m else u[:180]
+
+SIGNAL_DAYS = 90
+
+
+def purge_signals(days=SIGNAL_DAYS):
+    """Clear network/device hashes older than the published retention; usage and accounts stay."""
+    cutoff = time.time() - days * 86400
+    with database.connect() as c:
+        c.execute('UPDATE usage SET ip_hash=NULL,fp_hash=NULL WHERE ts<%s AND (ip_hash IS NOT NULL OR fp_hash IS NOT NULL)', (cutoff,))
+        c.execute('UPDATE accounts SET ip_hash=NULL,fp_hash=NULL WHERE created<%s AND (ip_hash IS NOT NULL OR fp_hash IS NOT NULL)', (cutoff,))
+
 
 def get_account(user, conn=None):
     with database.transaction(conn) as c:

@@ -3,10 +3,10 @@
 {% block content %}
 <section class="settings-head">
   <p class="eyebrow">Settings</p>
-  <h1>Keys, Airbnb account and public link</h1>
-  <p class="sub">Everything here is written to <code>.env.local</code> or <code>.listing-reel/</code> on this machine. Secrets are never sent back to the browser.</p>
-  {% if saved %}<span class="pill pill-done">Saved</span>{% endif %}
-  {% if flash %}<p class="flash">{{ flash }}</p>{% endif %}
+  <h1>Accounts, orders and configuration</h1>
+  <p class="sub">Configuration lives in the hosting environment, not on this server's disk. Secrets are never sent back to the browser.</p>
+  {% if saved %}<span class="pill pill-done" role="status">Google Drive connected</span>{% endif %}
+  {% if flash %}<p class="flash" role="alert">{{ flash }}</p>{% endif %}
 </section>
 
 <section class="card">
@@ -15,112 +15,42 @@
     <div class="field"><label for="pw-current">Current password</label><input type="password" id="pw-current" autocomplete="current-password"></div>
     <div class="field"><label for="pw-new">New password (min 8)</label><input type="password" id="pw-new" autocomplete="new-password"></div>
   </div>
-  <div class="actions"><button type="button" class="btn btn-secondary" id="pw-btn">Change password</button><a class="btn btn-secondary" href="/logout">Log out</a><span class="form-status" id="pw-status"></span></div>
+  <div class="actions"><button type="button" class="btn btn-secondary" id="pw-btn">Change password</button><form method="post" action="/logout" class="inline-form"><input type="hidden" name="csrf" value="{{ csrf_for(request) }}"><button type="submit" class="btn btn-secondary">Log out</button></form><span class="form-status" id="pw-status" role="status" aria-live="polite"></span></div>
 </section>
 
-{% if is_admin %}
 <section class="card" id="orders-card">
   <div class="section-head"><h2>Orders</h2><span class="pill pill-running" id="ord-pending">—</span></div>
   <p class="hint">Someone requests an invoice, you send them a Skydo InstaLink or your virtual-account details, then mark it paid here. Credits land instantly and the customer's plan switches. Settling twice never double-credits.</p>
   <ul class="user-list" id="ord-list"></ul>
-  <p class="form-status" id="ord-status"></p>
+  <p class="form-status" id="ord-status" role="status" aria-live="polite"></p>
 </section>
 
 <section class="card" id="users-card">
   <div class="section-head"><h2>Users</h2><span class="pill pill-skipped">Admin</span></div>
-  <p class="hint">People who can sign in to this ReelSieve. Admins can add or remove users and reset passwords.</p>
+  <p class="hint">People who can sign in. Removing someone deactivates their login, stops their reels in progress and disconnects their Google Drive; their orders and history are kept.</p>
   <ul class="user-list" id="user-list"></ul>
   <div class="grid-3">
     <div class="field"><label for="nu-email">Email</label><input type="email" id="nu-email" placeholder="name@company.com" autocomplete="off"></div>
     <div class="field"><label for="nu-pass">Temporary password</label><input type="text" id="nu-pass" placeholder="min 8 characters" autocomplete="off"></div>
     <div class="field"><label for="nu-role">Role</label><select id="nu-role"><option value="member">Member</option><option value="admin">Admin</option></select></div>
   </div>
-  <div class="actions"><button type="button" class="btn btn-primary" id="nu-btn">Add user</button><span class="form-status" id="nu-status"></span></div>
-</section>
-{% endif %}
-
-<section class="card">
-  <div class="section-head">
-    <h2>Airbnb account</h2>
-    <span class="pill {{ 'pill-done' if s.airbnb_connected else 'pill-skipped' }}" id="airbnb-pill">{{ 'Helper connected' if s.airbnb_connected else 'Uses this browser' }}</span>
-  </div>
-  <p class="hint">By default the host message opens in <strong>this browser</strong> (a new tab on airbnb.co.uk, where you're already logged in) with the message copied to your clipboard. Nothing to connect. <a href="https://www.airbnb.co.uk/login" target="_blank" rel="noopener">Check your Airbnb login</a>.</p>
-  <p class="hint">Optional helper: "Connect" opens a separate Chrome window kept in <code>.listing-reel/airbnb-profile</code>; the job page can then pre-fill the form for you. You still press Send.</p>
-  <div class="actions">
-    <button type="button" class="btn btn-secondary" id="connect-airbnb-btn">Connect helper window</button>
-    <button type="button" class="btn btn-secondary" id="disconnect-airbnb-btn">Disconnect</button>
-    <span class="form-status" id="airbnb-status" role="status" aria-live="polite"></span>
-  </div>
-</section>
-
-<section class="card">
-  <div class="section-head">
-    <h2>Public link for the reel</h2>
-    <span class="pill {{ 'pill-done' if s.tunnel.running else 'pill-neg' }}" id="tunnel-pill">{{ 'Tunnel live' if s.tunnel.running else 'No tunnel' }}</span>
-  </div>
-  <p class="hint">Airbnb messages cannot carry a video file, so the reel is shared as a link. Either serve this app on a public URL, or start a temporary tunnel (cloudflared quick tunnel; the link stays live while this app runs).</p>
-  <p class="hint" id="tunnel-url">{% if s.tunnel.url %}Tunnel URL: <a href="{{ s.tunnel.url }}" target="_blank" rel="noopener">{{ s.tunnel.url }}</a>{% endif %}</p>
-  <div class="actions">
-    <button type="button" class="btn btn-secondary" id="tunnel-start-btn"{% if not s.tunnel.installed %} disabled{% endif %}>Start tunnel</button>
-    <button type="button" class="btn btn-secondary" id="tunnel-stop-btn">Stop tunnel</button>
-    <span class="form-status" id="tunnel-status" role="status" aria-live="polite">{% if not s.tunnel.installed %}cloudflared not installed — brew install cloudflared{% endif %}</span>
-  </div>
+  <div class="actions"><button type="button" class="btn btn-primary" id="nu-btn">Add user</button><span class="form-status" id="nu-status" role="status" aria-live="polite"></span></div>
 </section>
 
 {% include '_gdrive_card.html' %}
 
-<form method="post" action="/settings" class="settings-form" autocomplete="off">
-  <input type="hidden" name="csrf" value="{{ csrf }}">
-  <section class="card">
-    <div class="section-head"><h2>Google OAuth client</h2></div>
-    <div class="grid-2">
-      <div class="field"><label for="google_client_id">Client ID</label><input type="text" id="google_client_id" name="google_client_id" value="{{ s.google_client_id.value }}" placeholder="…apps.googleusercontent.com"></div>
-      <div class="field"><label for="google_client_secret">Client secret</label><input type="password" id="google_client_secret" name="google_client_secret" value="" autocomplete="new-password" placeholder="{{ 'configured — leave blank to keep' if s.google_client_secret.configured else 'not set' }}"></div>
-      <div class="field"><label for="gdrive_folder">Drive folder name</label><input type="text" id="gdrive_folder" name="gdrive_folder" value="{{ s.gdrive_folder.value }}" placeholder="ReelSieves"></div>
-    </div>
-  </section>
-  <section class="card">
-    <div class="section-head"><h2>Public base URL (optional)</h2></div>
-    <div class="field">
-      <label for="public_base_url">Public URL where this app is reachable</label>
-      <input type="text" id="public_base_url" name="public_base_url" value="{{ s.public_base_url.value }}" placeholder="https://reels.yourdomain.com — leave blank to use the tunnel">
-      {% if s.public_base_url.hint %}<p class="hint">{{ s.public_base_url.hint }}</p>{% endif %}
-    </div>
-  </section>
-
-  <section class="card">
-    <div class="section-head"><h2>Payments</h2></div>
-    <p class="hint">Paste a hosted payment link per plan and the Upgrade page sends customers straight there. A Skydo InstaLink works (zero FX markup, flat fee — best value above about $300). Leave a plan blank and customers request an invoice instead, which you settle in Orders above.</p>
-    <div class="grid-2">
-      <div class="field"><label for="checkout_starter">Starter ($100) payment link</label><input type="text" id="checkout_starter" name="checkout_starter" value="{{ s.checkout_starter.value }}" placeholder="https://… (Skydo InstaLink, PayPal, Razorpay, Dodo)"></div>
-      <div class="field"><label for="checkout_commercial">Commercial ($500) payment link</label><input type="text" id="checkout_commercial" name="checkout_commercial" value="{{ s.checkout_commercial.value }}" placeholder="https://…"></div>
-      <div class="field"><label for="billing_webhook_secret">Webhook secret</label><input type="password" id="billing_webhook_secret" name="billing_webhook_secret" value="" autocomplete="new-password" placeholder="{{ 'configured — leave blank to keep' if s.billing_webhook_secret.configured else 'optional — auto-settles paid orders' }}"><p class="hint">Point your provider at <code>{{ request.base_url }}api/billing/webhook/skydo</code> and sign the body with this secret to settle orders automatically.</p></div>
-      <div class="field"><label for="billing_note">Invoice promise shown to customers</label><input type="text" id="billing_note" name="billing_note" value="{{ s.billing_note.value }}" placeholder="We send the invoice within a few hours…"></div>
-    </div>
-  </section>
-
-  <section class="card">
-    <div class="section-head"><h2>Message template</h2></div>
-    <div class="field">
-      <label for="default_message">Default message to the host</label>
-      <textarea id="default_message" name="default_message" rows="5">{{ s.default_message.value }}</textarea>
-      <p class="hint">Use <code>{reel_link}</code> where the public reel link should go.</p>
-    </div>
-  </section>
-
-  <section class="card">
-    <div class="section-head">
-      <h2>Higgsfield API</h2>
-      <span class="pill {{ 'pill-done' if s.hf_key.configured else 'pill-neg' }}">{{ 'Configured' if s.hf_key.configured else 'Not set' }}</span>
-    </div>
-    <div class="field">
-      <label for="hf_key">API key</label>
-      <input type="password" id="hf_key" name="hf_key" value="" autocomplete="new-password" placeholder="{{ 'configured — leave blank to keep' if s.hf_key.configured else 'not set' }}">
-      <p class="hint">Format key-id:key-secret. Stored in .env.local on this machine, never displayed. Enables AI camera motion (Seedance 2.5, billable).</p>
-    </div>
-    <div class="actions">
-      <button type="submit" class="btn btn-primary">Save settings</button>
-    </div>
-  </section>
-</form>
+<section class="card" id="config-card">
+  <div class="section-head"><h2>Configuration</h2><span class="pill pill-skipped">Read-only</span></div>
+  <p class="hint">Change these in the hosting environment's variables and redeploy. Google OAuth redirect URI to register: <code>{{ redirect_uri }}</code>. Payment webhook: <code>{{ webhook_base }}/api/billing/webhook/skydo</code>.</p>
+  <ul class="config-list">
+    {% for s in settings %}
+    <li class="config-row">
+      <code>{{ s.key }}</code>
+      <span class="pill pill-sm {{ 'pill-done' if s.configured else 'pill-neg' }}">{{ 'Set' if s.configured else 'Not set' }}</span>
+      {% if s.value and not s.secret %}<span class="hint">{{ s.value[:120] }}</span>{% endif %}
+      <p class="hint">{{ s.hint }}</p>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
 {% endblock %}

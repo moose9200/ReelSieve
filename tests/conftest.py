@@ -2,9 +2,13 @@
 import os
 import uuid
 
+import httpx
 import psycopg
 from psycopg import sql
 import pytest
+from cryptography.fernet import Fernet
+
+from fakes import Google
 
 
 @pytest.fixture
@@ -29,3 +33,22 @@ def db(monkeypatch, tmp_path):
     finally:
         with psycopg.connect(dsn, autocommit=True) as c:
             c.execute(sql.SQL('DROP SCHEMA {} CASCADE').format(sql.Identifier(schema)))
+
+
+@pytest.fixture
+def owners(db, monkeypatch):
+    from app import auth
+    monkeypatch.setenv('GOOGLE_CLIENT_ID', 'synthetic-client')
+    monkeypatch.setenv('GOOGLE_CLIENT_SECRET', 'synthetic-secret')
+    monkeypatch.setenv('TOKEN_ENCRYPTION_KEY', Fernet.generate_key().decode())
+    for name in ('alice', 'bob'):
+        auth.create_user(name + '@example.test', 'synthetic-password')
+    return {name: auth.issue(name + '@example.test')[0] for name in ('alice', 'bob')}
+
+
+@pytest.fixture
+def google(monkeypatch):
+    fake = Google()
+    original = httpx.Client
+    monkeypatch.setattr(httpx, 'Client', lambda **kw: original(transport=httpx.MockTransport(fake.handle), **kw))
+    return fake

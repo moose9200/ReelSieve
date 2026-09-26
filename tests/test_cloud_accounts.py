@@ -302,3 +302,18 @@ def test_settle_concurrently_grants_once_and_rollback_is_atomic(db):
         billing.settle(another['ref'])
     assert store.get_account(ALICE)['credits'] == 3
     assert billing.get_order(another['ref'])['status'] == 'pending'
+
+
+def test_network_and_device_signals_expire_after_retention(db):
+    from app import auth, store
+    auth.create_user('old@example.test', 'long-initial-password')
+    store.ensure_account('old@example.test', 'free', '203.0.113.9', 'device-print')
+    store.record_usage('old@example.test', 'free', 'https://www.airbnb.co.uk/rooms/1', 'job-old', '203.0.113.9', 'device-print')
+    with db.connect() as c:
+        c.execute('UPDATE usage SET ts=ts-%s', (91 * 86400,))
+        c.execute('UPDATE accounts SET created=created-%s', (91 * 86400,))
+    store.purge_signals()
+    with db.connect() as c:
+        assert c.execute('SELECT ip_hash,fp_hash FROM usage').fetchone() == {'ip_hash': None, 'fp_hash': None}
+        assert c.execute('SELECT ip_hash,fp_hash FROM accounts').fetchone() == {'ip_hash': None, 'fp_hash': None}
+    assert store.count_usage(user='old@example.test') == 1

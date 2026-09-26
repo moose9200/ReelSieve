@@ -219,13 +219,15 @@ def lint_manifest(m,min_images=6):
     return total
 # ---------------- media ----------------
 def download_photos(d,imgdir,cb=None,needed=None):
+    """Photo URLs come from a scraped page, so each goes through the public-host guard."""
+    from app import fetch
     imgdir.mkdir(parents=True,exist_ok=True);urls=needed or [p['url'] for p in d['photos']]
-    with httpx.Client(headers=UA,timeout=60,follow_redirects=True) as c:
-        for u in urls:
-            f=imgdir/Path(u).name
-            if f.exists():continue
-            r=c.get(u+'?im_w=1920')
-            if r.status_code==200:f.write_bytes(r.content)
+    for u in urls:
+        f=imgdir/Path(u).name
+        if f.exists():continue
+        try:_,body=fetch.get(u+('?im_w=1920' if 'muscache.com' in u else ''),headers=UA,timeout=60)
+        except (ValueError,httpx.HTTPError):continue
+        f.write_bytes(body)
     log(cb,f'Downloaded {len(list(imgdir.iterdir()))} photos')
 def seedance_clips(m,workdir,cb=None,duration=4):
     """Optional: Higgsfield Seedance 2.5 image-to-video per scene (billable). Falls back per scene on any failure."""
@@ -288,7 +290,7 @@ def email_html(d,link,dur):
 {'<p><a href="'+link+'" style="background:#00f0ff;color:#04070a;padding:12px 18px;border-radius:10px;font-weight:700;text-decoration:none">Watch the 1080p reel</a></p>' if link else ''}
 <p style="color:#8a8a8a;font-size:12px">A 720p copy is attached when under 20 MB. Made with ReelSieve, a Braivex product · braivex.com</p></div>"""
 # ---------------- orchestration ----------------
-def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer='v2',max_seconds=None):
+def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer='v2',max_seconds=None,ai_resolution='1080p'):
     out_dir=Path(out_dir);out_dir.mkdir(parents=True,exist_ok=True);work=out_dir/'work';work.mkdir(exist_ok=True)
     if is_airbnb(url):
         d=scrape_listing(url,cb);revs=scrape_reviews(url,cb)
@@ -326,7 +328,7 @@ def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer
         if len(m['scenes'])>cap and ds:
             ranked=sorted(range(len(m['scenes'])),key=lambda i:-(ds.get(Path(m['scenes'][i]['image']).name) or 0))[:cap];keep=sorted(ranked)
             log(cb,f"AI motion: keeping {cap} of {len(m['scenes'])} frames with the strongest depth axis (route order kept)");m['scenes']=[m['scenes'][i] for i in keep]
-        res_=os.getenv('AI_RESOLUTION','1080p');pl=aimotion.plan(m['scenes'],d,res_);m['ai_plan']=pl
+        res_=ai_resolution if ai_resolution in ('720p','1080p') else '1080p';pl=aimotion.plan(m['scenes'],d,res_);m['ai_plan']=pl
         log(cb,f"AI motion plan: {len(pl['shots'])} shots on {pl['model']} @ {res_} ≈ {pl['credits_estimate']} credits ("+', '.join(sh['move'] for sh in pl['shots'])+')')
         if m.get('audit',{}).get('verdict')=='REJECT':log(cb,'Audit REJECT — skipping paid generation; parallax fallback (pick a listing with a clearer walking route)')
         elif not os.getenv('HF_KEY'):log(cb,'HF_KEY not configured — using parallax')
@@ -352,10 +354,11 @@ def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer
     safe=re.sub(r'[^A-Za-z0-9]+','-',d['title'])[:40].strip('-');out=out_dir/f"{time.strftime('%Y-%m-%d')}_{safe}-by-Braivex.mp4"
     m['aspect']='9:16' if renderer=='v3' else '16:9'
     dur,small=render(m,work,out,cb,renderer)
-    res={'video':str(out),'video_720':str(small),'duration':dur,'audit':m.get('audit'),'ai_plan':m.get('ai_plan'),'selection':m.get('selection'),'photo_scores':m.get('photo_scores'),'listing':{k:d.get(k) for k in ['id','url','title','city','rating','count','guests','host']},'review_used':m.get('reviews',{}).get('items',[None])[0]}
+    res={'video':str(out),'video_720':str(small),'duration':dur,'audit':m.get('audit'),'ai_plan':m.get('ai_plan'),'selection':m.get('selection'),'photo_scores':m.get('photo_scores'),'listing':{**{k:d.get(k) for k in ['id','url','title','city','rating','count','guests','host']},'photo':(d.get('photos') or [{}])[0].get('url')},'review_used':m.get('reviews',{}).get('items',[None])[0]}
     (out_dir/'result.json').write_text(json.dumps(res,indent=1));return res
 if __name__=='__main__':
     import argparse
-    from dotenv import load_dotenv;load_dotenv(ROOT/'.env.local')
-    ap=argparse.ArgumentParser();ap.add_argument('url');ap.add_argument('out');ap.add_argument('--email');ap.add_argument('--ai-motion',action='store_true');a=ap.parse_args()
-    print(json.dumps(run(a.url,a.out,a.email,a.ai_motion),indent=1))
+    # Developer tool: renders into an explicit directory with the caller's own environment. Customer
+    # jobs never come through here; they run through app.worker in disposable scratch space.
+    ap=argparse.ArgumentParser();ap.add_argument('url');ap.add_argument('out');ap.add_argument('--ai-motion',action='store_true');ap.add_argument('--ai-resolution',default='1080p');a=ap.parse_args()
+    print(json.dumps(run(a.url,a.out,None,a.ai_motion,ai_resolution=a.ai_resolution),indent=1))

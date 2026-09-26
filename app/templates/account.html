@@ -3,6 +3,8 @@
 {% block content %}
 <section class="hero"><p class="eyebrow">Account</p><h1>{{ account.user }}</h1>
   <p class="sub">{{ account.plan_name }}{% if account.remaining is none %} · unlimited videos{% elif account.remaining > 0 %} · {{ account.remaining }} video{{ 's' if account.remaining != 1 }} left{% else %} · no videos left{% endif %}{% if account.used %} · {{ account.used }} made{% endif %}</p>
+  {% if saved %}<p class="hint hint-ok" role="status">Google Drive connected.</p>{% endif %}
+  {% if flash %}<p class="hint hint-warn" role="alert">{{ flash }}</p>{% endif %}
 </section>
 
 <section class="card">
@@ -26,12 +28,12 @@
     <div class="field"><label for="pw-current">Current password</label><input type="password" id="pw-current" autocomplete="current-password"></div>
     <div class="field"><label for="pw-new">New password (min 8)</label><input type="password" id="pw-new" autocomplete="new-password"></div>
   </div>
-  <div class="actions"><button type="button" class="btn btn-secondary" id="pw-btn">Change password</button><a class="btn btn-secondary" href="/logout">Log out</a><span class="form-status" id="pw-status"></span></div>
+  <div class="actions"><button type="button" class="btn btn-secondary" id="pw-btn">Change password</button><form method="post" action="/logout" class="inline-form"><input type="hidden" name="csrf" value="{{ csrf_for(request) }}"><button type="submit" class="btn btn-secondary">Log out</button></form><span class="form-status" id="pw-status"></span></div>
 </section>
 
 <section class="card">
   <div class="section-head"><h2>Your data</h2></div>
-  <p class="hint">Your reels and outreach are visible only to you. We store a one-way hash of your network and device to keep the free tier fair — never the raw values — and delete them after 90 days. See <a href="/privacy">Privacy</a>.</p>
+  <p class="hint">Your reels and outreach are visible only to you. Finished reels live in your own Google Drive, not on our servers. We store a one-way hash of your network and device to keep the free tier fair — never the raw values. See <a href="/privacy">Privacy</a>.</p>
   <p class="hint">Need your account deleted? Email <a href="mailto:hello@braivex.com?subject=Delete%20my%20ReelSieve%20account">hello@braivex.com</a> and it's done within a day.</p>
 </section>
 {% endblock %}

@@ -140,6 +140,19 @@ button, input, select, textarea { font: inherit; }
 }
 .site-nav a:hover { color: var(--ink); text-decoration: none; }
 .site-nav a[aria-current="page"] { color: var(--accent-text); box-shadow: var(--sink-sm); }
+.nav-logout { display: inline; margin: 0; }
+.nav-logout button {
+  padding: 8px 12px; border: 0; background: none; border-radius: var(--radius-control);
+  color: var(--muted); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+  transition: color .3s var(--ease);
+}
+.nav-logout button:hover, .nav-logout button:focus-visible { color: var(--ink); }
+.inline-form { display: inline; margin: 0; }
+.confirm-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.config-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.config-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; }
+.config-row code { font-size: 12px; }
+.config-row .hint { flex: 1 0 100%; margin: 0; }
 .theme-toggle {
   margin-left: 4px;
   width: 36px;
@@ -846,6 +859,7 @@ body.lp-page { display: block; font-size: 15px; }
   .btn, .btn-sm, .pw-toggle, .chip, select, input[type="text"], input[type="email"], input[type="password"], input[type="url"], input[type="number"], input[type="date"] { min-height: 44px; }
   .theme-toggle { width: 44px; height: 44px; }
   .site-nav a { min-height: 44px; display: inline-flex; align-items: center; }
+  .nav-logout button { min-height: 44px; padding: 8px 10px; }
   .check input[type="checkbox"] { width: 22px; height: 22px; }
   .rg-links a, .login-foot a, .lp-foot a { min-height: 44px; display: inline-flex; align-items: center; }
 }

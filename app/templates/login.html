@@ -1,35 +1,28 @@
 {% extends "base.html" %}
-{% block title %}{{ "Create admin account" if setup else "Sign in" }}{% endblock %}
+{% block title %}Sign in{% endblock %}
 {% block content %}
 <section class="login-wrap">
   <section class="card login-card">
-    <p class="eyebrow">{{ "First run" if setup else "Welcome back" }}</p>
-    <h1 class="login-title">{{ "Create the admin account" if setup else "Sign in to ReelSieve" }}</h1>
-    <p class="sub">{{ "No accounts exist on this installation yet. This first account becomes the admin." if setup else "Use the email and password you set up." }}</p>
+    <p class="eyebrow">Welcome back</p>
+    <h1 class="login-title">Sign in to ReelSieve</h1>
+    <p class="sub">Use the email and password you signed up with.</p>
     {% if notice %}<p class="hint hint-ok" role="status">{{ notice }}</p>{% endif %}
-    <form method="post" action="{{ '/setup' if setup else '/login' }}" autocomplete="on" novalidate>
-      <input type="hidden" name="csrf" value="{{ csrf }}">
-      <input type="hidden" name="next" value="{{ next or '/' }}">
-      <div class="field"><label for="user">Email</label><input type="email" id="user" name="user" value="{{ user or '' }}" autocomplete="{{ 'email' if setup else 'username' }}" inputmode="email" required autofocus></div>
+    <form method="post" action="/login" autocomplete="on" novalidate>
+      <input type="hidden" name="csrf" value="{{ csrf_for(request) }}">
+      <input type="hidden" name="next" value="{{ next or '/app' }}">
+      <div class="field"><label for="user">Email</label><input type="email" id="user" name="user" value="{{ user or '' }}" autocomplete="username" inputmode="email" required autofocus></div>
       <div class="field">
         <label for="password">Password</label>
-        <div class="pw-row"><input type="password" id="password" name="password" autocomplete="{{ 'new-password' if setup else 'current-password' }}" required minlength="{{ 8 if setup else 1 }}"><button type="button" class="pw-toggle" data-for="password" aria-label="Show password">Show</button></div>
-        {% if setup %}<p class="hint">At least 8 characters.</p>{% endif %}
+        <div class="pw-row"><input type="password" id="password" name="password" autocomplete="current-password" required minlength="1"><button type="button" class="pw-toggle" data-for="password" aria-label="Show password">Show</button></div>
       </div>
-      {% if setup %}
-      <div class="field"><label for="password2">Repeat password</label><div class="pw-row"><input type="password" id="password2" name="password2" autocomplete="new-password" required minlength="8"><button type="button" class="pw-toggle" data-for="password2" aria-label="Show password">Show</button></div></div>
-      {% else %}
       <div class="field field-check login-opts">
         <label class="check"><input type="checkbox" name="remember" value="1" checked><span>Keep me signed in for 30 days</span></label>
         <a class="link-muted" href="/forgot">Forgot password?</a>
       </div>
-      {% endif %}
       {% if error %}<p class="hint hint-warn" role="alert">{{ error }}</p>{% endif %}
-      <div class="actions"><button type="submit" class="btn btn-primary btn-wide">{{ "Create account & sign in" if setup else "Sign in" }}</button></div>
+      <div class="actions"><button type="submit" class="btn btn-primary btn-wide">Sign in</button></div>
     </form>
-    <p class="login-foot">
-      {% if setup %}Already have an account? <a href="/login">Sign in</a>{% else %}{% if allow_setup %}First time here? <a href="/setup">Create the admin account</a>{% else %}Need access? Ask an admin to add you in Settings → Users.{% endif %}{% endif %}
-    </p>
+    <p class="login-foot">New here? <a href="/signup">Create a free account</a></p>
   </section>
 </section>
 {% endblock %}
