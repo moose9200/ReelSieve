@@ -35,3 +35,13 @@ def test_changed_source_is_never_overwritten(volume):
     (volume / 'auth.json').write_text('{}')
     with pytest.raises(archive_legacy.ArchiveError, match='refusing'):
         archive_legacy.archive(volume)
+
+
+def test_diff_lists_paths_changed_since_the_archive(volume):
+    archive_legacy.archive(volume)
+    assert archive_legacy.diff(volume) == {'added': [], 'removed': [], 'changed': []}
+    (volume / 'auth.json').write_text('{"users": {}}')
+    (volume / 'reelsieve.db-wal').write_bytes(b'wal')
+    (volume / 'jobs' / 'abcdef1234' / 'job.json').unlink()
+    assert archive_legacy.diff(volume) == {'added': ['reelsieve.db-wal'], 'removed': ['jobs/abcdef1234/job.json'],
+                                           'changed': ['auth.json']}

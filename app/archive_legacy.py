@@ -2,6 +2,7 @@
 
     python -m app.archive_legacy /data              # archive once; verifies by reading it back
     python -m app.archive_legacy --restore <dir>    # write the files back (rollback only)
+    python -m app.archive_legacy --diff <dir>       # paths added, removed or changed since the archive
 
 The archive is a tar.gz of every file except the model cache, encrypted with TOKEN_ENCRYPTION_KEY
 (it contains password hashes and Drive tokens). Output is counts and a digest prefix only.
@@ -64,6 +65,23 @@ def _load():
     return gdrive._fernet().decrypt(bytes(row['data']))
 
 
+def _files(root):
+    root = Path(root)
+    for path in sorted(root.rglob('*')):
+        rel = path.relative_to(root)
+        if rel.parts[0] not in SKIP and path.is_file() and not path.is_symlink():
+            yield str(rel), path
+
+
+def diff(root):
+    """Which files differ from the stored archive. Names only, never contents."""
+    with tarfile.open(fileobj=io.BytesIO(_load()), mode='r:gz') as tar:
+        stored = {m.name: hashlib.sha256(tar.extractfile(m).read()).hexdigest() for m in tar.getmembers() if m.isfile()}
+    current = {rel: hashlib.sha256(path.read_bytes()).hexdigest() for rel, path in _files(root)}
+    return {'added': sorted(set(current) - set(stored)), 'removed': sorted(set(stored) - set(current)),
+            'changed': sorted(k for k in current if k in stored and current[k] != stored[k])}
+
+
 def restore(dest):
     dest = Path(dest).resolve()
     with tarfile.open(fileobj=io.BytesIO(_load()), mode='r:gz') as tar:
@@ -84,6 +102,8 @@ if __name__ == '__main__':
     try:
         if len(sys.argv) == 3 and sys.argv[1] == '--restore':
             print(json.dumps(restore(sys.argv[2])))
+        elif len(sys.argv) == 3 and sys.argv[1] == '--diff':
+            print(json.dumps(diff(sys.argv[2])))
         elif len(sys.argv) == 2:
             print(json.dumps(archive(sys.argv[1])))
         else:
