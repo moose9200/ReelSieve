@@ -12,7 +12,7 @@
 <section class="plan-strip{% if account.remaining is not none and account.remaining <= 0 %} is-empty{% endif %}">
   <span class="pill {{ 'pill-done' if account.plan != 'free' else 'pill-skipped' }}">{{ account.plan_name }}</span>
   <span class="plan-left">{% if account.remaining is none %}Unlimited videos{% elif account.remaining > 0 %}{{ account.remaining }} video{{ 's' if account.remaining != 1 }} left{% else %}No videos left{% endif %}</span>
-  {% if account.plan == 'free' %}<a class="btn btn-secondary btn-sm" href="/#pricing">Get 3 with AI motion — $100</a>{% elif account.remaining is not none and account.remaining <= 1 %}<a class="btn btn-secondary btn-sm" href="/#pricing">Top up</a>{% endif %}
+  {% if account.remaining is not none and account.remaining <= 0 %}<a class="btn btn-primary btn-sm" href="/upgrade">{{ 'Upgrade' if account.plan == 'free' else 'Buy more videos' }}</a>{% elif account.plan == 'free' %}<a class="btn btn-secondary btn-sm" href="/upgrade">Upgrade</a>{% elif account.remaining is not none and account.remaining <= 1 %}<a class="btn btn-secondary btn-sm" href="/upgrade">Buy more videos</a>{% endif %}
 </section>
 {% endif %}
 <section class="card form-card search-card">
@@ -101,7 +101,7 @@
       </div>
       {% if not hf_configured %}<p class="hint">Set HF_KEY in the hosting environment to enable AI motion.</p>{% endif %}
       {% elif account and not account.ai_motion %}
-      <p class="hint">On the {{ account.plan_name }} plan. <a href="/#pricing">Starter</a> adds AI camera motion and 90-second reels.</p>
+      <p class="hint" id="ai-upgrade">AI camera motion is not on the {{ account.plan_name }} plan. Starter and Commercial include it, with reels up to 90 seconds. <a href="/upgrade">Upgrade</a></p>
       {% endif %}
     </div>
     <div class="actions">

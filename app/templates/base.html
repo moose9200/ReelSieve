@@ -37,6 +37,7 @@
       <a href="/app"{% if request.url.path == "/app" %} aria-current="page"{% endif %}>New reel</a>
       <a href="/outreach"{% if request.url.path == "/outreach" %} aria-current="page"{% endif %}>Outreach</a>
       <a href="/reels"{% if request.url.path == "/reels" %} aria-current="page"{% endif %}>Reels</a>
+      <a href="/upgrade"{% if request.url.path.startswith("/upgrade") %} aria-current="page"{% endif %}>Plans</a>
       {% if request.state.is_admin %}<a href="/settings"{% if request.url.path == "/settings" %} aria-current="page"{% endif %}>Settings</a>
       {% else %}<a href="/account"{% if request.url.path == "/account" %} aria-current="page"{% endif %}>Account</a>{% endif %}
       <form method="post" action="/logout" class="nav-logout"><input type="hidden" name="csrf" value="{{ csrf_for(request) }}"><button type="submit" title="Signed in as {{ request.state.user }}">Log out</button></form>

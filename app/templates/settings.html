@@ -41,7 +41,7 @@
 
 <section class="card" id="config-card">
   <div class="section-head"><h2>Configuration</h2><span class="pill pill-skipped">Read-only</span></div>
-  <p class="hint">Change these in the hosting environment's variables and redeploy. Google OAuth redirect URI to register: <code>{{ redirect_uri }}</code>. Payment webhook: <code>{{ webhook_base }}/api/billing/webhook/skydo</code>.</p>
+  <p class="hint">Change these in the hosting environment's variables and redeploy. Google OAuth redirect URI to register: <code>{{ redirect_uri }}</code>. Payment webhook: <code>{{ webhook_base }}/api/billing/webhook/skydo</code>. Stripe webhook endpoint: <code>{{ webhook_base }}/api/billing/webhook/stripe</code>, events <code>checkout.session.completed</code> and <code>checkout.session.async_payment_succeeded</code>.</p>
   <ul class="config-list">
     {% for s in settings %}
     <li class="config-row">

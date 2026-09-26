@@ -46,6 +46,8 @@ SETTINGS = [('HF_KEY', True, 'Higgsfield API key — enables AI camera motion (b
             ('CHECKOUT_STARTER', False, 'Reusable checkout link for Starter'),
             ('CHECKOUT_COMMERCIAL', False, 'Reusable checkout link for Commercial'),
             ('BILLING_WEBHOOK_SECRET', True, 'Secret your payment provider signs webhooks with'),
+            ('STRIPE_SECRET_KEY', True, 'Stripe secret or restricted key (Checkout Sessions: write); card checkout needs this and the webhook secret'),
+            ('STRIPE_WEBHOOK_SECRET', True, 'Signing secret (whsec_…) of the Stripe webhook endpoint for checkout.session.completed'),
             ('BILLING_NOTE', False, 'Line shown to customers who choose invoice'),
             ('DEFAULT_MESSAGE', False, 'Default host message template')]
 
@@ -84,6 +86,7 @@ def site_url():
 
 
 tpl.env.globals['site_url'] = site_url
+tpl.env.filters['day'] = lambda ts: time.strftime('%d %b %Y', time.gmtime(ts or 0))
 
 
 def _secure(request):
@@ -194,7 +197,7 @@ def build_id():
     """Content hash of the app source: proves which code a deployment serves."""
     h = hashlib.sha256()
     for f in sorted(list(HERE.glob('*.py')) + list((HERE / 'schema').glob('*.sql')) + list((HERE / 'templates').glob('*.html'))
-                    + [HERE / 'static' / 'app.js']):
+                    + sorted((HERE / 'static').glob('*.css')) + [HERE / 'static' / 'app.js']):
         h.update(f.read_bytes())
     return h.hexdigest()[:12]
 
@@ -471,28 +474,40 @@ def terms(request: Request):
     return tpl.TemplateResponse(request, 'legal.html', {'kind': 'terms'})
 
 
-@app.get('/upgrade', response_class=HTMLResponse)
-def upgrade(request: Request, plan: str = '', ref: str = ''):
+def _upgrade_page(request, plan='', order=None, note='We send the invoice within a few hours and add your credits the moment it clears.', **extra):
     u = request.state.user
     return tpl.TemplateResponse(request, 'upgrade.html', {
-        'plan': plan, 'plans': plans.public_plans(), 'link': billing.checkout_link(plan) if plan else '', 'ref': ref,
-        'order': billing.get_order_for(ref, u, request.state.is_admin) if ref else None,
-        'billing_note': os.getenv('BILLING_NOTE') or 'We send the invoice within a few hours and add your credits the moment it clears.',
+        'plan': plan, 'plans': plans.public_plans(), 'link': billing.checkout_link(plan) if plan else '', 'order': order,
+        'card': billing.stripe_enabled(), 'billing_note': os.getenv('BILLING_NOTE') or note,
         'csrf': csrf_for(request), 'account': plans.account_view(u) if u else None,
-        'orders': billing.orders(u)[:5] if u else []})
+        'orders': billing.orders(u, limit=10) if u else [], **extra})  # orders(None) is every customer's
+
+
+@app.get('/upgrade', response_class=HTMLResponse)
+def upgrade(request: Request, plan: str = '', ref: str = '', cancelled: int = 0):
+    """No plan: the in-app plans page. A plan: how to pay for it. A ref: that order's state (owner or admin only)."""
+    o = billing.get_order_for(ref, request.state.user, request.state.is_admin) if ref else None
+    return _upgrade_page(request, plan if plan in plans.PLANS else '', o, cancelled=bool(cancelled))
 
 
 @app.get('/upgrade/paid', response_class=HTMLResponse)
-def upgrade_paid(request: Request, ref: str = ''):
+def upgrade_paid(request: Request, ref: str = '', session_id: str = ''):
+    """Return from a payment page. Stripe: confirm with Stripe now; the signed webhook stays the guarantee."""
     u = request.state.user
     o = billing.get_order_for(ref, u, request.state.is_admin) if ref else None
-    if o and o['user'] == u:
+    if o and o['user'] == u and o['provider'] == 'stripe':
+        if session_id and o['status'] == 'pending' and billing.stripe_enabled():
+            try:
+                s = billing.stripe_session(session_id)
+                if (s.get('metadata') or {}).get('order_ref') == o['ref']:
+                    billing.fulfil_stripe_session(s, by='stripe-return')
+            except (ValueError, RuntimeError):
+                pass  # stays pending; the webhook settles it
+            o = billing.get_order(o['ref'])
+    elif o and o['user'] == u:
         o = billing.mark_reported(ref)
-    return tpl.TemplateResponse(request, 'upgrade.html', {
-        'plan': (o or {}).get('plan', ''), 'plans': plans.public_plans(), 'link': '', 'ref': ref, 'order': o, 'reported': True,
-        'billing_note': os.getenv('BILLING_NOTE') or 'We confirm the payment and add your credits, usually within a few hours.',
-        'csrf': csrf_for(request), 'account': plans.account_view(u) if u else None,
-        'orders': billing.orders(u)[:5] if u else []})
+    return _upgrade_page(request, (o or {}).get('plan', ''), o, 'We confirm the payment and add your credits, usually within a few hours.',
+                         link='', reported=True)
 
 
 # ---------------- billing ----------------
@@ -504,13 +519,20 @@ async def billing_start(request: Request):
     pl = (b.get('plan') or '').strip()
     if pl not in ('starter', 'commercial'):
         raise HTTPException(400, 'Choose Starter or Commercial')
+    base = public_base() or str(request.base_url).rstrip('/')
+    if billing.stripe_enabled():
+        try:
+            o, url = billing.start_stripe_checkout(request.state.user, pl, base)
+        except RuntimeError as e:
+            raise HTTPException(502, str(e))
+        return {'ok': True, 'order': o, 'pay_url': url}
     if not billing.checkout_link(pl):
         raise HTTPException(400, 'No payment link configured for that plan — request an invoice instead')
     try:
         o = billing.create_order(request.state.user, pl, 'link', (b.get('note') or '')[:400], {'ip': _ip(request)})
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return {'ok': True, 'order': o, 'pay_url': billing.pay_url(pl, o['ref'], public_base() or str(request.base_url).rstrip('/'))}
+    return {'ok': True, 'order': o, 'pay_url': billing.pay_url(pl, o['ref'], base)}
 
 
 @app.post('/api/billing/request')
@@ -565,8 +587,10 @@ async def billing_link(request: Request):
 
 @app.post('/api/billing/webhook/{provider}')
 async def billing_webhook(provider: str, request: Request):
-    """Provider-agnostic: HMAC-SHA256 over the raw body, our order ref anywhere in the payload."""
+    """Provider-agnostic: HMAC-SHA256 over the raw body, our order ref anywhere in the payload. Stripe has its own scheme."""
     raw = await request.body()
+    if provider == 'stripe':
+        return _stripe_webhook(raw, request.headers.get('stripe-signature', ''))
     sig = (request.headers.get('x-signature') or request.headers.get('x-razorpay-signature') or
            request.headers.get('x-skydo-signature') or request.headers.get('x-dodo-signature') or
            request.headers.get('x-webhook-signature') or '')
@@ -583,6 +607,29 @@ async def billing_webhook(provider: str, request: Request):
         o = billing.settle(ref, by=f'webhook:{provider}', provider=provider)
     except ValueError as e:
         raise HTTPException(404, str(e))
+    return {'ok': True, 'ref': o['ref'], 'status': o['status']}
+
+
+STRIPE_EVENTS = ('checkout.session.completed', 'checkout.session.async_payment_succeeded')
+
+
+def _stripe_webhook(raw, signature):
+    """Signed, fresh and ours, or nothing happens. A replay settles nothing new: settle() grants once per order."""
+    if not billing.stripe_enabled() or not billing.stripe_signature_ok(raw, signature):
+        raise HTTPException(400, 'Bad signature')
+    try:
+        event = json.loads(raw)
+        session = event['data']['object'] if event.get('type') in STRIPE_EVENTS else None
+    except (ValueError, KeyError, TypeError, AttributeError):
+        raise HTTPException(400, 'Bad payload')
+    if not isinstance(session, dict):
+        return {'ok': True, 'ignored': 'event type'}
+    try:
+        o = billing.fulfil_stripe_session(session, by='stripe-webhook')
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    if not o:
+        return {'ok': True, 'ignored': 'not a ReelSieve order'}
     return {'ok': True, 'ref': o['ref'], 'status': o['status']}
 
 
