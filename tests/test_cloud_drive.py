@@ -1,0 +1,285 @@
+"""Real isolated PostgreSQL and encryption; only Google's HTTP boundary is synthetic."""
+import json
+import time
+from urllib.parse import parse_qs, urlparse
+
+import httpx
+import pytest
+from cryptography.fernet import Fernet
+from app import auth, gdrive
+
+
+@pytest.fixture
+def owners(db, monkeypatch):
+    monkeypatch.setenv('GOOGLE_CLIENT_ID', 'synthetic-client')
+    monkeypatch.setenv('GOOGLE_CLIENT_SECRET', 'synthetic-secret')
+    monkeypatch.setenv('TOKEN_ENCRYPTION_KEY', Fernet.generate_key().decode())
+    for name in ('alice', 'bob'):
+        auth.create_user(name + '@example.test', 'synthetic-password')
+    return {name: auth.issue(name + '@example.test')[0] for name in ('alice', 'bob')}
+
+
+class Google:
+    def __init__(self):
+        self.scope = 'https://www.googleapis.com/auth/drive.file openid email'
+        self.sub = 'google-alice'
+        self.refresh = 'synthetic-refresh-secret'
+        self.calls = []
+        self.files = {}
+        self.sessions = {}
+        self.next_id = 1
+        self.hook = None
+        self.fail_revoke = False
+        self.fail_permission = False
+        self.bad_receipt = False
+        self.bad_range = False
+        self.interrupt = False
+        self.refresh_error = False
+        self.folder_queries = []
+
+    def handle(self, req):
+        self.calls.append(req)
+        if self.hook:
+            hook, self.hook = self.hook, None
+            hook(req)
+        path = req.url.path
+        if path == '/token':
+            if self.refresh_error and b'grant_type=refresh_token' in req.content:
+                return httpx.Response(400, json={'error': 'invalid_grant', 'error_description': 'sensitive-do-not-leak'})
+            tok = {'access_token': 'synthetic-access-secret', 'expires_in': 3600, 'scope': self.scope}
+            if self.refresh:
+                tok['refresh_token'] = self.refresh
+            return httpx.Response(200, json=tok)
+        if path == '/oauth2/v3/userinfo':
+            return httpx.Response(200, json={'sub': self.sub, 'email': self.sub + '@gmail.test', 'email_verified': True})
+        if path == '/revoke':
+            return httpx.Response(500 if self.fail_revoke else 200)
+        if path.endswith('/generateIds'):
+            fid = 'generated-' + str(self.next_id)
+            self.next_id += 1
+            return httpx.Response(200, json={'ids': [fid]})
+        if '/permissions' in path:
+            if self.fail_permission:
+                return httpx.Response(403, json={'error': 'sensitive-do-not-leak'})
+            if req.method == 'GET':
+                return httpx.Response(200, json={'permissions': [{'id': 'anyone', 'type': 'anyone', 'role': 'reader'}]})
+            return httpx.Response(200, json={'id': 'anyone', 'type': 'anyone', 'role': 'reader'})
+        if path == '/drive/v3/files' and req.method == 'GET':
+            self.folder_queries.append(req.url.params['q'])
+            return httpx.Response(200, json={'files': []})
+        if path == '/drive/v3/files' and req.method == 'POST':
+            meta = json.loads(req.content)
+            return httpx.Response(200, json={'id': 'folder-' + meta['appProperties']['owner']})
+        if path == '/upload/drive/v3/files':
+            meta = json.loads(req.content)
+            session = 'https://www.googleapis.com/upload/session/' + meta['id']
+            self.sessions[session] = {'meta': meta, 'data': b''}
+            return httpx.Response(200, headers={'Location': session})
+        if path.startswith('/upload/session/'):
+            s = self.sessions[str(req.url)]
+            cr = req.headers['Content-Range']
+            if cr.startswith('bytes */'):
+                if len(s['data']) == int(cr.split('/')[-1]):
+                    return httpx.Response(200, json=self.files[s['meta']['id']])
+                return httpx.Response(308, headers={'Range': 'bytes=0-' + str(len(s['data']) - 1)} if s['data'] else {})
+            start = int(cr.split(' ')[1].split('-')[0])
+            s['data'] = s['data'][:start] + req.content
+            size = int(cr.split('/')[-1])
+            if len(s['data']) == size:
+                info = {'id': s['meta']['id'], 'name': s['meta']['name'], 'size': str(size),
+                        'webViewLink': 'https://drive.google.com/file/d/' + s['meta']['id'],
+                        'appProperties': s['meta']['appProperties']}
+                self.files[info['id']] = info
+                if self.interrupt:
+                    self.interrupt = False
+                    raise httpx.ReadTimeout('sensitive-session-url', request=req)
+                return httpx.Response(200, json={} if self.bad_receipt else info)
+            return httpx.Response(308, headers={'Range': 'bytes=0-' + str(size + 1 if self.bad_range else len(s['data']) - 1)})
+        if path.startswith('/drive/v3/files/'):
+            fid = path.rsplit('/', 1)[-1]
+            if req.url.params.get('alt') == 'media':
+                return httpx.Response(206 if 'Range' in req.headers else 200, content=b'video', headers={'Content-Type': 'video/mp4', 'Content-Range': 'bytes 0-4/5'})
+            return httpx.Response(200, json=self.files[fid]) if fid in self.files else httpx.Response(404, json={})
+        raise AssertionError('Unexpected synthetic Google request: ' + path)
+
+
+@pytest.fixture
+def google(monkeypatch):
+    fake = Google()
+    original = httpx.Client
+    monkeypatch.setattr(httpx, 'Client', lambda **kw: original(transport=httpx.MockTransport(fake.handle), **kw))
+    return fake
+
+
+def connect(owners, google, name='alice'):
+    user = name + '@example.test'
+    url = gdrive.auth_url('https://app.test/callback', user, owners[name])
+    state = parse_qs(urlparse(url).query)['state'][0]
+    return gdrive.exchange('synthetic-code', state, 'https://app.test/callback', user, owners[name])
+
+
+@pytest.mark.parametrize('user,session', [(None, ''), ('bob@example.test', 'alice'), ('alice@example.test', 'bad')])
+def test_oauth_requires_current_matching_session(owners, google, user, session):
+    with pytest.raises(ValueError):
+        gdrive.auth_url('https://app.test/callback', user, owners.get(session, session))
+    assert not gdrive.connected('alice@example.test')
+
+
+def test_callback_bound_to_exact_initiating_session(owners, google):
+    url = gdrive.auth_url('https://app.test/callback', 'alice@example.test', owners['alice'])
+    state = parse_qs(urlparse(url).query)['state'][0]
+    other = auth.issue('alice@example.test')[0]
+    for user, token in [(None, ''), ('bob@example.test', owners['bob']), ('alice@example.test', other)]:
+        with pytest.raises(ValueError):
+            gdrive.exchange('code', state, 'https://app.test/callback', user, token)
+    assert not gdrive.connected('alice@example.test')
+    gdrive.exchange('code', state, 'https://app.test/callback', 'alice@example.test', owners['alice'])
+    with pytest.raises(ValueError):
+        gdrive.exchange('code', state, 'https://app.test/callback', 'alice@example.test', owners['alice'])
+
+
+def test_expired_state_and_redirect_mismatch_rejected(owners, google, db):
+    url = gdrive.auth_url('https://app.test/callback', 'alice@example.test', owners['alice'])
+    state = parse_qs(urlparse(url).query)['state'][0]
+    with pytest.raises(ValueError):
+        gdrive.exchange('code', state, 'https://evil.test/callback', 'alice@example.test', owners['alice'])
+    with db.connect() as c:
+        c.execute('UPDATE drive_oauth_states SET expires_at=%s', (time.time() - 1,))
+    with pytest.raises(ValueError):
+        gdrive.exchange('code', state, 'https://app.test/callback', 'alice@example.test', owners['alice'])
+
+
+@pytest.mark.parametrize('bad', ['scope', 'refresh', 'identity'])
+def test_missing_grant_requirements_never_connected(owners, google, bad):
+    if bad == 'scope': google.scope = 'openid email'
+    if bad == 'refresh': google.refresh = None
+    if bad == 'identity': google.sub = ''
+    with pytest.raises(RuntimeError): connect(owners, google)
+    assert not gdrive.connected('alice@example.test')
+
+
+def test_encrypted_storage_bound_to_owner(owners, google, db):
+    connect(owners, google)
+    connect(owners, google, 'bob')
+    with db.connect() as c:
+        rows = c.execute('SELECT owner_id,credentials FROM drive_connections').fetchall()
+        raw = str(rows)
+        assert 'synthetic-refresh-secret' not in raw and 'synthetic-access-secret' not in raw
+        c.execute('UPDATE drive_connections SET credentials=%s WHERE owner_id=%s', (rows[0]['credentials'], rows[1]['owner_id']))
+    with pytest.raises(RuntimeError): gdrive.access_token('bob@example.test')
+    assert not gdrive.connected('bob@example.test')
+
+
+def test_disconnect_leaves_other_owner_connected(owners, google):
+    connect(owners, google); connect(owners, google, 'bob')
+    gdrive.disconnect('bob@example.test')
+    assert gdrive.connected('alice@example.test') and not gdrive.connected('bob@example.test')
+    assert gdrive.status('bob@example.test')['email'] is None
+    assert gdrive.access_token('alice@example.test') == 'synthetic-access-secret'
+
+
+def test_reconnect_new_identity_cannot_inherit_refresh(owners, google):
+    connect(owners, google)
+    google.sub, google.refresh = 'another-google', None
+    with pytest.raises(RuntimeError): connect(owners, google)
+    assert gdrive.status('alice@example.test')['email'] == 'google-alice@gmail.test'
+
+
+def test_inactive_owner_cannot_access_drive(owners, google, db):
+    connect(owners, google)
+    with db.connect() as c: c.execute('UPDATE users SET active=FALSE WHERE email=%s', ('alice@example.test',))
+    assert not gdrive.connected('alice@example.test')
+    with pytest.raises((ValueError, RuntimeError)): gdrive.access_token('alice@example.test')
+
+
+def test_disconnect_revocation_failure_explicit_but_local_access_disabled(owners, google):
+    connect(owners, google)
+    google.fail_revoke = True
+    with pytest.raises(RuntimeError, match='revoke|revocation'): gdrive.disconnect('alice@example.test')
+    assert not gdrive.connected('alice@example.test')
+    with pytest.raises(RuntimeError): gdrive.access_token('alice@example.test')
+
+
+def test_expired_grant_requires_reconnect_without_secret_leak(owners, google, db):
+    connect(owners, google)
+    tok = gdrive._load('alice@example.test')
+    tok['expires_at'] = 0
+    gdrive._save('alice@example.test', tok)
+    google.refresh_error = True
+    with pytest.raises(RuntimeError, match='[Rr]econnect') as err: gdrive.access_token('alice@example.test')
+    assert 'sensitive' not in str(err.value)
+    assert not gdrive.connected('alice@example.test')
+
+
+def test_refresh_cannot_resurrect_disconnect(owners, google):
+    connect(owners, google)
+    tok = gdrive._load('alice@example.test'); tok['expires_at'] = 0
+    gdrive._save('alice@example.test', tok)
+    google.hook = lambda req: gdrive.disconnect('alice@example.test')
+    with pytest.raises(RuntimeError): gdrive.access_token('alice@example.test')
+    assert not gdrive.connected('alice@example.test')
+
+
+def test_private_upload_receipt_and_owner_folder(owners, google, tmp_path):
+    connect(owners, google)
+    connect(owners, google, 'bob')
+    path = tmp_path / 'reel.mp4'; path.write_bytes(b'synthetic-video')
+    a = gdrive.upload(path, 'https://listing.test/1', 'alice@example.test', job_id='job-a')
+    b = gdrive.upload(path, 'https://listing.test/1', 'bob@example.test', job_id='job-b')
+    assert a['confirmed'] and a['sharing'] == 'private' and a['id'] != b['id']
+    assert not any('/permissions' in r.url.path for r in google.calls)
+    assert len(set(google.folder_queries)) == 2 and all('appProperties' in q for q in google.folder_queries)
+    assert gdrive.upload(path, 'https://listing.test/1', 'alice@example.test', job_id='job-a')['id'] == a['id']
+
+
+@pytest.mark.parametrize('bad', ['receipt', 'range'])
+def test_invalid_upload_progress_never_confirmed(owners, google, tmp_path, bad):
+    connect(owners, google)
+    path = tmp_path / 'reel.mp4'; path.write_bytes(b'x' * (256 * 1024 + 1))
+    google.bad_receipt = bad == 'receipt'; google.bad_range = bad == 'range'
+    with pytest.raises(RuntimeError): gdrive.upload(path, 'listing', 'alice@example.test', job_id='bad', chunk=256 * 1024)
+    assert gdrive.receipt('alice@example.test', 'bad') is None
+
+
+def test_interrupted_upload_reconciles_same_file(owners, google, tmp_path, db):
+    connect(owners, google)
+    path = tmp_path / 'reel.mp4'; path.write_bytes(b'video')
+    google.interrupt = True
+    with pytest.raises(RuntimeError) as err: gdrive.upload(path, 'listing', 'alice@example.test', job_id='retry')
+    assert 'sensitive' not in str(err.value)
+    result = gdrive.upload(path, 'listing', 'alice@example.test', job_id='retry')
+    assert result['confirmed'] and len(google.files) == 1
+    with db.connect() as c:
+        raw = str(c.execute('SELECT * FROM drive_uploads').fetchall())
+        assert 'https://www.googleapis.com/upload/session/' not in raw
+
+
+def test_share_and_stream_require_own_receipt(owners, google, tmp_path):
+    connect(owners, google); connect(owners, google, 'bob')
+    path = tmp_path / 'reel.mp4'; path.write_bytes(b'video')
+    gdrive.upload(path, 'listing', 'alice@example.test', job_id='own')
+    with pytest.raises(ValueError): gdrive.set_sharing('bob@example.test', 'own', public=True)
+    with pytest.raises(ValueError):
+        with gdrive.open_stream('bob@example.test', 'own'): pass
+    google.fail_permission = True
+    with pytest.raises(RuntimeError): gdrive.set_sharing('alice@example.test', 'own', public=True)
+    assert gdrive.receipt('alice@example.test', 'own')['sharing'] == 'private'
+    google.fail_permission = False
+    assert gdrive.set_sharing('alice@example.test', 'own', public=True)['sharing'] == 'public'
+    with gdrive.open_stream('alice@example.test', 'own', range_header='bytes=0-4') as response:
+        assert response.status_code == 206 and response.read() == b'video'
+
+
+def test_upload_completion_cannot_survive_disconnect(owners, google, tmp_path):
+    connect(owners, google)
+    path = tmp_path / 'reel.mp4'; path.write_bytes(b'video')
+    original = google.handle
+    def boundary(req):
+        response = original(req)
+        if req.url.path.startswith('/upload/session/'):
+            gdrive.disconnect('alice@example.test')
+        return response
+    # Hook at final receipt, after Google has received bytes.
+    google.handle = boundary
+    with pytest.raises(RuntimeError): gdrive.upload(path, 'listing', 'alice@example.test', job_id='race')
+    assert gdrive.receipt('alice@example.test', 'race') is None

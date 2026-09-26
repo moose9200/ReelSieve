@@ -47,21 +47,8 @@ def test_search_parser_reads_public_results():
     assert first['id'].isdigit() and first['url'].startswith('https://www.airbnb.co.uk/rooms/')
     assert first['photo'] and first['title'] and first['rating'] is not None
 
-def test_drive_filename_is_listing_url():
+def test_drive_filename_is_listing_url(monkeypatch):
     from app import gdrive
+    monkeypatch.delenv('GDRIVE_FOLDER',raising=False)
     assert gdrive.safe_name('https://www.airbnb.co.uk/rooms/1673857257882928402?adults=1&check_in=2026-10-04')=='https://www.airbnb.co.uk/rooms/1673857257882928402.mp4'
-    assert gdrive.status('someone@example.com')['folder']=='Listing Reels'
-
-def test_drive_tokens_are_per_account(tmp_path,monkeypatch):
-    """One tenant's Drive token must never be reachable from another account."""
-    from app import gdrive
-    monkeypatch.setattr(gdrive,'TOKEN_DIR',tmp_path)
-    gdrive._save('a@example.com',{'refresh_token':'tok-a','email':'a@gmail.com'})
-    assert gdrive.connected('a@example.com') is True
-    assert gdrive.connected('b@example.com') is False
-    assert gdrive.status('b@example.com')['email'] is None
-    assert gdrive._path('a@example.com')!=gdrive._path('b@example.com')
-    gdrive.disconnect('b@example.com')
-    assert gdrive.connected('a@example.com') is True   # disconnecting one must not touch the other
-    import pytest
-    with pytest.raises(RuntimeError):gdrive.access_token('b@example.com')
+    assert gdrive.folder_name()=='Listing Reels'
