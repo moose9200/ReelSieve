@@ -494,6 +494,28 @@ def test_admin_actions_leave_an_accountability_trail(web, db):
     assert admin.get('/settings').text.count('data-event') == 50
 
 
+# ---------------- 11, 14, 15. transparency at the point of collection and use ----------------
+
+def test_signup_links_terms_and_privacy_at_collection(web):
+    page = web['anon'].get('/signup').text
+    assert ('By creating an account you agree to the <a href="/terms">Terms</a> and confirm you have read the '
+            '<a href="/privacy">Privacy notice</a>.') in page
+
+
+def test_ai_motion_checkbox_says_photos_go_to_higgsfield(web):
+    page = web['alice'].get('/app').text
+    block = page.split('id="ai_motion"', 1)[1].split('</div>', 1)[0]
+    assert 'Higgsfield' in block and 'listing photos' in block
+    assert 'name="ai_motion" checked' not in page  # still opt-in
+
+
+def test_outreach_page_carries_a_plain_pecr_notice(web):
+    page = web['alice'].get('/outreach').text
+    notice = page.split('id="outreach-rules"', 1)[1].split('</section>', 1)[0]
+    for phrase in ('PECR', 'electronic mail', 'consent', 'sole traders', 'opt-out', "Airbnb's Terms", 'responsible'):
+        assert phrase in notice.replace('&#39;', "'"), phrase
+
+
 # ---------------- 10. password hashing (Art 32) ----------------
 
 def test_new_password_hashes_use_the_owasp_pbkdf2_sha256_work_factor(db):

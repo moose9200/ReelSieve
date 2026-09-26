@@ -17,6 +17,7 @@
         <p class="hint">At least 8 characters.</p></div>
       {% if url %}<p class="hint">First reel: <code>{{ url[:70] }}</code></p>{% endif %}
       {% if error %}<p class="hint hint-warn" role="alert">{{ error }}</p>{% endif %}
+      <p class="hint">By creating an account you agree to the <a href="/terms">Terms</a> and confirm you have read the <a href="/privacy">Privacy notice</a>.</p>
       <div class="actions"><button type="submit" class="btn btn-primary btn-wide">Create account</button></div>
     </form>
     <p class="login-foot">Already have an account? <a href="/login">Sign in</a></p>
