@@ -88,6 +88,7 @@ Gemini download quirk: the "Download full-sized image" button only fires when th
 ## Deployment (Railway)
 - GitHub: https://github.com/moose9200/ReelSieve (private). Railway project `listing-reel`, service `ReelSieve`, custom domain https://www.reelsieve.braivex.com.
 - Build: `Dockerfile` (CPU torch, Chromium, ffmpeg, Depth-Anything model baked into the image). Start: `python -m app.start` (`railway.json`). Health: `/healthz` checks the database and reports a build fingerprint.
+- Deploy from this checkout with an explicit path: `railway up <path-to-this-checkout> --path-as-root --service <ReelSieve|ReelSieve-worker|ReelSieve-staging> --environment production --detach`. Without the path and `--path-as-root`, the CLI uploads the directory where the project was *linked* (a parent folder holding old `main`) and production silently goes back to the file-based app.
 - `/healthz` → `{"ok": true, "build": "<fingerprint>", "db": true}`; compare the fingerprint with a local `python -c "from app import server; print(server.BUILD)"` to prove what is deployed.
 
 ## One-time legacy import
@@ -97,6 +98,7 @@ The old app kept everything on the `/data` volume. With `LEGACY_MIGRATION_ENABLE
 No public admin setup exists. From a shell in the service (e.g. `railway ssh`):
 ```bash
 python -m app.admin list
+python -m app.admin set-plan someone@example.com starter 5   # plan + credits, e.g. free credits
 read -rs PW && printf '%s\n' "$PW" | python -m app.admin set-password someone@example.com   # keeps it out of shell history
 ```
 

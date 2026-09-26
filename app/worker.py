@@ -24,6 +24,7 @@ from app import gdrive, jobs, store
 
 LEASE = int(os.getenv('WORKER_LEASE_SECONDS', '90'))
 BEAT = max(1.0, LEASE / 6)
+EXIT_GRACE = 30  # seconds a finished child may take to exit (torch teardown) before it is killed
 STEPS = ['Fetching', 'Reviews', 'Downloaded', 'Scored', 'Audit', 'AI motion plan', 'Seedance', 'Estimating depth',
          'Rendering', 'Rendered', 'Uploading']
 VARIANTS = (('primary', 'video'), ('720p', 'video_720'))
@@ -101,7 +102,7 @@ def run_child(cmd, job, on_line):
                             start_new_session=True, text=True)
     lines = queue.Queue()
     threading.Thread(target=_pump, args=(proc.stdout, lines), daemon=True).start()
-    result, error, next_beat = None, None, 0.0
+    result, error, next_beat, eof_at = None, None, 0.0, None
     try:
         while True:
             if _stop.is_set():
@@ -110,12 +111,19 @@ def run_child(cmd, job, on_line):
                 if not jobs.heartbeat(job['id'], job['lease_token'], LEASE):
                     raise Stopped()
                 next_beat = time.time() + BEAT
+            if eof_at is not None:
+                # The result pipe closes before the child's interpreter has finished exiting.
+                if proc.poll() is not None or time.time() - eof_at > EXIT_GRACE:
+                    break
+                time.sleep(0.1)
+                continue
             try:
                 raw = lines.get(timeout=0.5)
             except queue.Empty:
                 continue
             if raw is None:
-                break
+                eof_at = time.time()
+                continue
             try:
                 msg = json.loads(raw)
             except ValueError:

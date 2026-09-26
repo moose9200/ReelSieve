@@ -25,6 +25,13 @@ print(json.dumps({'result': {'video': str(d / 'reel.mp4'), 'video_720': str(d / 
       'listing': {'url': 'https://www.airbnb.co.uk/rooms/12345', 'title': 'Flat', 'city': 'Leeds'},
       'ai_plan': {'shots': [{'move': 'DOLLY', 'error': 'HTTPError https://provider.example/signed?token=abc'}]}}}), flush=True)
 '''
+# The real child's result pipe closes when render_child returns, while the interpreter (torch,
+# worker threads) is still shutting down: a finished render must not be killed during that exit.
+SLOW_EXIT = SUCCESS + r'''
+import os, time
+sys.stdout.flush(); os.close(1)
+time.sleep(1.5)
+'''
 FAILURE = r'''
 import json, pathlib, sys
 (pathlib.Path(sys.argv[1]) / 'partial.mp4').write_bytes(b'half')
@@ -164,6 +171,14 @@ def test_worker_failure_refunds_sanitizes_and_cleans(env, db):
     assert failed['status'] == 'failed' and failed['error'] == 'Only 3 usable photos found on that page.'
     assert usage_rows(db)[0]['refunded_at'] is not None
     assert not worker.scratch(job['id']).exists() and failed['cleanup_at']
+
+
+def test_render_that_exits_slowly_after_its_result_is_delivered(env, google, db):
+    job = jobs.admit('alice@example.test', URL, {'ai_resolution': '720p'})
+    worker.process(claimed(db), command(SLOW_EXIT))
+    done = jobs.get('alice@example.test', job['id'])
+    assert done['status'] == 'done', done['error']
+    assert gdrive.receipt('alice@example.test', job['id'], 'primary')['confirmed']
 
 
 def test_incomplete_upload_is_never_done(env, google, db):
