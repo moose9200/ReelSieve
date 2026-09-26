@@ -6,6 +6,18 @@ from pathlib import Path
 from email.message import EmailMessage
 import httpx
 HERE=Path(__file__).resolve().parent;ROOT=HERE.parent;PY=sys.executable
+def cpu_budget(cpu_max='/sys/fs/cgroup/cpu.max'):
+    """CPUs this container may really use. Railway reports the host's 48 cores while the cgroup quota allows 8;
+    thread pools sized from the core count (torch, OpenBLAS, x264) then burn the quota and sit throttled."""
+    try:
+        quota,period=Path(cpu_max).read_text().split()[:2]
+        if quota!='max':return max(1,-(-int(quota)//int(period)))
+    except (OSError,ValueError):pass
+    return len(os.sched_getaffinity(0)) if hasattr(os,'sched_getaffinity') else (os.cpu_count() or 1)
+CPUS=cpu_budget()
+# Set before numpy/torch load; depth.py and the renderers inherit them. NumPy madvises hugepages for big arrays, and on a
+# long-running, fragmented host every per-frame allocation then stalls in direct compaction (measured: 6 segments 433 s -> 60 s).
+for _k,_v in (('OMP_NUM_THREADS',CPUS),('OPENBLAS_NUM_THREADS',CPUS),('MKL_NUM_THREADS',CPUS),('NUMPY_MADVISE_HUGEPAGE',0)):os.environ.setdefault(_k,str(_v))
 UA={'User-Agent':'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36','Accept-Language':'en-GB,en;q=0.9'}
 ROUTE=[('exterior',['exterior','front','entrance','building','street','driveway']),('living',['living']),('kitchen',['kitchen','dining']),('bedroom',['bedroom']),
        ('bathroom',['bathroom']),('garden',['garden','patio','terrace','balcony','outdoor','yard']),('spa',['hot tub','pool','sauna','jacuzzi']),('view',['view']),('other',['additional','other','common','office','gym'])]
@@ -221,13 +233,15 @@ def lint_manifest(m,min_images=6):
 def download_photos(d,imgdir,cb=None,needed=None):
     """Photo URLs come from a scraped page, so each goes through the public-host guard."""
     from app import fetch
+    from concurrent.futures import ThreadPoolExecutor
     imgdir.mkdir(parents=True,exist_ok=True);urls=needed or [p['url'] for p in d['photos']]
-    for u in urls:
+    def one(u):
         f=imgdir/Path(u).name
-        if f.exists():continue
+        if f.exists():return
         try:_,body=fetch.get(u+('?im_w=1920' if 'muscache.com' in u else ''),headers=UA,timeout=60)
-        except (ValueError,httpx.HTTPError):continue
+        except (ValueError,httpx.HTTPError):return
         f.write_bytes(body)
+    with ThreadPoolExecutor(6) as ex:list(ex.map(one,urls))   # small pool: one CDN host, politely bounded
     log(cb,f'Downloaded {len(list(imgdir.iterdir()))} photos')
 def seedance_clips(m,workdir,cb=None,duration=4):
     """Optional: Higgsfield Seedance 2.5 image-to-video per scene (billable). Falls back per scene on any failure."""
@@ -246,8 +260,10 @@ def seedance_clips(m,workdir,cb=None,duration=4):
             if not url:log(cb,f'Seedance scene {i+1}: no video url — using parallax');continue
             out=workdir/f'clip{i}.mp4';out.write_bytes(httpx.get(url,timeout=120).content);s['clip']=str(out);log(cb,f'Seedance scene {i+1} ready')
         except Exception as e:log(cb,f'Seedance scene {i+1} failed ({type(e).__name__}: {str(e)[:60]}) — using parallax')
+def render_images(m):
+    return sorted({s['image'] for s in m['scenes']}|{m['intro']['image'],m['outro']['image']}|({m['trust']['image']} if 'trust' in m else set())|set(m.get('reviews',{}).get('bg',[])))
 def render(m,workdir,out,cb=None,renderer='v2'):
-    imgs=sorted({s['image'] for s in m['scenes']}|{m['intro']['image'],m['outro']['image']}|({m['trust']['image']} if 'trust' in m else set())|set(m.get('reviews',{}).get('bg',[])))
+    imgs=render_images(m)
     sel=workdir/'sel';sel.mkdir(exist_ok=True)
     for i in imgs:shutil.copy(i,sel/Path(i).name)
     missing=[i for i in imgs if not (Path(m['depth_dir'])/(Path(i).stem+'.png')).exists()]
@@ -258,10 +274,10 @@ def render(m,workdir,out,cb=None,renderer='v2'):
     else:log(cb,'Depth maps ready')
     (workdir/'manifest.json').write_text(json.dumps(m,indent=1));log(cb,'Rendering '+('tutorial-style 9:16 walkthrough' if renderer=='v3' else 'cinematic 16:9 walkthrough (v2)'))
     renderer_file='render_v3.py' if renderer=='v3' else 'render_v2.py'
-    r=subprocess.run([PY,str(HERE/renderer_file),str(workdir/'manifest.json'),str(out),'--workers','6'],capture_output=True,text=True)
+    r=subprocess.run([PY,str(HERE/renderer_file),str(workdir/'manifest.json'),str(out),*(['--workers','6'] if renderer=='v3' else ['--workers',str(CPUS),'--threads',str(CPUS)])],capture_output=True,text=True)
     if r.returncode!=0:raise RuntimeError('render failed: '+r.stderr[-800:])
     dur=float(subprocess.run(['ffprobe','-v','error','-show_entries','format=duration','-of','csv=p=0',str(out)],capture_output=True,text=True).stdout.strip() or 0)
-    small=out.with_name(out.stem+'-720p.mp4');subprocess.run(['ffmpeg','-y','-v','error','-i',str(out),'-vf','scale=720:-2' if m.get('aspect')=='9:16' else 'scale=-2:720',*(['-c:v','h264_videotoolbox','-b:v','3M'] if __import__('platform').system()=='Darwin' else ['-c:v','libx264','-preset','veryfast','-crf','23']),'-c:a','aac','-b:a','128k','-movflags','+faststart',str(small)],check=True)
+    small=out.with_name(out.stem+'-720p.mp4');subprocess.run(['ffmpeg','-y','-v','error','-i',str(out),'-vf','scale=720:-2' if m.get('aspect')=='9:16' else 'scale=-2:720',*(['-c:v','h264_videotoolbox','-b:v','3M'] if __import__('platform').system()=='Darwin' else ['-c:v','libx264','-preset','veryfast','-crf','23','-threads',str(CPUS)]),'-c:a','aac','-b:a','128k','-movflags','+faststart',str(small)],check=True)
     log(cb,f'Rendered {dur:.1f}s reel');return dur,small
 # ---------------- email ----------------
 def send_email(to,subject,body_html,attach=None,link=None,cb=None):
@@ -302,10 +318,13 @@ def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer
     (out_dir/'listing.json').write_text(json.dumps({**d,'reviews':revs},indent=1))
     imgdir=work/'images';download_photos(d,imgdir,cb)   # every photo, so selection is on quality not on Airbnb's order
     from app import photoscore
-    scores=photoscore.score_all([imgdir/Path(p['url']).name for p in d['photos'] if (imgdir/Path(p['url']).name).exists()],'9:16' if renderer=='v3' else '16:9')
+    have=[imgdir/Path(p['url']).name for p in d['photos'] if (imgdir/Path(p['url']).name).exists()]
+    log(cb,f'Scoring {len(have)} photos for sharpness, light and colour')
+    scores=photoscore.score_all(have,'9:16' if renderer=='v3' else '16:9')
     # depth maps for the shortlist (top 18 by cheap score) so the depth axis can count
     short=sorted(scores,key=lambda k:-scores[k]['score'])[:18];sel=work/'sel';sel.mkdir(exist_ok=True)
     for k in short:shutil.copy(imgdir/k,sel/k)
+    log(cb,f'Estimating depth for {len(short)} photos')
     subprocess.run([PY,str(HERE/'depth.py'),str(sel),str(work/'depth')],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     photoscore.add_depth(scores,work/'depth')
     m=build_manifest(d,revs,imgdir,work/'depth',scores=scores);m['photo_scores']=scores
@@ -316,9 +335,10 @@ def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer
     # --- audit (free): is this photo set video-worthy? ---
     from app import aimotion
     try:
-        depth_dir=work/'depth';sel2=work/'sel2';sel2.mkdir(exist_ok=True);missing=[sc['image'] for sc in m['scenes'] if not (depth_dir/(Path(sc['image']).stem+'.png')).exists()]
+        # every frame the render will need, not just the scenes, so render() never loads the depth model a third time
+        depth_dir=work/'depth';sel2=work/'sel2';sel2.mkdir(exist_ok=True);missing=[i for i in render_images(m) if not (depth_dir/(Path(i).stem+'.png')).exists()]
         for im_ in missing:shutil.copy(im_,sel2/Path(im_).name)
-        if missing:subprocess.run([PY,str(HERE/'depth.py'),str(sel2),str(depth_dir)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        if missing:log(cb,f'Estimating depth for {len(missing)} more frames');subprocess.run([PY,str(HERE/'depth.py'),str(sel2),str(depth_dir)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         aud=aimotion.audit([sc['image'] for sc in m['scenes']],depth_dir,{Path(sc['image']).name:sc.get('room') for sc in m['scenes']});m['audit']=aud
         log(cb,f"Audit: {aud['verdict']} ({aud['score']}/100) — "+'; '.join(aud['reasons']))
     except Exception as e:log(cb,f'Audit skipped ({type(e).__name__})')

@@ -1,6 +1,8 @@
-"""Billing for ReelSieve — built so an Indian business can take money today, without Stripe.
+"""Billing for ReelSieve — built so an Indian business can take money today, with or without Stripe.
 
-Three routes to a paid plan, in the order they cost you least:
+With STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET set, customers pay on hosted Stripe Checkout and a signed
+`checkout.session.completed` webhook settles the order (see the Stripe section below). Otherwise,
+three routes to a paid plan, in the order they cost you least:
   1. `link`    — a hosted checkout link per plan (Skydo InstaLink, Dodo, Razorpay, PayPal…). Set in Settings.
   2. `invoice` — the customer asks for an invoice; you send a Skydo InstaLink or virtual-account details and
                  mark it paid in Settings → Orders. Credits are granted the moment you mark it.
@@ -18,6 +20,7 @@ priced separately — ACH debit 2%, minimum $9. So Starter ($100) costs $9 via I
 and Commercial ($500) costs $10 against $19. Minimum transaction is $50 and InstaLinks expect a US payer.
 """
 import os,re,json,time,hmac,hashlib,secrets
+import httpx
 from app import store,plans,database
 from psycopg.errors import UniqueViolation
 PROVIDERS={
@@ -138,6 +141,94 @@ def verify(provider,body,signature,secret=None):
     mac=hmac.new(sec,body,hashlib.sha256)
     import base64
     return any(hmac.compare_digest(signature.strip(),x) for x in (mac.hexdigest(),base64.b64encode(mac.digest()).decode()))
+# ---------- Stripe Checkout (hosted) ----------
+# Docs checked 26 Sep 2026: docs.stripe.com/api/checkout/sessions/create, /webhooks (manual verification),
+# /checkout/fulfillment. Plain HTTPS through httpx; no SDK. Prices come from plans.PLANS, never the client.
+STRIPE_API = 'https://api.stripe.com/v1/checkout/sessions'
+STRIPE_TOLERANCE = 300  # Stripe's libraries default to 5 minutes
+
+
+def stripe_enabled():
+    return bool((os.getenv('STRIPE_SECRET_KEY') or '').strip() and (os.getenv('STRIPE_WEBHOOK_SECRET') or '').strip())
+
+
+def _stripe(method, url, **kw):
+    """One Stripe call. Errors never carry the key, URL or response body into the message."""
+    try:
+        with httpx.Client(timeout=20) as h:
+            r = h.request(method, url, auth=(os.environ['STRIPE_SECRET_KEY'].strip(), ''), **kw)
+    except httpx.HTTPError:
+        raise RuntimeError('Stripe did not respond — try again shortly') from None
+    if r.status_code != 200:
+        raise RuntimeError(f'Stripe refused the request ({r.status_code})')
+    return r.json()
+
+
+def start_stripe_checkout(user, plan_key, base):
+    """Order first, then a hosted Checkout Session for exactly that order's server-side price."""
+    o = create_order(user, plan_key, 'stripe')
+    p, ref = plans.PLANS[plan_key], o['ref']
+    form = {'mode': 'payment', 'client_reference_id': ref, 'customer_email': o['user'],
+            'line_items[0][quantity]': '1', 'line_items[0][price_data][currency]': 'usd',
+            'line_items[0][price_data][unit_amount]': str(int(round(o['amount_usd'] * 100))),
+            'line_items[0][price_data][product_data][name]': f"ReelSieve {p['name']} · {p['videos']} videos",
+            'metadata[app]': 'reelsieve', 'metadata[order_ref]': ref, 'metadata[owner_id]': o['owner_id'],
+            'metadata[plan]': plan_key,
+            'success_url': f'{base}/upgrade/paid?ref={ref}&session_id={{CHECKOUT_SESSION_ID}}',
+            'cancel_url': f'{base}/upgrade?cancelled=1'}
+    try:
+        s = _stripe('POST', STRIPE_API, data=form, headers={'Idempotency-Key': 'reelsieve-' + ref})
+    except RuntimeError:
+        cancel(ref, 'Stripe checkout could not start')
+        raise
+    with database.connect() as c:
+        meta = {**json.loads(o['meta'] or '{}'), 'stripe_session': s['id']}
+        c.execute('UPDATE orders SET meta=%s WHERE ref=%s', (json.dumps(meta), ref))
+        return get_order(ref, conn=c), s['url']
+
+
+def stripe_session(session_id):
+    if not re.fullmatch(r'cs_[A-Za-z0-9_]{1,250}', session_id or ''):
+        raise ValueError('Not a Checkout Session ID')
+    return _stripe('GET', f'{STRIPE_API}/{session_id}')
+
+
+def stripe_signature_ok(body, header, secret=None, now=None):
+    """Stripe-Signature: t=<ts>,v1=<hex>[,v1=…]. HMAC-SHA256 of '<t>.<raw body>', v1 only, 5-minute window."""
+    sec = (os.getenv('STRIPE_WEBHOOK_SECRET') if secret is None else secret) or ''
+    parts = [x.split('=', 1) for x in (header or '').split(',') if '=' in x]
+    ts, sigs = [v for k, v in parts if k.strip() == 't'], [v.strip() for k, v in parts if k.strip() == 'v1']
+    if not sec or len(ts) != 1 or not ts[0].strip().isdigit() or not sigs:
+        return False
+    if abs((time.time() if now is None else now) - int(ts[0])) > STRIPE_TOLERANCE:
+        return False
+    want = hmac.new(sec.encode(), ts[0].strip().encode() + b'.' + body, hashlib.sha256).hexdigest()
+    return any(hmac.compare_digest(want, s) for s in sigs)
+
+
+def fulfil_stripe_session(session, by='stripe'):
+    """Settle the order a paid Checkout Session belongs to, once. Returns None when it is not ours or not paid yet.
+    Raises ValueError when it claims to be ours but does not match the order we created."""
+    meta = session.get('metadata') or {}
+    o = get_order(meta.get('order_ref') or '') if meta.get('app') == 'reelsieve' else None
+    if not o:
+        return None
+    if session.get('payment_status') == 'unpaid':
+        return o
+    problems = [name for name, ok in [
+        ('session', session.get('id') == json.loads(o['meta'] or '{}').get('stripe_session')),
+        ('owner', meta.get('owner_id') == o['owner_id']), ('plan', meta.get('plan') == o['plan']),
+        ('reference', session.get('client_reference_id') == o['ref']), ('mode', session.get('mode') == 'payment'),
+        ('payment status', session.get('payment_status') == 'paid'), ('currency', session.get('currency') == 'usd'),
+        ('order status', o['status'] != 'cancelled'),
+        ('amount', session.get('amount_total') == int(round(o['amount_usd'] * 100))
+                   == int(plans.PLANS[o['plan']]['price_usd'] * 100)),
+    ] if not ok]
+    if problems:
+        raise ValueError(f"Checkout Session does not match order {o['ref']}: " + ', '.join(problems))
+    return settle(o['ref'], by=f"{by}:{session['id']}", provider='stripe')
+
+
 def ref_from_payload(payload):
     """Find our order ref wherever the provider hid it."""
     def walk(o):

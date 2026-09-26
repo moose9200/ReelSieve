@@ -846,10 +846,10 @@ body.lp-page { display: block; font-size: 15px; }
 .plan-strip .btn { margin-left: auto; }
 @media (max-width: 720px) { .plan-strip .btn { margin-left: 0; width: 100%; } }
 
-/* outreach: keep the 3 row actions on one line while the table is a table */
+/* outreach: 3 row actions fit one line while the table is a table; a 4th (Airbnb profile) wraps instead of overflowing */
 @media (min-width: 721px) {
   .or-table td[data-label="Actions"] { width: 1%; white-space: nowrap; }
-  .or-table .or-actions { flex-wrap: nowrap; }
+  .or-table .or-actions { flex-wrap: wrap; width: 310px; }
 }
 /* outreach: stacked-card cells put the secondary line under the value, not beside it */
 @media (max-width: 720px) {
@@ -873,3 +873,15 @@ body.lp-page { display: block; font-size: 15px; }
   .check input[type="checkbox"] { width: 22px; height: 22px; }
   .rg-links a, .login-foot a, .lp-foot a { min-height: 44px; display: inline-flex; align-items: center; }
 }
+
+/* in-app plans page: the landing's plan cards, two up inside the 880px app column */
+.plan-grid { grid-template-columns: repeat(2, 1fr); margin-top: 16px; }
+.plans-page + .card { margin-top: 22px; }
+.orders-card .pill { justify-self: start; }
+.lp-plan.is-current { box-shadow: var(--raise), inset 0 0 0 2px var(--pos); }
+.lp-plan.is-current .lp-pop { background: var(--pos); }
+.lp-plan-name { font-size: 14px; }
+.lp-plan .form-status:empty { display: none; }
+.lp-plan .plan-mail { margin: auto 0 10px; text-align: center; }
+.lp-plan .plan-mail + .btn { margin-top: 0; }
+@media (max-width: 720px) { .plan-grid { grid-template-columns: 1fr; gap: 22px; } }

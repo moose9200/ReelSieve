@@ -173,6 +173,20 @@ def test_disconnect_reports_failed_revocation(web, owners, google):
     assert body['connected'] is False and 'revocation' in body['warning']
 
 
+def test_tracker_labels_linkedin_searches_honestly_and_keeps_only_exact_airbnb_profiles(web, owners, db):
+    alice = web['alice']
+    search = 'https://www.linkedin.com/search/results/people/?keywords=property%20manager%20William%20Poole'
+    items = [{'name': 'William', 'url': search, 'city': 'Poole', 'airbnb_profile': 'https://www.airbnb.co.uk/users/show/111'},
+             {'name': 'Trinh', 'url': search, 'city': 'Poole', 'airbnb_profile': 'javascript:alert(1)'}]
+    assert alice.post('/api/outreach/queue', json={'channel': 'linkedin', 'items': items}, headers=csrf(owners['alice'])).status_code == 200
+    page = alice.get('/outreach').text
+    assert page.count('Search LinkedIn ↗') == 2 and 'LinkedIn profile ↗' not in page
+    assert page.count('href="https://www.airbnb.co.uk/users/show/111" target="_blank" rel="noopener"') == 1
+    assert 'javascript:alert' not in page
+    csv_text = alice.get('/api/outreach/export.csv').text
+    assert 'LinkedIn search' in csv_text and 'https://www.airbnb.co.uk/users/show/111' in csv_text and 'javascript' not in csv_text
+
+
 def test_outreach_and_orders_are_owner_scoped(web, owners, db):
     alice, bob = web['alice'], web['bob']
     rid = alice.post('/api/outreach/queue', json={'items': [{'name': 'Host', 'url': 'https://www.airbnb.co.uk/users/show/1'}]},

@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """property-to-generator v2: 2.5D depth-parallax cinematic listing video with animated intro, trust/ratings card,
 lower-third scenes, animated review cards and outro. Requires depth maps from depth.py (same stem, .png, near=bright).
-usage: render_v2.py manifest.json out.mp4 [--workers 6]
+usage: render_v2.py manifest.json out.mp4 [--workers 6] [--threads <CPU budget>]
 manifest: {brand, intro{eyebrow,title,subtitle,image}, trust{rating,count,five_star_pct,badges[],categories{}}, scenes[{image,title,subtitle}],
            reviews{bg,items[{name,stars,date,text}]}, outro{eyebrow,title,subtitle,cta,image}, depth_dir, scene_seconds}"""
-import json,sys,os,math,subprocess,wave,struct,argparse,concurrent.futures as cf
+import json,sys,os,math,subprocess,wave,argparse,concurrent.futures as cf
 import numpy as np,cv2,platform
-def VCODEC(bitrate):
-    return ['-c:v','h264_videotoolbox','-b:v',bitrate] if platform.system()=='Darwin' else ['-c:v','libx264','-preset','veryfast','-crf','20']
+def VCODEC(bitrate,threads):   # explicit x264 threads: its auto count follows the host's 48 cores, not the container's quota
+    return ['-c:v','h264_videotoolbox','-b:v',bitrate] if platform.system()=='Darwin' else ['-c:v','libx264','-preset','veryfast','-crf','20','-threads',str(threads)]
 from PIL import Image,ImageDraw,ImageFont,ImageFilter
-ap=argparse.ArgumentParser();ap.add_argument('manifest');ap.add_argument('output');ap.add_argument('--workers',type=int,default=6);ap.add_argument('--reuse',action='store_true');ap.add_argument('--force',default='');A=ap.parse_args()
+ap=argparse.ArgumentParser();ap.add_argument('manifest');ap.add_argument('output');ap.add_argument('--workers',type=int,default=6);ap.add_argument('--threads',type=int,default=os.cpu_count());ap.add_argument('--reuse',action='store_true');ap.add_argument('--force',default='');A=ap.parse_args()
 M=json.load(open(A.manifest));OUT=os.path.abspath(A.output);WORK=os.path.splitext(OUT)[0]+'-render';os.makedirs(WORK,exist_ok=True)
 W,H=1920,1080;FPS=30;BAR=96;SD=float(M.get('scene_seconds',4.5));XF=0.6;DEPTH=M.get('depth_dir','depth')
 GOLD=(217,185,135);WHITE=(255,255,255);INK=(10,16,20)
@@ -67,16 +67,21 @@ def grade(fr,grain=True):
     f=fr.astype(np.float32)
     f=(f-128)*1.06+128;f[...,2]*=1.03;f[...,0]*=0.985   # BGR: warm lift
     f*=_vig
-    if grain:f+=np.random.normal(0,2.4,(H,W,1)).astype(np.float32)
+    if grain:f+=_RNG.standard_normal((H,W,1),dtype=np.float32)*2.4   # same N(0,2.4) grain; the float32 sampler is several times faster
     return np.clip(f,0,255).astype(np.uint8)
+_RNG=np.random.default_rng()
 def letterbox(fr):fr[:BAR]=0;fr[H-BAR:]=0;return fr
 def comp(fr,layer,alpha=1.0,dy=0):
-    """composite RGBA PIL layer onto BGR frame"""
+    """composite RGBA PIL layer onto BGR frame. Blends only the box where the layer has any alpha (text is a small
+    part of the frame); outside it alpha is 0, so the pixels are exactly what a full-frame blend gives."""
     if alpha<=0:return fr
-    L=np.asarray(layer,dtype=np.float32)
+    L=np.asarray(layer)
     if dy:L=np.roll(L,int(dy),axis=0)
-    a=(L[...,3:4]/255.0)*alpha;rgb=L[...,:3][...,::-1]
-    out=fr.astype(np.float32)*(1-a)+rgb*a;return out.astype(np.uint8)
+    out=fr.copy();rows=np.flatnonzero(L[...,3].any(1))
+    if not len(rows):return out
+    y0,y1=rows[0],rows[-1]+1;cols=np.flatnonzero(L[y0:y1,:,3].any(0));x0,x1=cols[0],cols[-1]+1
+    L=L[y0:y1,x0:x1].astype(np.float32);a=(L[...,3:4]/255.0)*alpha;rgb=L[...,:3][...,::-1]
+    out[y0:y1,x0:x1]=(fr[y0:y1,x0:x1].astype(np.float32)*(1-a)+rgb*a).astype(np.uint8);return out
 def layer():return Image.new('RGBA',(W,H),(0,0,0,0))
 def shadow_text(d,xy,txt,f,fill,sh=(0,0,0,140)):
     x,y=xy;d.text((x+2,y+3),txt,font=f,fill=sh);d.text((x,y),txt,font=f,fill=fill)
@@ -99,7 +104,7 @@ def stars_img(n,size,filled=5):
         d.polygon(pts,fill=GOLD+(255,) if i<filled else (255,255,255,70))
     return im
 def encode(path,frames_iter,n):
-    p=subprocess.Popen(['ffmpeg','-y','-v','error','-f','rawvideo','-pix_fmt','bgr24','-s',f'{W}x{H}','-r',str(FPS),'-i','-',*VCODEC('14M'),'-pix_fmt','yuv420p',path],stdin=subprocess.PIPE)
+    p=subprocess.Popen(['ffmpeg','-y','-v','error','-f','rawvideo','-pix_fmt','bgr24','-s',f'{W}x{H}','-r',str(FPS),'-i','-',*VCODEC('14M',max(1,A.threads//A.workers)),'-pix_fmt','yuv420p',path],stdin=subprocess.PIPE)
     for fr in frames_iter:p.stdin.write(fr.tobytes())
     p.stdin.close();p.wait();return path
 # ---------- segments ----------
@@ -243,6 +248,7 @@ segs.append(('outro',lambda:seg_outro(M['outro'],OD),OD))
 def build(ix):
     name,gen,dur=segs[ix];path=os.path.join(WORK,name+'.mp4')
     if A.reuse and os.path.exists(path) and name not in A.force.split(','):return name
+    cv2.setNumThreads(max(1,A.threads//A.workers))   # the workers already fill the CPU budget
     encode(path,gen(),int(dur*FPS));return name
 if __name__=='__main__':
     with cf.ProcessPoolExecutor(A.workers) as ex:
@@ -258,11 +264,10 @@ if __name__=='__main__':
     # score: warm pad + soft pulse (original, synthesised)
     rate=24000;chords=[(130.81,164.81,196),(110,130.81,164.81),(87.31,110,130.81),(98,123.47,146.83)]
     with wave.open(os.path.join(WORK,'score.wav'),'w') as w:
-        w.setparams((1,2,rate,0,'NONE','not compressed'));buf=bytearray();N=int(total*rate)
-        for n in range(N):
-            t=n/rate;ch=chords[int(t/8)%4];fade=min(1,t/2.5,(total-t)/3);v=sum(math.sin(2*math.pi*f*t)*(0.05+0.02*math.sin(t*0.7+k)) for k,f in enumerate(ch))
-            beat=t%0.75;v+=math.sin(2*math.pi*55*t)*math.exp(-beat*9)*0.10;arp=t%0.375;v+=math.sin(2*math.pi*ch[int(t*8/3)%3]*4*t)*math.exp(-arp*10)*0.045
-            buf.extend(struct.pack('<h',int(max(-1,min(1,v*fade))*32767)))
-        w.writeframes(buf)
-    subprocess.run(['ffmpeg','-y','-v','error',*inputs,'-i',os.path.join(WORK,'score.wav'),'-filter_complex',fc.rstrip(';'),'-map','[v]','-map',f'{len(names)}:a',*VCODEC('14M'),'-pix_fmt','yuv420p','-c:a','aac','-b:a','192k','-shortest','-movflags','+faststart',OUT],check=True)
+        w.setparams((1,2,rate,0,'NONE','not compressed'));N=int(total*rate)   # vectorised: same samples as the old per-sample loop, ~15x faster
+        t=np.arange(N)/rate;ch=np.array(chords)[(t/8).astype(int)%4];fade=np.minimum(1,np.minimum(t/2.5,(total-t)/3))
+        v=sum(np.sin(2*math.pi*ch[:,k]*t)*(0.05+0.02*np.sin(t*0.7+k)) for k in range(3))
+        v+=np.sin(2*math.pi*55*t)*np.exp(-(t%0.75)*9)*0.10;v+=np.sin(2*math.pi*ch[np.arange(N),(t*8/3).astype(int)%3]*4*t)*np.exp(-(t%0.375)*10)*0.045
+        w.writeframes((np.clip(v*fade,-1,1)*32767).astype('<i2').tobytes())
+    subprocess.run(['ffmpeg','-y','-v','error',*inputs,'-i',os.path.join(WORK,'score.wav'),'-filter_complex',fc.rstrip(';'),'-map','[v]','-map',f'{len(names)}:a',*VCODEC('14M',A.threads),'-pix_fmt','yuv420p','-c:a','aac','-b:a','192k','-shortest','-movflags','+faststart',OUT],check=True)
     print(OUT,f'{total:.1f}s')

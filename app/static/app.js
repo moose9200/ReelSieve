@@ -28,7 +28,8 @@
         if (!r.ok) {
           var msg = (data && (data.detail || data.error || data.message)) || ("Request failed (" + r.status + ")");
           if (typeof msg !== "string") msg = JSON.stringify(msg);
-          throw new Error(msg);
+          var err = new Error(msg); err.status = r.status;
+          throw err;
         }
         return data;
       });
@@ -271,8 +272,14 @@
           btn.disabled = false;
           status.textContent = err.message || "Something went wrong.";
           status.classList.add("is-error");
+          if (err.status === 402) {  // out of videos: the way forward is the plans page
+            var up = document.createElement("a"); up.href = "/upgrade"; up.textContent = "See plans";
+            status.appendChild(document.createTextNode(" ")); status.appendChild(up);
+          }
         });
     });
+    var aiLabel = form.querySelector("label.check.is-disabled"), aiHint = document.getElementById("ai-upgrade");
+    if (aiLabel && aiHint) aiLabel.addEventListener("click", function () { aiHint.classList.add("hint-warn"); });
   }
 
   // ---------- job: poll, delivery, sharing, cancel, host message ----------
@@ -465,12 +472,18 @@
       .then(function (d) { out.textContent = "Password changed — signing you in again…"; setTimeout(function () { window.location.href = (d && d.relogin) || "/login"; }, 800); })
       .catch(function (err) { out.textContent = err.message; out.classList.add("is-error"); });
   });
+  // Google consent opens in a new tab; when the person comes back here, show the new Drive status.
+  var gdForm = document.getElementById("gdrive-form");
+  if (gdForm) gdForm.addEventListener("submit", function () {
+    var back = function () { if (!document.hidden) window.location.reload(); };
+    setTimeout(function () { document.addEventListener("visibilitychange", back); window.addEventListener("focus", back); }, 500);
+  });
   var gdDisc = document.getElementById("gdrive-disconnect");
   if (gdDisc) gdDisc.addEventListener("click", function () {
     var out = document.getElementById("gdrive-status"); out.className = "form-status"; gdDisc.disabled = true;
     postJSON("/api/gdrive/disconnect").then(function (d) {
       var p = document.getElementById("gdrive-pill"); p.className = "pill pill-neg"; p.textContent = "Not connected";
-      gdDisc.classList.add("hidden"); document.getElementById("gdrive-connect").textContent = "Connect Google Drive";
+      gdDisc.classList.add("hidden"); document.getElementById("gdrive-connect").textContent = "Connect Google Drive ↗";
       out.textContent = d.warning || "Disconnected, and Google confirmed the access was revoked.";
       if (d.warning) out.classList.add("is-error");
     }).catch(function (err) { out.textContent = err.message; out.classList.add("is-error"); gdDisc.disabled = false; });
@@ -480,7 +493,8 @@
   var orCsrfEl = document.getElementById("or-csrf");
   if (orCsrfEl) {
     var orEscBox = document.createElement("div");
-    function orEsc(t) { orEscBox.textContent = t == null ? "" : String(t); return orEscBox.innerHTML; }
+    // innerHTML leaves quotes alone; these values also go inside quoted attributes (href, src, aria-label)
+    function orEsc(t) { orEscBox.textContent = t == null ? "" : String(t); return orEscBox.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
     function orPost(url, body) { var b = body || {}; b.csrf = orCsrfEl.value; return postJSON(url, b); }
     function orSay(el, msg, bad) { if (!el) return; el.className = "form-status" + (bad ? " is-error" : ""); el.textContent = msg || ""; }
     function orNum(v) { var n = parseInt(v, 10); return isNaN(n) ? v : n; }
@@ -665,7 +679,8 @@
           (it.listings != null ? '<span class="or-badge">' + orEsc(it.listings) + " listings</span>" : "") +
           (it.note ? '<span class="or-sub">' + orEsc(it.note) + "</span>" : "") + "</div>" +
           '<div class="or-row-actions">' +
-          (it.url ? '<a class="btn btn-secondary btn-sm" href="' + orEsc(it.url) + '" target="_blank" rel="noopener">Open ↗</a>' : "") +
+          (it.url ? '<a class="btn btn-secondary btn-sm" href="' + orEsc(it.url) + '" target="_blank" rel="noopener">' + orEsc(it.link_label || "Open ↗") + "</a>" : "") +
+          (it.airbnb_profile ? '<a class="btn btn-secondary btn-sm" href="' + orEsc(it.airbnb_profile) + '" target="_blank" rel="noopener">Airbnb profile ↗</a>' : "") +
           '<button type="button" class="btn btn-secondary btn-sm li-copy" data-i="' + i + '">Copy note</button>' +
           '<button type="button" class="btn btn-primary btn-sm li-queue" data-i="' + i + '">Queue</button></div>';
         liResults.appendChild(row);
@@ -689,7 +704,7 @@
           b.disabled = true;
           orPost("/api/outreach/queue", {
             channel: "linkedin",
-            items: [{ id: it.id != null ? it.id : null, name: it.name || "", url: it.url || "", city: liCity(it), message: liNote(it) }]
+            items: [{ id: it.id != null ? it.id : null, name: it.name || "", url: it.url || "", city: liCity(it), message: liNote(it), airbnb_profile: it.airbnb_profile || "" }]
           })
             .then(function (d) { orStats(d && d.stats); b.textContent = "Queued"; orSay(liStatus, (it.name || "Prospect") + " added to the tracker — reload to see the row."); })
             .catch(function (err) { orSay(liStatus, err.message, true); b.disabled = false; });
@@ -836,13 +851,13 @@
     load();
   }
 
-  var payBtn = document.getElementById("bill-pay");
-  if (payBtn) {
+  // ---------- billing: checkout (Stripe when configured, else a reusable payment link) ----------
+  Array.prototype.forEach.call(document.querySelectorAll(".js-checkout"), function (payBtn) {
     payBtn.addEventListener("click", function () {
-      var out = document.getElementById("bill-pay-status"); out.className = "form-status"; payBtn.disabled = true; out.textContent = "Creating your order…";
-      postJSON("/api/billing/start", { plan: payBtn.getAttribute("data-plan"), csrf: (document.getElementById("bill-csrf") || {}).value })
-        .then(function (d) { out.textContent = "Reference " + d.order.ref + " — taking you to payment…"; window.location.href = d.pay_url; })
+      var out = document.getElementById(payBtn.getAttribute("data-status")); out.className = "form-status"; payBtn.disabled = true; out.textContent = "Creating your order…";
+      postJSON("/api/billing/start", { plan: payBtn.getAttribute("data-plan") })
+        .then(function (d) { out.textContent = "Order " + d.order.ref + ". Taking you to payment…"; window.location.href = d.pay_url; })
         .catch(function (e) { out.textContent = e.message || "Could not start the payment."; out.classList.add("is-error"); payBtn.disabled = false; });
     });
-  }
+  });
 })();
