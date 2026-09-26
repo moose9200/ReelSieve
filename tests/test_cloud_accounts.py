@@ -335,3 +335,14 @@ def test_pool_reuses_connections_and_survives_a_killed_connection(db):
             admin.execute('SELECT pg_terminate_backend(%s)', (pid,))
     with db.connect() as c:
         assert c.execute('SELECT 1 AS one').fetchone()['one'] == 1
+
+
+def test_operator_console_sets_a_plan_and_refuses_bad_input(owners, db):
+    from app import admin, plans, store
+    assert admin.main(['set-plan', 'Alice@Example.test', 'starter', '3']) == 0
+    assert plans.account_view('alice@example.test')['credits'] == 3
+    assert store.get_account('alice@example.test')['note'] == 'set by operator console'
+    assert admin.main(['set-plan', 'alice@example.test', 'gold', '3']) == 2
+    assert admin.main(['set-plan', 'alice@example.test', 'starter', '-1']) == 2
+    assert admin.main(['set-plan', 'nobody@example.test', 'starter', '1']) == 1
+    assert plans.account_view('alice@example.test')['plan'] == 'starter'
