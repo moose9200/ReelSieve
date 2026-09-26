@@ -35,7 +35,7 @@ PUBLIC_EXACT = ('/', '/login', '/signup', '/setup', '/forgot', '/healthz', '/pri
                 '/robots.txt', '/sitemap.xml', '/llms.txt')
 DAILY_CAP = int(os.getenv('OUTREACH_DAILY_CAP', '5'))
 TRUSTED_HOPS = int(os.getenv('TRUSTED_PROXY_HOPS', '1'))
-COHOST_MESSAGE = ("Hi {name} — I'm Hemant from ReelSieve (Braivex). I make short cinematic walkthrough videos for short-let "
+COHOST_MESSAGE = ("Hi {name} — I make short cinematic walkthrough videos for short-let "
                   "listings, built from the photos and reviews already on them. I made one for a {city} property this week and thought of you.\n\n"
                   "Happy to make one for {listing_title} free so you can see it — no strings, no card. If it is useful I do them at volume for operators.\n\n"
                   "If you'd rather I sent it elsewhere, tell me where and I will.")

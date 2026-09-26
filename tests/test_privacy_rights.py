@@ -629,6 +629,13 @@ def test_ai_motion_checkbox_says_photos_go_to_higgsfield(web):
     assert 'name="ai_motion" checked' not in page  # still opt-in
 
 
+def test_outreach_copy_is_honest_about_where_hosts_come_from_and_who_writes(web, monkeypatch):
+    monkeypatch.delenv('COHOST_MESSAGE', raising=False)
+    page = web['alice'].get('/outreach').text
+    assert 'list themselves' not in page and 'best-reviewed listings' in page
+    assert 'Hemant' not in page  # the default message no longer speaks as the founder for every customer
+
+
 def test_outreach_page_carries_a_plain_pecr_notice(web):
     page = web['alice'].get('/outreach').text
     notice = page.split('id="outreach-rules"', 1)[1].split('</section>', 1)[0]
