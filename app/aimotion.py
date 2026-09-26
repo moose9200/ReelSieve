@@ -7,7 +7,6 @@ Costs observed 19 Aug 2026 (skill): Seedance 2.0 5 s 720p 22.5 cr, 1080p 45 cr. 
 import os,re,json,math,subprocess,shutil
 from pathlib import Path
 import numpy as np,cv2
-COST={'720p':22.5,'1080p':45.0}   # credits per 5 s clip (verify on the console before quoting)
 MODEL='bytedance/seedance-2.0/image-to-video'
 FIDELITY=("FIDELITY (critical, do not break): stay faithful to the reference photo. Preserve the exact architecture, layout, furniture, "
           "materials, colours and proportions shown. Do NOT add, remove, move or invent rooms, furniture, windows, doors or objects. "
@@ -71,7 +70,6 @@ def author(room,move,facts,caption=''):
     else:shot=f"SHOT: a slow push forward into the {room}, past {objects}, arriving close to the far end of the room."
     look=f"LOOK: natural daylight exactly as in the photo, neutral clean grade, real-estate photography look{(' · '+', '.join(am)) if am else ''}."
     return '\n'.join([shot,MOVES[move],FIDELITY,look,NEGATIVE])
-def estimate(n_shots,resolution='1080p',seconds=5):return round(n_shots*COST.get(resolution,45.0)*seconds/5,1)
 # ---------------- generate ----------------
 def generate(image_path,prompt,out_path,resolution='1080p',seconds=5,aspect='16:9',cb=None):
     """Returns (ok, info). Uses the official SDK; never retries a submission whose outcome is unknown."""
@@ -121,4 +119,4 @@ def plan(scenes,facts,resolution='1080p'):
     out=[]
     for i,s in enumerate(scenes):
         mv=choose_move(s.get('room'),i,len(scenes));out.append({'index':i,'room':s.get('room'),'move':mv,'prompt':author(s.get('room'),mv,facts,s.get('caption') or s.get('title') or '')})
-    return {'shots':out,'credits_estimate':estimate(len(out),resolution),'resolution':resolution,'model':MODEL}
+    return {'shots':out,'resolution':resolution,'model':MODEL}

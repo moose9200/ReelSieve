@@ -96,8 +96,8 @@
       </label>
       {% if adm %}
       <div class="grid-2 ai-opts{% if not hf_configured %} is-disabled{% endif %}">
-        <div class="field"><label for="ai_resolution">Clip resolution</label><select id="ai_resolution" name="ai_resolution"><option value="1080p" selected>1080p — ≈45 credits per 5 s clip</option><option value="720p">720p — ≈22.5 credits per 5 s clip</option></select></div>
-        <p class="hint">Photos are audited first; a REJECT audit skips paid generation. Verify current Higgsfield pricing before large batches.</p>
+        <div class="field"><label for="ai_resolution">Clip resolution</label><select id="ai_resolution" name="ai_resolution"><option value="1080p" selected>1080p — ≈$3.40 per 5 s clip</option><option value="720p">720p — ≈$1.51 per 5 s clip</option></select></div>
+        <p class="hint">Photos are audited first; a REJECT audit skips paid generation. Seedance 2.0 list price, 26 Sep 2026: $0.014 per 1,000 video tokens (seconds × width × height × 24 ÷ 1024), before discounts.</p>
       </div>
       {% if not hf_configured %}<p class="hint">Set HF_KEY in the hosting environment to enable AI motion.</p>{% endif %}
       {% elif account and not account.ai_motion %}

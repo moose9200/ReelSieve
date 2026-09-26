@@ -329,7 +329,7 @@ def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer
             ranked=sorted(range(len(m['scenes'])),key=lambda i:-(ds.get(Path(m['scenes'][i]['image']).name) or 0))[:cap];keep=sorted(ranked)
             log(cb,f"AI motion: keeping {cap} of {len(m['scenes'])} frames with the strongest depth axis (route order kept)");m['scenes']=[m['scenes'][i] for i in keep]
         res_=ai_resolution if ai_resolution in ('720p','1080p') else '1080p';pl=aimotion.plan(m['scenes'],d,res_);m['ai_plan']=pl
-        log(cb,f"AI motion plan: {len(pl['shots'])} shots on {pl['model']} @ {res_} ≈ {pl['credits_estimate']} credits ("+', '.join(sh['move'] for sh in pl['shots'])+')')
+        log(cb,f"AI motion plan: {len(pl['shots'])} shots on {pl['model']} @ {res_} ("+', '.join(sh['move'] for sh in pl['shots'])+')')
         if m.get('audit',{}).get('verdict')=='REJECT':log(cb,'Audit REJECT — skipping paid generation; parallax fallback (pick a listing with a clearer walking route)')
         elif not os.getenv('HF_KEY'):log(cb,'HF_KEY not configured — using parallax')
         else:
