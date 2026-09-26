@@ -11,12 +11,12 @@
   <p class="sub">Two routes to a paying client: Airbnb's Co-Host Network, and property managers on LinkedIn. Everything you send lands in the tracker at the bottom.</p>
 </section>
 
+<input type="hidden" id="or-csrf" value="{{ csrf_for(request) }}">
+
 <section class="card" id="outreach-rules">
   <div class="section-head"><h2>Before you message anyone</h2></div>
   <p class="hint">UK law (PECR) treats direct messages on platforms such as Airbnb and LinkedIn as electronic mail. Message individuals and sole traders only if they have given consent to hear from you, and respect every opt-out straight away. Airbnb's Terms do not allow commercial messages without the recipient's consent. You send every message yourself, from your own account, and you are responsible for it.</p>
 </section>
-
-<input type="hidden" id="or-csrf" value="{{ csrf_for(request) }}">
 
 <section class="card" id="cohost-card">
   <p class="eyebrow">AIRBNB CO-HOST NETWORK</p>
