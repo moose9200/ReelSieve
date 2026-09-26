@@ -846,10 +846,10 @@ body.lp-page { display: block; font-size: 15px; }
 .plan-strip .btn { margin-left: auto; }
 @media (max-width: 720px) { .plan-strip .btn { margin-left: 0; width: 100%; } }
 
-/* outreach: keep the 3 row actions on one line while the table is a table */
+/* outreach: 3 row actions fit one line while the table is a table; a 4th (Airbnb profile) wraps instead of overflowing */
 @media (min-width: 721px) {
   .or-table td[data-label="Actions"] { width: 1%; white-space: nowrap; }
-  .or-table .or-actions { flex-wrap: nowrap; }
+  .or-table .or-actions { flex-wrap: wrap; width: 310px; }
 }
 /* outreach: stacked-card cells put the secondary line under the value, not beside it */
 @media (max-width: 720px) {

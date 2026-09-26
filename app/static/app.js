@@ -493,7 +493,8 @@
   var orCsrfEl = document.getElementById("or-csrf");
   if (orCsrfEl) {
     var orEscBox = document.createElement("div");
-    function orEsc(t) { orEscBox.textContent = t == null ? "" : String(t); return orEscBox.innerHTML; }
+    // innerHTML leaves quotes alone; these values also go inside quoted attributes (href, src, aria-label)
+    function orEsc(t) { orEscBox.textContent = t == null ? "" : String(t); return orEscBox.innerHTML.replace(/"/g, "&quot;").replace(/'/g, "&#39;"); }
     function orPost(url, body) { var b = body || {}; b.csrf = orCsrfEl.value; return postJSON(url, b); }
     function orSay(el, msg, bad) { if (!el) return; el.className = "form-status" + (bad ? " is-error" : ""); el.textContent = msg || ""; }
     function orNum(v) { var n = parseInt(v, 10); return isNaN(n) ? v : n; }
@@ -678,7 +679,8 @@
           (it.listings != null ? '<span class="or-badge">' + orEsc(it.listings) + " listings</span>" : "") +
           (it.note ? '<span class="or-sub">' + orEsc(it.note) + "</span>" : "") + "</div>" +
           '<div class="or-row-actions">' +
-          (it.url ? '<a class="btn btn-secondary btn-sm" href="' + orEsc(it.url) + '" target="_blank" rel="noopener">Open ↗</a>' : "") +
+          (it.url ? '<a class="btn btn-secondary btn-sm" href="' + orEsc(it.url) + '" target="_blank" rel="noopener">' + orEsc(it.link_label || "Open ↗") + "</a>" : "") +
+          (it.airbnb_profile ? '<a class="btn btn-secondary btn-sm" href="' + orEsc(it.airbnb_profile) + '" target="_blank" rel="noopener">Airbnb profile ↗</a>' : "") +
           '<button type="button" class="btn btn-secondary btn-sm li-copy" data-i="' + i + '">Copy note</button>' +
           '<button type="button" class="btn btn-primary btn-sm li-queue" data-i="' + i + '">Queue</button></div>';
         liResults.appendChild(row);
@@ -702,7 +704,7 @@
           b.disabled = true;
           orPost("/api/outreach/queue", {
             channel: "linkedin",
-            items: [{ id: it.id != null ? it.id : null, name: it.name || "", url: it.url || "", city: liCity(it), message: liNote(it) }]
+            items: [{ id: it.id != null ? it.id : null, name: it.name || "", url: it.url || "", city: liCity(it), message: liNote(it), airbnb_profile: it.airbnb_profile || "" }]
           })
             .then(function (d) { orStats(d && d.stats); b.textContent = "Queued"; orSay(liStatus, (it.name || "Prospect") + " added to the tracker — reload to see the row."); })
             .catch(function (err) { orSay(liStatus, err.message, true); b.disabled = false; });

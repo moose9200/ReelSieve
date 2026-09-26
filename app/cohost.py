@@ -22,7 +22,8 @@ def _try_network(city):
         if r.status_code!=200 or 'co-host' not in r.text.lower():continue
         t=r.text
         for m in re.finditer(r'href="(/users/show/(\d+)[^"]*)"[^>]*>\s*([^<]{2,40})',t):
-            out.append({'id':'u'+m.group(2),'name':html.unescape(m.group(3)).strip(),'url':BASE+m.group(1),'listings':None,'tagline':'Co-Host Network'})
+            out.append({'id':'u'+m.group(2),'name':html.unescape(m.group(3)).strip(),'url':BASE+m.group(1),'listings':None,'tagline':'Co-Host Network',
+                        'profile_url':f'{BASE}/users/show/{m.group(2)}'})
         if out:break
     dedup={};[dedup.setdefault(o['url'],o) for o in out]
     return list(dedup.values())[:20]
@@ -36,7 +37,8 @@ def _listing_host(lid):
     n=int(m.group(1)) if m else None
     sup=bool(re.search(r'"isSuperhost":true',t))
     years=(re.search(r'(\d+)\s+years? hosting',u) or [None,''])[1]
-    return {'name':name,'listings':n,'superhost':sup,'years':years}
+    hid=re.search(r'"hostId"\s*:\s*"(\d{1,20})"',t)  # the listing's host (pdpContext); /users/show/<id> is their public profile
+    return {'name':name,'listings':n,'superhost':sup,'years':years,'host_id':hid.group(1) if hid else None}
 def _operators(city,limit=12):
     """Hosts in this city worth pitching: most-reviewed listings first, one row per host."""
     res=listing_search.search(city,None,None,2,pages=2)
@@ -55,6 +57,7 @@ def _operators(city,limit=12):
         if it.get('rating'):bits.append(f"{it['rating']}★ ({it.get('reviews')})")
         out.append({'id':it['id'],'name':nm,'url':f"{BASE}/contact_host/{it['id']}/send_message",'listing_url':it['url'],
                     'listing_title':it.get('name') or it.get('title') or '','listings':h.get('listings'),
+                    'profile_url':f"{BASE}/users/show/{h['host_id']}" if h.get('host_id') else None,
                     'tagline':' · '.join(bits) or (it.get('title') or ''),'avatar':it.get('photo'),'city':city})
     return out
 def discover(city,limit=12):
