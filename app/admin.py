@@ -44,7 +44,11 @@ def erase(email, by=None, via=None):
         warning = str(e)
     now = time.time()
     with database.connect() as c:
-        address = c.execute('SELECT email FROM users WHERE id=%s', (owner,)).fetchone()['email']
+        # Row lock first: concurrent erasures (retention on several workers) queue here instead of deadlocking.
+        row = c.execute('SELECT email FROM users WHERE id=%s AND erased_at IS NULL FOR UPDATE', (owner,)).fetchone()
+        if not row:
+            return warning  # another worker finished erasing it first
+        address = row['email']
         store.admin_event('erase', by, address, conn=c, via=via)
         for table in ('jobs', 'outreach', 'drive_uploads', 'drive_oauth_states'):
             c.execute(f'DELETE FROM {table} WHERE owner_id=%s', (owner,))

@@ -225,6 +225,23 @@ def test_admin_erase_is_separate_from_remove_and_admin_only(web, db):
     assert sum(1 for e, r in rows.items() if e.endswith('@erased.invalid') and r['erased_at']) == 1
 
 
+def test_two_workers_erasing_the_same_account_erase_it_once(owners, db):
+    from concurrent.futures import ThreadPoolExecutor
+    from app import admin
+    admin.deactivate(ALICE)
+
+    def erase(_):
+        try:
+            return admin.erase(ALICE, via='retention') or 'ok'
+        except ValueError:
+            return 'lost the race'
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(erase, range(4)))
+    with db.connect() as c:
+        assert c.execute("SELECT count(*) AS n FROM admin_events WHERE action='erase'").fetchone()['n'] == 1
+        assert c.execute('SELECT count(*) AS n FROM users WHERE erased_at IS NOT NULL').fetchone()['n'] == 1
+
+
 def test_account_page_offers_download_and_delete_and_settings_offers_erase(web):
     page = web['alice'].get('/account').text
     assert 'href="/api/account/export"' in page and 'Download my data' in page
