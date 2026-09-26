@@ -350,18 +350,18 @@ def signup_page(request: Request, plan: str = '', url: str = ''):
 async def signup_post(request: Request):
     f = await _form(request)
     u, p1, p2 = (f.get('user') or '').strip(), f.get('password') or '', f.get('password2') or ''
-    plan, url, ip, fp = (f.get('plan') or 'free').strip(), (f.get('url') or '').strip()[:500], _ip(request), (f.get('fp') or '')[:400]
+    plan, url, ip = (f.get('plan') or 'free').strip(), (f.get('url') or '').strip()[:500], _ip(request)
     ctx = lambda err: tpl.TemplateResponse(request, 'signup.html', {'user': u, 'plan': plan, 'url': url, 'error': err, 'plans': plans.public_plans()}, status_code=400)  # noqa: E731
     if p2 and p1 != p2:
         return ctx('Passwords do not match')
-    guard = plans.signup_guard(u, ip, fp)
+    guard = plans.signup_guard(u, ip)
     if guard:
         return ctx(guard)
     try:
         auth.create_user(u, p1, 'member')
     except ValueError as e:
         return ctx(str(e))
-    store.ensure_account(u, 'free', ip, fp)
+    store.ensure_account(u, 'free')
     nxt = '/app' + (('?url=' + quote(url)) if url else '')
     if plan in ('starter', 'commercial'):
         nxt = '/upgrade?plan=' + plan
@@ -709,7 +709,7 @@ async def create_job(request: Request):
     b = await request.json()
     try:
         j = jobs.admit(request.state.user, b.get('url'), b, request.headers.get('idempotency-key') or b.get('idempotency_key'),
-                       _ip(request), (b.get('fp') or '')[:400])
+                       _ip(request))
     except jobs.AdmissionError as e:
         raise HTTPException(e.status, str(e))
     return {'id': j['id'], 'account': plans.account_view(request.state.user)}

@@ -1,6 +1,9 @@
 """Data-protection rights and minimisation (UK GDPR, EU GDPR, India DPDP) against real isolated PostgreSQL.
 Google is the synthetic fake; nothing leaves the machine."""
+import hashlib
+import hmac
 import json
+import re
 import time
 
 import pytest
@@ -77,6 +80,59 @@ def test_order_views_carry_only_what_the_pages_show(web):
     for path, body in (('/api/billing/link', {'ref': ref, 'url': 'https://pay.provider.test/one'}), ('/api/billing/settle', {'ref': ref})):
         order = post(web['admin'], path, body).json()['order']
         assert set(order) == ORDER_VIEW, path
+
+
+# ---------------- 7. abuse signals: minimal, pseudonymised, described honestly ----------------
+
+def test_signup_stores_no_fingerprint_and_no_network_hash_on_the_account(web, db):
+    page = web['anon'].get('/signup').text
+    assert 'name="fp"' not in page
+    token = re.search(r'name="csrf" value="([0-9a-f]+)"', page).group(1)
+    r = web['anon'].post('/signup', data={'csrf': token, 'user': 'carol@example.org', 'password': 'long-enough-pass',
+                                          'fp': 'client-supplied-print'}, headers={'X-Forwarded-For': '203.0.113.9'},
+                         follow_redirects=False)
+    assert r.status_code == 303
+    with db.connect() as c:
+        assert c.execute('SELECT ip_hash,fp_hash FROM accounts').fetchall() == [{'ip_hash': None, 'fp_hash': None}]
+
+
+def test_network_hash_is_stored_only_for_free_videos(owners, db):
+    from app import plans, store
+    store.set_plan(BOB, 'starter', 3)
+    plans.reserve(ALICE, 'https://www.airbnb.co.uk/rooms/1', 'free-job', '203.0.113.9')
+    plans.reserve(BOB, 'https://www.airbnb.co.uk/rooms/2', 'paid-job', '203.0.113.9')
+    plans.reserve(ALICE, 'https://www.airbnb.co.uk/rooms/1', 'rerun-job', '203.0.113.9')  # same listing: not counted, not kept
+    with db.connect() as c:
+        rows = {r['job_id']: r for r in c.execute('SELECT job_id,ip_hash,fp_hash FROM usage').fetchall()}
+    assert rows['free-job']['ip_hash'] == store.ip_hash('203.0.113.9')
+    assert rows['paid-job']['ip_hash'] is None and rows['rerun-job']['ip_hash'] is None
+    assert all(r['fp_hash'] is None for r in rows.values())
+    assert store.count_usage(ip='203.0.113.200', since_days=30) == 1  # the same /24 network
+
+
+def test_network_hash_uses_a_key_dedicated_to_that_purpose(db):
+    from app import store
+    session_keyed = hmac.new(auth.secret().encode(), b'ip:203.0.113.0/24', hashlib.sha256).hexdigest()[:32]
+    assert store.ip_hash('203.0.113.9') == store.ip_hash('203.0.113.77') != session_keyed
+
+
+def test_schema_clears_fingerprint_hashes_already_stored(db):
+    auth.create_user(ALICE, 'long-initial-password')
+    owner = db.user_id(ALICE)
+    with db.connect() as c:
+        c.execute("INSERT INTO accounts(owner_id,created,ip_hash,fp_hash) VALUES(%s,%s,'net','dev')", (owner, time.time()))
+        c.execute("INSERT INTO usage(owner_id,ts,plan,kind,ip_hash,fp_hash) VALUES(%s,%s,'free','video','net','dev')", (owner, time.time()))
+    db.initialize()
+    with db.connect() as c:
+        assert c.execute('SELECT ip_hash,fp_hash FROM accounts').fetchone() == {'ip_hash': None, 'fp_hash': None}
+        assert c.execute('SELECT ip_hash,fp_hash FROM usage').fetchone() == {'ip_hash': 'net', 'fp_hash': None}
+
+
+def test_account_page_describes_the_network_code_as_pseudonymised(web):
+    page = web['alice'].get('/account').text
+    card = page.split('Your data', 1)[1]
+    assert 'pseudonymised' in card and 'href="/privacy"' in card
+    assert not any(w in card.lower() for w in ('one-way', 'irreversible', 'cannot be reversed', 'device'))
 
 
 # ---------------- 10. password hashing (Art 32) ----------------

@@ -15,3 +15,7 @@ BEGIN
         WHERE id = r.id;
     END LOOP;
 END $$;
+
+-- No device fingerprint is collected any more, and the free-tier guard reads network hashes from usage only.
+UPDATE accounts SET ip_hash = NULL, fp_hash = NULL WHERE ip_hash IS NOT NULL OR fp_hash IS NOT NULL;
+UPDATE usage SET fp_hash = NULL WHERE fp_hash IS NOT NULL;

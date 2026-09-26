@@ -1,7 +1,8 @@
 """PostgreSQL business records. Owner IDs are durable; email remains the API boundary.
 
 Usage rows are kept: lifetime free quotas and no-double-charge reruns depend on them.
-Network/device signals are HMACs, never raw addresses, and are cleared after SIGNAL_DAYS (privacy page).
+Network signals are pseudonymised (keyed HMACs of the /24 or /64 network, never raw addresses), kept only on free
+videos, where the free-tier guard counts them, and cleared after SIGNAL_DAYS (privacy page).
 """
 import time
 import hmac
@@ -15,7 +16,8 @@ from app import database
 conn = database.connect
 
 def _key():
-    from app import auth;return auth.secret().encode()
+    """Key for network signals only: derived from SESSION_SECRET under its own purpose label, so it signs nothing else."""
+    from app import auth;return hmac.new(auth.secret().encode(),b'reelsieve:abuse-signal-key:v1',hashlib.sha256).digest()
 def net_of(ip):
     """Group by network so a phone/office NAT isn't one identity per device, and IPv6 rotation doesn't defeat it."""
     try:
@@ -26,7 +28,6 @@ def h(value):
     if not value:return None
     return hmac.new(_key(),str(value).encode(),hashlib.sha256).hexdigest()[:32]
 def ip_hash(ip):return h('ip:'+net_of(ip))
-def fp_hash(fp):return h('fp:'+str(fp)[:400]) if fp else None
 def listing_key(url):
     import re
     u=re.sub(r'[?#].*$','',(url or '').strip().lower().rstrip('/'))
@@ -37,7 +38,7 @@ SIGNAL_DAYS = 90
 
 
 def purge_signals(days=SIGNAL_DAYS):
-    """Clear network/device hashes older than the published retention; usage and accounts stay."""
+    """Clear network hashes (and legacy device hashes) older than the published retention; usage and accounts stay."""
     cutoff = time.time() - days * 86400
     with database.connect() as c:
         c.execute('UPDATE usage SET ip_hash=NULL,fp_hash=NULL WHERE ts<%s AND (ip_hash IS NOT NULL OR fp_hash IS NOT NULL)', (cutoff,))
@@ -50,11 +51,11 @@ def get_account(user, conn=None):
                          ((user or '').strip().lower(),)).fetchone()
 
 
-def ensure_account(user, plan='free', ip=None, fp=None, conn=None):
+def ensure_account(user, plan='free', conn=None):
     with database.transaction(conn) as c:
         owner = database.user_id(user, c)
-        c.execute('INSERT INTO accounts(owner_id,plan,created,ip_hash,fp_hash) VALUES(%s,%s,%s,%s,%s) ON CONFLICT(owner_id) DO NOTHING',
-                  (owner, plan, time.time(), ip_hash(ip) if ip else None, fp_hash(fp)))
+        c.execute('INSERT INTO accounts(owner_id,plan,created) VALUES(%s,%s,%s) ON CONFLICT(owner_id) DO NOTHING',
+                  (owner, plan, time.time()))
         return get_account(user, c)
 
 
@@ -83,19 +84,19 @@ def set_blocked(user, blocked=1):
         c.execute('UPDATE accounts SET blocked=%s WHERE owner_id=%s', (int(bool(blocked)), database.user_id(user, c)))
 
 
-def record_usage(user, plan, listing_url, job_id, ip=None, fp=None, kind='video', credits=1, conn=None, debited=False):
+def record_usage(user, plan, listing_url, job_id, ip=None, kind='video', credits=1, conn=None, debited=False):
     with database.transaction(conn) as c:
-        c.execute('INSERT INTO usage(ts,owner_id,plan,kind,listing_key,job_id,ip_hash,fp_hash,credits,debited) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',
+        c.execute('INSERT INTO usage(ts,owner_id,plan,kind,listing_key,job_id,ip_hash,credits,debited) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)',
                   (time.time(), database.user_id(user, c), plan, kind, listing_key(listing_url), job_id,
-                   ip_hash(ip) if ip else None, fp_hash(fp), credits, debited))
+                   ip_hash(ip) if ip else None, credits, debited))
 
 
-def count_usage(user=None, ip=None, fp=None, since_days=None, listing_url=None, conn=None):
+def count_usage(user=None, ip=None, since_days=None, listing_url=None, conn=None):
     q = "SELECT count(*) AS n FROM usage WHERE kind='video' AND refunded_at IS NULL"
     args = []
     with database.transaction(conn) as c:
         for column, value in [('owner_id', database.user_id(user, c) if user else None),
-                              ('ip_hash', ip_hash(ip) if ip else None), ('fp_hash', fp_hash(fp) if fp else None),
+                              ('ip_hash', ip_hash(ip) if ip else None),
                               ('listing_key', listing_key(listing_url) if listing_url else None)]:
             if value is not None:
                 q += f' AND {column}=%s'

@@ -11,7 +11,6 @@
       <input type="hidden" name="csrf" value="{{ csrf_for(request) }}">
       <input type="hidden" name="plan" value="{{ plan }}">
       <input type="hidden" name="url" value="{{ url }}">
-      <input type="hidden" name="fp" id="fp-field" value="">
       <div class="field"><label for="user">Work email</label><input type="email" id="user" name="user" value="{{ user or '' }}" autocomplete="email" inputmode="email" required autofocus></div>
       <div class="field"><label for="password">Password</label>
         <div class="pw-row"><input type="password" id="password" name="password" autocomplete="new-password" required minlength="8"><button type="button" class="pw-toggle" data-for="password" aria-label="Show password">Show</button></div>
