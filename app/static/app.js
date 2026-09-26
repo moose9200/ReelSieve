@@ -465,12 +465,18 @@
       .then(function (d) { out.textContent = "Password changed — signing you in again…"; setTimeout(function () { window.location.href = (d && d.relogin) || "/login"; }, 800); })
       .catch(function (err) { out.textContent = err.message; out.classList.add("is-error"); });
   });
+  // Google consent opens in a new tab; when the person comes back here, show the new Drive status.
+  var gdForm = document.getElementById("gdrive-form");
+  if (gdForm) gdForm.addEventListener("submit", function () {
+    var back = function () { if (!document.hidden) window.location.reload(); };
+    setTimeout(function () { document.addEventListener("visibilitychange", back); window.addEventListener("focus", back); }, 500);
+  });
   var gdDisc = document.getElementById("gdrive-disconnect");
   if (gdDisc) gdDisc.addEventListener("click", function () {
     var out = document.getElementById("gdrive-status"); out.className = "form-status"; gdDisc.disabled = true;
     postJSON("/api/gdrive/disconnect").then(function (d) {
       var p = document.getElementById("gdrive-pill"); p.className = "pill pill-neg"; p.textContent = "Not connected";
-      gdDisc.classList.add("hidden"); document.getElementById("gdrive-connect").textContent = "Connect Google Drive";
+      gdDisc.classList.add("hidden"); document.getElementById("gdrive-connect").textContent = "Connect Google Drive ↗";
       out.textContent = d.warning || "Disconnected, and Google confirmed the access was revoked.";
       if (d.warning) out.classList.add("is-error");
     }).catch(function (err) { out.textContent = err.message; out.classList.add("is-error"); gdDisc.disabled = false; });
