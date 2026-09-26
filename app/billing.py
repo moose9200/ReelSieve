@@ -87,8 +87,12 @@ def set_pay_link(ref,url):
         return get_order(ref,conn=c)
 
 
+VIEW=('ref','ts','plan','amount_usd','provider','status','paid_at','pay_link','note','user')
+def view(o):
+    """What order pages and JSON responses show: no owner id and no payer or payment-session metadata."""
+    return {k:o[k] for k in VIEW} if o else o
 def orders(user=None,limit=200):
-    return store._owned_rows('orders',user,limit)
+    return [view(o) for o in store._owned_rows('orders',user,limit)]
 
 
 def pending_count():

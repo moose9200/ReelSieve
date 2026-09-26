@@ -525,14 +525,14 @@ async def billing_start(request: Request):
             o, url = billing.start_stripe_checkout(request.state.user, pl, base)
         except RuntimeError as e:
             raise HTTPException(502, str(e))
-        return {'ok': True, 'order': o, 'pay_url': url}
+        return {'ok': True, 'order': billing.view(o), 'pay_url': url}
     if not billing.checkout_link(pl):
         raise HTTPException(400, 'No payment link configured for that plan — request an invoice instead')
     try:
-        o = billing.create_order(request.state.user, pl, 'link', (b.get('note') or '')[:400], {'ip': _ip(request)})
+        o = billing.create_order(request.state.user, pl, 'link', (b.get('note') or '')[:400])
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return {'ok': True, 'order': o, 'pay_url': billing.pay_url(pl, o['ref'], base)}
+    return {'ok': True, 'order': billing.view(o), 'pay_url': billing.pay_url(pl, o['ref'], base)}
 
 
 @app.post('/api/billing/request')
@@ -542,10 +542,10 @@ async def billing_request(request: Request):
     if pl not in ('starter', 'commercial'):
         raise HTTPException(400, 'Choose Starter or Commercial')
     try:
-        o = billing.create_order(request.state.user, pl, b.get('provider') or 'invoice', (b.get('note') or '')[:400], {'ip': _ip(request)})
+        o = billing.create_order(request.state.user, pl, b.get('provider') or 'invoice', (b.get('note') or '')[:400])
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return {'ok': True, 'order': o}
+    return {'ok': True, 'order': billing.view(o)}
 
 
 @app.get('/api/billing/orders')
@@ -563,14 +563,14 @@ async def billing_settle(request: Request):
         o = billing.settle((b.get('ref') or '').strip(), by=request.state.user)
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return {'ok': True, 'order': o, 'account': plans.account_view(o['user'])}
+    return {'ok': True, 'order': billing.view(o), 'account': plans.account_view(o['user'])}
 
 
 @app.post('/api/billing/cancel')
 async def billing_cancel(request: Request):
     _require_admin(request)
     b = await request.json()
-    return {'ok': True, 'order': billing.cancel((b.get('ref') or '').strip(), b.get('note') or 'cancelled')}
+    return {'ok': True, 'order': billing.view(billing.cancel((b.get('ref') or '').strip(), b.get('note') or 'cancelled'))}
 
 
 @app.post('/api/billing/link')
@@ -582,7 +582,7 @@ async def billing_link(request: Request):
         o = billing.set_pay_link((b.get('ref') or '').strip(), b.get('url') or '')
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return {'ok': True, 'order': o}
+    return {'ok': True, 'order': billing.view(o)}
 
 
 @app.post('/api/billing/webhook/{provider}')
