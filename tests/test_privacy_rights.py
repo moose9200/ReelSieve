@@ -243,6 +243,117 @@ def test_operator_console_erases_active_and_deactivated_accounts(owners, db):
         assert c.execute('SELECT count(*) AS n FROM users WHERE erased_at IS NOT NULL').fetchone()['n'] == 2
 
 
+# ---------------- 5. retention enforced by code ----------------
+
+DAY = 86400
+
+
+def _job(c, job_id, owner, finished, meta, params=None, status='done'):
+    from psycopg.types.json import Jsonb
+    c.execute("INSERT INTO jobs(id,owner_id,idempotency_key,request_hash,url,params,status,meta,drive_generation,created,updated,"
+              "finished_at) VALUES(%s,%s,%s,'h','https://www.airbnb.co.uk/rooms/7',%s,%s,%s,1,%s,%s,%s)",
+              (job_id, owner, job_id, Jsonb(params or {}), status, Jsonb(meta), (finished or time.time()) - 60, time.time(), finished))
+
+
+def test_retention_removes_what_is_due_and_keeps_what_is_not(owners, db):
+    from app import admin, retention, store
+    now, alice = time.time(), db.user_id(ALICE)
+    for who in ('gone@example.test', 'kept@example.test'):
+        auth.create_user(who, 'long-password-1')
+        admin.deactivate(who)
+    third_party = {'listing': {'host': 'Hostname', 'title': 'Flat', 'city': 'Leeds'}, 'message': 'Hi Hostname',
+                   'review_used': {'stars': 5, 'text': 'Lovely'}, 'duration': 30}
+    rid_old = store.add_outreach(ALICE, 'cohost', 'Old', 'https://a.test', 'Leeds', 'm')
+    rid_touched = store.add_outreach(ALICE, 'cohost', 'Touched', 'https://a.test', 'Leeds', 'm')
+    rid_sent = store.add_outreach(ALICE, 'cohost', 'Sent', 'https://a.test', 'Leeds', 'm')
+    with db.connect() as c:
+        c.execute("UPDATE users SET deactivated_at=%s WHERE email='gone@example.test'", (now - 31 * DAY,))
+        c.execute("UPDATE users SET deactivated_at=%s WHERE email='kept@example.test'", (now - 29 * DAY,))
+        c.execute("INSERT INTO login_failures(ip_hash,ts) VALUES('old',%s),('new',%s)", (now - 25 * 3600, now - 3600))
+        c.execute("INSERT INTO drive_oauth_states(state_hash,owner_id,session_hash,redirect_uri,created,expires_at) VALUES"
+                  "('expired',%s,'s','r',%s,%s),('live',%s,'s','r',%s,%s)", (alice, now - 700, now - 100, alice, now, now + 500))
+        _job(c, 'aaaaaa000001', alice, now - 31 * DAY, third_party, {'message': 'Hi {host_name}'})
+        _job(c, 'aaaaaa000002', alice, now - 29 * DAY, third_party, {'message': 'Hi {host_name}'})
+        _job(c, 'aaaaaa000003', alice, now - 31 * DAY, {'legacy': True, 'listing': {'host': 'H'}, 'message': 'Hi H'}, {'message': 'Hi H'})
+        _job(c, 'aaaaaa000004', alice, None, third_party, status='running')
+        c.execute('UPDATE outreach SET ts=%s,updated=NULL', (now - 400 * DAY,))
+        c.execute('UPDATE outreach SET sent_at=%s WHERE id=%s', (now - 10 * DAY, rid_sent))
+        for ref, status, paid_at in (('RS-OLD', 'paid', now - (8 * 365.25 + 1) * DAY), ('RS-NEW', 'paid', now - 7 * 365 * DAY),
+                                     ('RS-PENDING', 'pending', None)):
+            c.execute("INSERT INTO orders(owner_id,ref,ts,plan,amount_usd,status,paid_at,billing_email) VALUES(%s,%s,%s,'starter',100,%s,%s,%s)",
+                      (alice, ref, paid_at or now - 9 * 365 * DAY, status, paid_at, ALICE if paid_at else None))
+        c.execute("INSERT INTO admin_events(ts,action,detail) VALUES(%s,'plan','{}'),(%s,'plan','{}')",
+                  (now - (2 * 365.25 + 1) * DAY, now - 365 * DAY))
+        c.execute("INSERT INTO legacy_archives(name,created,files,size,sha256,data) VALUES('legacy-volume',%s,1,1,'x','x')", (now - 91 * DAY,))
+    store.outreach_set(rid_touched, ALICE, status='replied')  # a change restarts the 12 months
+    out = retention.run(now)
+    with db.connect() as c:
+        q = lambda s, *a: [tuple(r.values()) for r in c.execute(s, a).fetchall()]  # noqa: E731
+        assert q('SELECT ip_hash FROM login_failures') == [('new',)]
+        assert q('SELECT state_hash FROM drive_oauth_states') == [('live',)]
+        jobs = {r['id']: r for r in c.execute('SELECT id,meta,params FROM jobs').fetchall()}
+        assert jobs['aaaaaa000001']['meta'] == {'listing': {'title': 'Flat', 'city': 'Leeds'}, 'duration': 30}
+        assert jobs['aaaaaa000001']['params'] == {'message': 'Hi {host_name}'}  # the customer's own template stays
+        assert jobs['aaaaaa000002']['meta'] == third_party and jobs['aaaaaa000004']['meta'] == third_party
+        assert jobs['aaaaaa000003']['meta'] == {'legacy': True, 'listing': {}} and jobs['aaaaaa000003']['params'] == {}
+        assert sorted(q('SELECT id FROM outreach')) == sorted([(rid_touched,), (rid_sent,)]) and rid_old
+        assert sorted(q('SELECT ref FROM orders')) == [('RS-NEW',), ('RS-PENDING',)]
+        assert len(q("SELECT id FROM admin_events WHERE action='plan'")) == 1
+        assert q('SELECT name FROM legacy_archives') == []
+        erased = {r['deactivated_at'] < now - 30 * DAY: r['email'] for r in c.execute(
+            "SELECT email,deactivated_at FROM users WHERE NOT active AND role='member'").fetchall()}
+        assert erased[True].endswith('@erased.invalid') and erased[False] == 'kept@example.test'
+        assert q("SELECT detail FROM admin_events WHERE action='erase'") == [({'via': 'retention'},)]
+    assert out['erased'] == 1 and out['login_failures'] == 1
+    assert retention.run(now)['erased'] == 0  # idempotent
+
+
+def test_legacy_archive_is_kept_until_its_keep_days_pass(db, monkeypatch):
+    from app import retention
+    with db.connect() as c:
+        c.execute("INSERT INTO legacy_archives(name,created,files,size,sha256,data) VALUES('legacy-volume',%s,1,1,'x','x')",
+                  (time.time() - 89 * DAY,))
+    retention.run()
+    monkeypatch.setenv('LEGACY_ARCHIVE_KEEP_DAYS', '30')
+    with db.connect() as c:
+        assert c.execute('SELECT count(*) AS n FROM legacy_archives').fetchone()['n'] == 1
+    retention.run()
+    with db.connect() as c:
+        assert c.execute('SELECT count(*) AS n FROM legacy_archives').fetchone()['n'] == 0
+
+
+def test_archive_purge_command_prints_counts_then_deletes(db, monkeypatch, tmp_path):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    from cryptography.fernet import Fernet
+    from app import archive_legacy
+    monkeypatch.setenv('TOKEN_ENCRYPTION_KEY', Fernet.generate_key().decode())
+    (tmp_path / 'auth.json').write_text('{}')
+    archive_legacy.archive(tmp_path)
+    r = subprocess.run([sys.executable, '-m', 'app.archive_legacy', '--purge'], capture_output=True, text=True, env=dict(os.environ),
+                       cwd=Path(__file__).resolve().parents[1], timeout=60)
+    assert r.returncode == 0, r.stderr
+    printed = [json.loads(line) for line in r.stdout.splitlines()]
+    assert printed[0]['files'] == 1 and printed[-1] == {'status': 'purged'}
+    with db.connect() as c:
+        assert c.execute('SELECT count(*) AS n FROM legacy_archives').fetchone()['n'] == 0
+    assert subprocess.run([sys.executable, '-m', 'app.archive_legacy', '--purge'], capture_output=True, text=True, env=dict(os.environ),
+                          cwd=Path(__file__).resolve().parents[1], timeout=60).returncode != 0
+
+
+def test_worker_runs_retention_hourly(db, monkeypatch, tmp_path):
+    from app import retention, worker
+    monkeypatch.setenv('RENDER_TMP_DIR', str(tmp_path))
+    calls = []
+    monkeypatch.setattr(retention, 'run', lambda: calls.append(1) or {})
+    monkeypatch.setattr(worker, '_last_purge', [0.0])
+    worker.run_once('w')
+    worker.run_once('w')
+    assert calls == [1]
+
+
 # ---------------- 7. abuse signals: minimal, pseudonymised, described honestly ----------------
 
 def test_signup_stores_no_fingerprint_and_no_network_hash_on_the_account(web, db):

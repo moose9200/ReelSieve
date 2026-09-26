@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 
-from app import gdrive, jobs, store
+from app import gdrive, jobs, retention, store
 
 LEASE = int(os.getenv('WORKER_LEASE_SECONDS', '90'))
 BEAT = max(1.0, LEASE / 6)
@@ -230,8 +230,9 @@ def run_once(worker, command=render_command):
     jobs.recover_stale()
     sweep()
     if time.time() - _last_purge[0] > 3600:
+        _last_purge[0] = time.time()  # first: a failing purge must never stop jobs being claimed; it retries next hour
         store.purge_signals()
-        _last_purge[0] = time.time()
+        retention.run()
     job = jobs.claim(worker, LEASE)
     if not job:
         return False

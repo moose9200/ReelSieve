@@ -3,9 +3,11 @@
     python -m app.archive_legacy /data              # archive once; verifies by reading it back
     python -m app.archive_legacy --restore <dir>    # write the files back (rollback only)
     python -m app.archive_legacy --diff <dir>       # paths added, removed or changed since the archive
+    python -m app.archive_legacy --purge            # print what it holds (counts), then delete it for good
 
 The archive is a tar.gz of every file except the model cache, encrypted with TOKEN_ENCRYPTION_KEY
 (it contains password hashes and Drive tokens). Output is counts and a digest prefix only.
+app.retention also deletes it automatically LEGACY_ARCHIVE_KEEP_DAYS (default 90) after it was created.
 """
 import hashlib
 import io
@@ -99,6 +101,18 @@ def restore(dest):
     return {'status': 'restored', 'files': len(members)}
 
 
+def purge(say=print):
+    """Delete the archive for good, after reporting what it held (counts and dates only)."""
+    with database.connect() as c:
+        row = c.execute('SELECT files,size,created FROM legacy_archives WHERE name=%s FOR UPDATE', (NAME,)).fetchone()
+        if not row:
+            raise ArchiveError('No legacy archive stored')
+        say(json.dumps({'files': row['files'], 'size': row['size'],
+                        'created': time.strftime('%Y-%m-%d', time.gmtime(row['created']))}))
+        c.execute('DELETE FROM legacy_archives WHERE name=%s', (NAME,))
+    return {'status': 'purged'}
+
+
 if __name__ == '__main__':
     database.initialize()
     try:
@@ -106,9 +120,11 @@ if __name__ == '__main__':
             print(json.dumps(restore(sys.argv[2])))
         elif len(sys.argv) == 3 and sys.argv[1] == '--diff':
             print(json.dumps(diff(sys.argv[2])))
-        elif len(sys.argv) == 2:
+        elif sys.argv[1:] == ['--purge']:
+            print(json.dumps(purge()))
+        elif len(sys.argv) == 2 and not sys.argv[1].startswith('-'):
             print(json.dumps(archive(sys.argv[1])))
         else:
-            sys.exit('usage: python -m app.archive_legacy <legacy-dir> | --restore <dir>')
+            sys.exit('usage: python -m app.archive_legacy <legacy-dir> | --restore <dir> | --diff <dir> | --purge')
     except ArchiveError as e:
         sys.exit(str(e))

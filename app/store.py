@@ -131,8 +131,9 @@ def usage_rows(user=None, limit=200):
 
 def add_outreach(user, channel, name, url, city, message, meta=None, status='queued'):
     with database.connect() as c:
-        return c.execute('INSERT INTO outreach(ts,owner_id,channel,name,url,city,message,status,meta) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id',
-                         (time.time(), database.user_id(user, c), channel, name, url, city, message, status, json.dumps(meta or {}))).fetchone()['id']
+        now = time.time()
+        return c.execute('INSERT INTO outreach(ts,updated,owner_id,channel,name,url,city,message,status,meta) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id',
+                         (now, now, database.user_id(user, c), channel, name, url, city, message, status, json.dumps(meta or {}))).fetchone()['id']
 
 
 def outreach_rows(user=None, limit=500):
@@ -156,9 +157,9 @@ def outreach_set(rid, user=None, **kw):
     if not set(kw) <= allowed:
         raise ValueError('Unsupported outreach field')
     with database.connect() as c:
-        q = sql.SQL('UPDATE outreach SET {} WHERE id=%s').format(
+        q = sql.SQL('UPDATE outreach SET {},updated=%s WHERE id=%s').format(
             sql.SQL(',').join(sql.SQL('{}=%s').format(sql.Identifier(k)) for k in kw))
-        args = [*kw.values(), rid]
+        args = [*kw.values(), time.time(), rid]
         if user:
             q += sql.SQL(' AND owner_id=%s')
             args.append(database.user_id(user, c))
