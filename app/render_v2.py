@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """property-to-generator v2: 2.5D depth-parallax cinematic listing video with animated intro, trust/ratings card,
 lower-third scenes, animated review cards and outro. Requires depth maps from depth.py (same stem, .png, near=bright).
-usage: render_v2.py manifest.json out.mp4 [--workers 6]
+usage: render_v2.py manifest.json out.mp4 [--workers 6] [--threads <CPU budget>]
 manifest: {brand, intro{eyebrow,title,subtitle,image}, trust{rating,count,five_star_pct,badges[],categories{}}, scenes[{image,title,subtitle}],
            reviews{bg,items[{name,stars,date,text}]}, outro{eyebrow,title,subtitle,cta,image}, depth_dir, scene_seconds}"""
 import json,sys,os,math,subprocess,wave,struct,argparse,concurrent.futures as cf
 import numpy as np,cv2,platform
-def VCODEC(bitrate):
-    return ['-c:v','h264_videotoolbox','-b:v',bitrate] if platform.system()=='Darwin' else ['-c:v','libx264','-preset','veryfast','-crf','20']
+def VCODEC(bitrate,threads):   # explicit x264 threads: its auto count follows the host's 48 cores, not the container's quota
+    return ['-c:v','h264_videotoolbox','-b:v',bitrate] if platform.system()=='Darwin' else ['-c:v','libx264','-preset','veryfast','-crf','20','-threads',str(threads)]
 from PIL import Image,ImageDraw,ImageFont,ImageFilter
-ap=argparse.ArgumentParser();ap.add_argument('manifest');ap.add_argument('output');ap.add_argument('--workers',type=int,default=6);ap.add_argument('--reuse',action='store_true');ap.add_argument('--force',default='');A=ap.parse_args()
+ap=argparse.ArgumentParser();ap.add_argument('manifest');ap.add_argument('output');ap.add_argument('--workers',type=int,default=6);ap.add_argument('--threads',type=int,default=os.cpu_count());ap.add_argument('--reuse',action='store_true');ap.add_argument('--force',default='');A=ap.parse_args()
 M=json.load(open(A.manifest));OUT=os.path.abspath(A.output);WORK=os.path.splitext(OUT)[0]+'-render';os.makedirs(WORK,exist_ok=True)
 W,H=1920,1080;FPS=30;BAR=96;SD=float(M.get('scene_seconds',4.5));XF=0.6;DEPTH=M.get('depth_dir','depth')
 GOLD=(217,185,135);WHITE=(255,255,255);INK=(10,16,20)
@@ -99,7 +99,7 @@ def stars_img(n,size,filled=5):
         d.polygon(pts,fill=GOLD+(255,) if i<filled else (255,255,255,70))
     return im
 def encode(path,frames_iter,n):
-    p=subprocess.Popen(['ffmpeg','-y','-v','error','-f','rawvideo','-pix_fmt','bgr24','-s',f'{W}x{H}','-r',str(FPS),'-i','-',*VCODEC('14M'),'-pix_fmt','yuv420p',path],stdin=subprocess.PIPE)
+    p=subprocess.Popen(['ffmpeg','-y','-v','error','-f','rawvideo','-pix_fmt','bgr24','-s',f'{W}x{H}','-r',str(FPS),'-i','-',*VCODEC('14M',max(1,A.threads//A.workers)),'-pix_fmt','yuv420p',path],stdin=subprocess.PIPE)
     for fr in frames_iter:p.stdin.write(fr.tobytes())
     p.stdin.close();p.wait();return path
 # ---------- segments ----------
@@ -243,6 +243,7 @@ segs.append(('outro',lambda:seg_outro(M['outro'],OD),OD))
 def build(ix):
     name,gen,dur=segs[ix];path=os.path.join(WORK,name+'.mp4')
     if A.reuse and os.path.exists(path) and name not in A.force.split(','):return name
+    cv2.setNumThreads(max(1,A.threads//A.workers))   # the workers already fill the CPU budget
     encode(path,gen(),int(dur*FPS));return name
 if __name__=='__main__':
     with cf.ProcessPoolExecutor(A.workers) as ex:
@@ -264,5 +265,5 @@ if __name__=='__main__':
             beat=t%0.75;v+=math.sin(2*math.pi*55*t)*math.exp(-beat*9)*0.10;arp=t%0.375;v+=math.sin(2*math.pi*ch[int(t*8/3)%3]*4*t)*math.exp(-arp*10)*0.045
             buf.extend(struct.pack('<h',int(max(-1,min(1,v*fade))*32767)))
         w.writeframes(buf)
-    subprocess.run(['ffmpeg','-y','-v','error',*inputs,'-i',os.path.join(WORK,'score.wav'),'-filter_complex',fc.rstrip(';'),'-map','[v]','-map',f'{len(names)}:a',*VCODEC('14M'),'-pix_fmt','yuv420p','-c:a','aac','-b:a','192k','-shortest','-movflags','+faststart',OUT],check=True)
+    subprocess.run(['ffmpeg','-y','-v','error',*inputs,'-i',os.path.join(WORK,'score.wav'),'-filter_complex',fc.rstrip(';'),'-map','[v]','-map',f'{len(names)}:a',*VCODEC('14M',A.threads),'-pix_fmt','yuv420p','-c:a','aac','-b:a','192k','-shortest','-movflags','+faststart',OUT],check=True)
     print(OUT,f'{total:.1f}s')
