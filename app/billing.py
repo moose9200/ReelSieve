@@ -126,8 +126,10 @@ def settle(ref,by='admin',provider=None):
         c.execute('UPDATE accounts SET plan=%s,credits=credits+%s WHERE owner_id=%s',
                   (o['plan'],int(p['videos'] or 0),o['owner_id']))
         # billing_email: the tax-record snapshot that survives account erasure (retention.FINANCIAL_RECORDS_YEARS).
+        # An erased account's snapshot was taken at erasure; never replace it with the anonymised address.
         c.execute("UPDATE orders SET status='paid',paid_at=%s,note=COALESCE(note,'')||%s,provider=COALESCE(%s,provider),"
-                  "billing_email=(SELECT email FROM users WHERE id=orders.owner_id) WHERE ref=%s",
+                  "billing_email=COALESCE(billing_email,(SELECT email FROM users WHERE id=orders.owner_id AND erased_at IS NULL)) "
+                  "WHERE ref=%s",
                   (time.time(),f' · settled by {by}',provider,ref))
         return get_order(ref,conn=c)
 

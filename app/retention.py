@@ -21,6 +21,7 @@ OUTREACH_MONTHS = 12           # after the row's last change
 DEACTIVATED_DAYS = 30          # "Remove" deactivates; erasure follows
 ADMIN_EVENT_YEARS = 2
 PRIVACY_REQUEST_YEARS = 2      # after the request was handled
+ERASED_UNPAID_ORDER_DAYS = 90  # a payment reported before erasure that never cleared
 
 # A job keeps the customer's own reel history; only other people's data goes. Legacy jobs stored the finished
 # host message as the customer's template too.
@@ -41,6 +42,8 @@ def run(now=None):
             ('job_third_party', STRIP_JOBS, now - THIRD_PARTY_JOB_DAYS * DAY),
             ('outreach', 'DELETE FROM outreach WHERE GREATEST(ts,sent_at,updated)<%s', now - OUTREACH_MONTHS * YEAR / 12),
             ('paid_orders', "DELETE FROM orders WHERE status='paid' AND paid_at<%s", now - FINANCIAL_RECORDS_YEARS * YEAR),
+            ('erased_unpaid_orders', "DELETE FROM orders o USING users u WHERE u.id=o.owner_id AND o.status<>'paid' "
+                                     'AND u.erased_at<%s', now - ERASED_UNPAID_ORDER_DAYS * DAY),
             ('admin_events', 'DELETE FROM admin_events WHERE ts<%s', now - ADMIN_EVENT_YEARS * YEAR),
             ('privacy_requests', "DELETE FROM privacy_requests WHERE status='handled' AND handled_at<%s",
              now - PRIVACY_REQUEST_YEARS * YEAR),

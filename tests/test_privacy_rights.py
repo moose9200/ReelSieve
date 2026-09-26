@@ -225,6 +225,22 @@ def test_admin_erase_is_separate_from_remove_and_admin_only(web, db):
     assert sum(1 for e, r in rows.items() if e.endswith('@erased.invalid') and r['erased_at']) == 1
 
 
+def test_an_order_reported_paid_before_erasure_keeps_the_payer_email_when_settled_later(owners, db):
+    from app import admin, retention
+    reported = billing.create_order(ALICE, 'starter')['ref']
+    billing.mark_reported(reported)
+    stale = billing.create_order(ALICE, 'commercial')['ref']
+    billing.mark_reported(stale)
+    admin.erase(ALICE)
+    assert billing.settle(reported)['billing_email'] == ALICE  # the tax record names the payer, not the placeholder
+    with db.connect() as c:
+        c.execute('UPDATE users SET erased_at=erased_at-%s', (91 * DAY,))
+    retention.run()
+    with db.connect() as c:
+        rows = {r['ref']: r for r in c.execute('SELECT ref,status,billing_email FROM orders').fetchall()}
+    assert set(rows) == {reported}  # a claimed payment that never cleared goes 90 days after erasure
+
+
 def test_two_workers_erasing_the_same_account_erase_it_once(owners, db):
     from concurrent.futures import ThreadPoolExecutor
     from app import admin

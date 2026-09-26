@@ -55,6 +55,7 @@ with every current feature still working (189 tests stay green, all live routes 
 
 ## Decisions (what + why + what was rejected)
 - Paid orders keep a billing email snapshot (orders.billing_email, set when paid) for FINANCIAL_RECORDS_YEARS = 8 from payment, then the row is deleted. Why: CGST s.36 (72 months from the annual-return due date) and Income-tax Rules 2026 r.46 (7 tax years from the end of the tax year) both end within 8 years of any payment date (legal report §6). Rejected: exact per-rule dates (more code, same outcome). Records under appeal/investigation need a manual hold.
+- An order the customer reported paid before erasing keeps a billing email snapshot too, so a payment that clears later is recorded against the payer; if it is still unpaid 90 days after erasure it is deleted (code review finding, fixed with test_an_order_reported_paid_before_erasure_keeps_the_payer_email_when_settled_later).
 - Erasure keeps the users row (anonymised, erased_at) because orders/usage/admin_events point at it; jobs, outreach, Drive receipts, OAuth states and unpaid orders are deleted; usage keeps counts, drops listing key; its ip_hash stays until the normal 90-day purge (abuse window).
 - Signal and suppression keys are derived from SESSION_SECRET with purpose labels. Rotating SESSION_SECRET resets free-tier network counts and stops old objections matching: re-key outreach_suppressions before any rotation.
 - Outreach retention is 12 months after the last change (brief); the legal report proposes ~90 days (I) - Hemant to decide.
