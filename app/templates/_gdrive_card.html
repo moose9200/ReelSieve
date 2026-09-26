@@ -2,7 +2,7 @@
 <section class="card" id="gdrive-card">
   <div class="section-head">
     <h2>Your Google Drive</h2>
-    <span class="pill {{ 'pill-done' if gdrive.connected else ('pill-running' if gdrive.reconnect else 'pill-neg') }}" id="gdrive-pill">{% if gdrive.connected %}Connected{% if gdrive.email %} · {{ gdrive.email }}{% endif %}{% elif gdrive.reconnect %}Reconnect needed{% else %}Not connected{% endif %}</span>
+    <span class="pill pill-plain {{ 'pill-done' if gdrive.connected else ('pill-running' if gdrive.reconnect else 'pill-neg') }}" id="gdrive-pill">{% if gdrive.connected %}Connected{% if gdrive.email %} · {{ gdrive.email }}{% endif %}{% elif gdrive.reconnect %}Reconnect needed{% else %}Not connected{% endif %}</span>
   </div>
   <p class="hint">Finished reels are delivered to a folder called "<strong>{{ gdrive.folder }}</strong>" in <strong>your</strong> Google Drive, named after the listing URL. A reel can only be made once your Drive is connected — ReelSieve keeps no copy.</p>
   <p class="hint">ReelSieve asks only for the <code>drive.file</code> permission, so it sees the files it creates for you and nothing else in your Drive. Reels are <strong>private</strong> until you choose to share one from its page. Disconnect at any time.</p>

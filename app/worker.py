@@ -196,6 +196,7 @@ def process(job, command=render_command):
         result = run_child(command(job, d), job, lambda line: _progress(job, line))
         jobs.report(job['id'], token, meta=_safe_result(result), line='Reel ready')
         deliver(job, result)
+        jobs.report(job['id'], token, line='Delivered to your Google Drive')
         jobs.finish(job['id'], token, 'done')
     except Stopped:
         if jobs.cancel_requested(job['id']):

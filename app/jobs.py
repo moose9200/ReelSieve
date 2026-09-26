@@ -183,7 +183,7 @@ def report(job_id, token, step=None, progress=None, line=None, status=None, meta
         args.append(int(progress))
     if line is not None:
         sets.append("log=(CASE WHEN jsonb_array_length(log)>=%s THEN log-0 ELSE log END) || %s")
-        args += [LOG_LINES, Jsonb([time.strftime('%H:%M:%S ') + clean(line)])]
+        args += [LOG_LINES, Jsonb([time.strftime('%H:%M:%S UTC ', time.gmtime()) + clean(line)])]
     if status is not None:
         sets.append('status=%s')
         args.append(status)

@@ -118,8 +118,8 @@
     {% for j in jobs %}
     <li class="job-row">
       <a class="job-link" href="/jobs/{{ j.id }}">
-        <span class="job-title">{{ j.title or "Untitled listing" }}</span>
-        <span class="job-meta">{{ j.location or "" }}{% if j.location and j.created %} · {% endif %}{{ j.created or "" }}</span>
+        <span class="job-title">{{ j.listing.title or j.listing.url or "Untitled listing" }}</span>
+        <span class="job-meta">{{ j.listing.location or "" }}{% if j.listing.location and j.created %} · {% endif %}{{ j.created or "" }}</span>
       </a>
       <span class="pill pill-{{ j.status }}">{{ j.status }}</span>
     </li>
