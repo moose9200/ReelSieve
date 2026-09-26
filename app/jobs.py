@@ -110,7 +110,8 @@ def _refund(c, job):
 
 
 def cancel(user, job_id):
-    """Queued jobs stop at once and are refunded; running ones stop at the worker's next heartbeat."""
+    """Queued jobs stop at once and are refunded; rendering ones stop at the worker's next check.
+    Once delivery to Drive has started the render is finished and paid for, so it is no longer cancellable."""
     with database.connect() as c:
         job = _owned(c, user, job_id, lock=True)
         if not job:
@@ -119,7 +120,7 @@ def cancel(user, job_id):
             c.execute("UPDATE jobs SET status='cancelled',cancel_requested=TRUE,step='Cancelled',finished_at=%s,updated=%s "
                       'WHERE id=%s', (time.time(), time.time(), job_id))
             _refund(c, job)
-        elif job['status'] in ACTIVE:
+        elif job['status'] == 'running':
             c.execute('UPDATE jobs SET cancel_requested=TRUE,updated=%s WHERE id=%s', (time.time(), job_id))
         return _owned(c, user, job_id)
 
@@ -131,7 +132,7 @@ def cancel_owner(owner_id):
                            "WHERE owner_id=%s AND status='queued' RETURNING id", (time.time(), time.time(), owner_id)).fetchall()
         for job in queued:
             _refund(c, job)
-        c.execute("UPDATE jobs SET cancel_requested=TRUE,updated=%s WHERE owner_id=%s AND status IN ('running','uploading')",
+        c.execute("UPDATE jobs SET cancel_requested=TRUE,updated=%s WHERE owner_id=%s AND status='running'",
                   (time.time(), owner_id))
 
 
@@ -173,7 +174,16 @@ def cancel_requested(job_id):
     return bool(row and row['cancel_requested'])
 
 
-def report(job_id, token, step=None, progress=None, line=None, status=None, meta=None):
+def start_upload(job_id, token):
+    """Rendering → delivery, atomically: refused if the owner cancelled first (cancel() locks the same row)."""
+    with database.connect() as c:
+        return bool(c.execute("UPDATE jobs SET status='uploading',step='Uploading to your Google Drive',"
+                              'progress=GREATEST(progress,98),updated=%s WHERE id=%s AND lease_token=%s '
+                              "AND status='running' AND NOT cancel_requested RETURNING id",
+                              (time.time(), job_id, token)).fetchone())
+
+
+def report(job_id, token, step=None, progress=None, line=None, meta=None):
     sets, args = ['updated=%s'], [time.time()]
     if step is not None:
         sets.append('step=%s')
@@ -184,9 +194,6 @@ def report(job_id, token, step=None, progress=None, line=None, status=None, meta
     if line is not None:
         sets.append("log=(CASE WHEN jsonb_array_length(log)>=%s THEN log-0 ELSE log END) || %s")
         args += [LOG_LINES, Jsonb([time.strftime('%H:%M:%S UTC ', time.gmtime()) + clean(line)])]
-    if status is not None:
-        sets.append('status=%s')
-        args.append(status)
     if meta is not None:
         sets.append('meta=meta || %s')
         args.append(Jsonb(meta))

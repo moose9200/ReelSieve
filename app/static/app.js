@@ -376,7 +376,7 @@
       var out = el("cancel-status"); cancelBtn.disabled = true; out.className = "form-status"; out.textContent = "Stopping…";
       postJSON(jobUrl + "/cancel").then(function (job) {
         render(job);
-        out.textContent = job.status === "cancelled" ? "Cancelled — nothing was charged." : "Stopping — this takes a few seconds.";
+        out.textContent = job.status === "cancelled" ? "Cancelled — nothing was charged." : (job.status === "uploading" || job.status === "done") ? "Already delivering to your Drive — it can no longer be cancelled." : "Stopping — this takes a few seconds.";
         if (!timer && job.status !== "cancelled") timer = setInterval(poll, 2000);
       }).catch(function (err) { out.textContent = err.message; out.classList.add("is-error"); cancelBtn.disabled = false; });
     });

@@ -104,8 +104,10 @@ def run_child(cmd, job, on_line):
     result, error, next_beat = None, None, 0.0
     try:
         while True:
+            if _stop.is_set():
+                raise Stopped()
             if time.time() >= next_beat:
-                if _stop.is_set() or not jobs.heartbeat(job['id'], job['lease_token'], LEASE):
+                if not jobs.heartbeat(job['id'], job['lease_token'], LEASE):
                     raise Stopped()
                 next_beat = time.time() + BEAT
             try:
@@ -146,28 +148,32 @@ def _progress(job, line):
     jobs.report(job['id'], job['lease_token'], step=line, progress=pct, line=line)
 
 
-def _beating(job, stop):
+def _beating(job, stop, lost):
     while not stop.wait(BEAT):
         if not jobs.heartbeat(job['id'], job['lease_token'], LEASE):
+            lost.set()
             return
 
 
 def deliver(job, result):
     """Upload every promised output to the owner's Drive, pinned to the connection the job was admitted on."""
     token = job['lease_token']
-    if not jobs.report(job['id'], token, status='uploading', step='Uploading to your Google Drive', progress=98,
-                       line='Uploading to your Google Drive'):
+    if not jobs.start_upload(job['id'], token):
         raise Stopped()
+    jobs.report(job['id'], token, line='Uploading to your Google Drive')
     listing = result.get('listing') or {}
     description = f"{listing.get('title') or ''} · {listing.get('city') or ''} · Listing Reel by Braivex"
-    stop = threading.Event()
-    beat = threading.Thread(target=_beating, args=(job, stop), daemon=True)
+    stop, lost = threading.Event(), threading.Event()
+    beat = threading.Thread(target=_beating, args=(job, stop, lost), daemon=True)
     beat.start()
+    # ponytail: a lost lease or shutdown stops the upload between chunks; a chunk already in flight
+    # still completes. With several worker replicas a very slow chunk could outlive the lease.
+    keep_going = lambda: not lost.is_set() and not _stop.is_set()  # noqa: E731
     try:
         for variant, key in VARIANTS:
             if result.get(key):
                 gdrive.upload(result[key], listing.get('url') or job['url'], job['owner_email'], description=description,
-                              job_id=job['id'], variant=variant, generation=job['drive_generation'])
+                              job_id=job['id'], variant=variant, generation=job['drive_generation'], keep_going=keep_going)
     finally:
         stop.set()
     promised = [v for v, k in VARIANTS if result.get(k)]

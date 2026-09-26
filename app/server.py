@@ -520,7 +520,7 @@ def job_view(j, receipts=None):
         'error': j['error'], 'listing': listing, 'style': p.get('style', 'v2'), 'duration': m.get('duration'),
         'created': time.strftime('%d %b %Y %H:%M UTC', time.gmtime(j['created'])), 'audit': m.get('audit'),
         'ai_plan': m.get('ai_plan'), 'selection': m.get('selection'), 'photo_scores': m.get('photo_scores'),
-        'cancellable': j['status'] in jobs.ACTIVE and not j['cancel_requested'], 'cancel_requested': j['cancel_requested'],
+        'cancellable': j['status'] in ('queued', 'running') and not j['cancel_requested'], 'cancel_requested': j['cancel_requested'],
         'deliveries': [{'variant': v, 'name': r['name'], 'drive_link': r['webViewLink'], 'sharing': r['sharing']} for v, r in sorted(recs.items())],
         'stream_url': f"/api/jobs/{j['id']}/video" if primary else None,
         'download_url': f"/api/jobs/{j['id']}/video?download=1" if primary else None,

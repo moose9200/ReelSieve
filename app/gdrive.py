@@ -401,14 +401,15 @@ def _confirm(owner_id, job_id, variant, file_id, generation, info):
 
 
 def upload(path, listing_url, user, description='', chunk=8 * 1024 * 1024, public=False, job_id=None, variant='primary',
-           generation=None):
+           generation=None, keep_going=None):
     """Resumable upload into this owner's own Drive; private unless the owner asked otherwise.
 
     Idempotent per (owner, job, variant): the Drive file ID is generated and recorded before any
     bytes move, so a retry after an interrupted upload finds the finished file instead of
     creating a duplicate. Returns only a receipt Google confirmed (ID, size and properties).
     `generation` pins the upload to the connection a job was admitted with: after a reconnect
-    or disconnect it fails instead of delivering into a different Google account.
+    or disconnect it fails instead of delivering into a different Google account. `keep_going`
+    is asked before every chunk and before confirming, so a worker that must stop does so promptly.
     """
     if not job_id or len(str(job_id)) > 200 or not re.fullmatch(r'[a-z0-9_-]{1,32}', variant or ''):
         raise ValueError('upload needs a job id and a simple variant name')
@@ -462,6 +463,8 @@ def upload(path, listing_url, user, description='', chunk=8 * 1024 * 1024, publi
     try:
         with path.open('rb') as f, _client(600) as h:
             while info is None:
+                if keep_going and not keep_going():
+                    raise RuntimeError('Upload stopped before it finished — nothing was delivered')
                 f.seek(sent)
                 data = f.read(chunk)
                 end = sent + len(data) - 1
@@ -486,6 +489,8 @@ def upload(path, listing_url, user, description='', chunk=8 * 1024 * 1024, publi
         raise RuntimeError('The upload to Google Drive was interrupted — it will be reconciled on retry') from None
     if not _matches(info, file_id, size, props):
         raise RuntimeError('Google Drive did not confirm the upload — upload again')
+    if keep_going and not keep_going():
+        raise RuntimeError('Upload stopped before it finished — nothing was delivered')
     result = _confirm(owner_id, job_id, variant, file_id, generation, info)
     return set_sharing(user, job_id, True, variant) if public else result
 

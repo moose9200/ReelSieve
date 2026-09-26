@@ -252,3 +252,50 @@ def test_fetch_rechecks_redirect_targets(monkeypatch):
     monkeypatch.setattr(httpx, 'Client', lambda **kw: original(transport=httpx.MockTransport(handler), **kw))
     with pytest.raises(ValueError, match='public'):
         fetch.get('http://93.184.216.34/listing')
+
+
+def test_cancel_is_refused_once_delivery_has_started(env, db):
+    job = jobs.admit('alice@example.test', URL, {})
+    running = claimed(db)
+    assert jobs.start_upload(running['id'], running['lease_token'])
+    after = jobs.cancel('alice@example.test', job['id'])
+    assert after['status'] == 'uploading' and not after['cancel_requested']
+
+
+def test_cancel_just_before_delivery_wins(env, db):
+    job = jobs.admit('alice@example.test', URL, {})
+    running = claimed(db)
+    jobs.cancel('alice@example.test', job['id'])
+    assert not jobs.start_upload(running['id'], running['lease_token'])
+    worker.process(running, command(SUCCESS))
+    after = jobs.get('alice@example.test', job['id'])
+    assert after['status'] == 'cancelled' and gdrive.receipt('alice@example.test', job['id']) is None
+
+
+def test_upload_stops_between_chunks_when_told(env, tmp_path):
+    path = tmp_path / 'reel.mp4'; path.write_bytes(b'x' * (256 * 1024 * 3))
+    calls = []
+    with pytest.raises(RuntimeError, match='stopped'):
+        gdrive.upload(path, 'listing', 'alice@example.test', job_id='abort', chunk=256 * 1024,
+                      keep_going=lambda: calls.append(1) or len(calls) < 2)
+    assert gdrive.receipt('alice@example.test', 'abort') is None
+
+
+def test_shutdown_stops_render_promptly_even_between_heartbeats(env, db, tmp_path, monkeypatch):
+    monkeypatch.setattr(worker, 'BEAT', 30)
+    job = jobs.admit('alice@example.test', URL, {})
+    running = claimed(db)
+    t = threading.Thread(target=worker.process, args=(running, command(HANG)))
+    t.start()
+    pid_file = tmp_path / 'scratch' / 'grandchild.pid'
+    for _ in range(100):
+        if pid_file.exists() and pid_file.read_text():
+            break
+        time.sleep(0.1)
+    began = time.time()
+    worker._stop.set()
+    t.join(20)
+    worker._stop.clear()
+    assert not t.is_alive() and time.time() - began < 12
+    assert jobs.get('alice@example.test', job['id'])['status'] == 'failed'
+    assert _dead(int(pid_file.read_text()))
