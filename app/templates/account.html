@@ -15,7 +15,7 @@
     <li>Full HD 16:9 or 9:16 video, plus a 720p copy</li>
   </ul>
   <div class="actions">
-    <a class="btn btn-primary" href="/#pricing">{{ 'See plans' if account.plan != 'free' else 'Get 3 videos with AI motion — $100' }}</a>
+    <a class="btn btn-primary" href="/upgrade">{% if account.plan == 'free' %}Upgrade{% elif account.remaining is none %}See plans{% else %}Buy more videos{% endif %}</a>
     <a class="btn btn-secondary" href="/app">Make a reel</a>
   </div>
 </section>

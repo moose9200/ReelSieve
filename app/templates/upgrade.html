@@ -1,20 +1,29 @@
 {% extends "base.html" %}
-{% block title %}Upgrade{% endblock %}
+{% block title %}{{ 'Order' if order else ('Upgrade' if plan else 'Plans') }}{% endblock %}
 {% block content %}
-{% set p = (plans | selectattr('key','equalto',plan) | list | first) if plan else None %}
+{% set p = (plans | selectattr('key','equalto',plan) | list | first) if plan in ('starter', 'commercial') else None %}
+{% set labels = {'pending': 'Awaiting payment', 'reported': 'Checking payment', 'paid': 'Paid', 'cancelled': 'Cancelled'} %}
 <section class="hero">
-  <p class="eyebrow">Upgrade</p>
-  <h1>{{ p.name if p else 'Choose a plan' }}{% if p %} · {{ p.price_label }}{% endif %}</h1>
-  {% if account %}<p class="sub">{{ account.user }} · on {{ account.plan_name }}{% if account.remaining is not none %} · {{ account.remaining }} left{% endif %}</p>{% endif %}
+  <p class="eyebrow">{{ 'Order' if order else ('Upgrade' if p else 'Plans') }}</p>
+  <h1>{% if order %}{{ order.plan|capitalize }} · ${{ order.amount_usd|round|int }}{% elif p %}{{ p.name }} · {{ p.price_label }}{% else %}Choose a plan{% endif %}</h1>
+  {% if account %}<p class="sub">You are on {{ account.plan_name }}. {% if account.remaining is none %}Unlimited videos.{% elif account.remaining > 0 %}{{ account.remaining }} video{{ 's' if account.remaining != 1 }} left.{% else %}No videos left.{% endif %}</p>{% endif %}
+  {% if cancelled %}<p class="hint hint-warn" role="status">Checkout cancelled. You have not been charged.</p>{% endif %}
 </section>
 
 {% if order %}
+{% set card_order = order.provider == 'stripe' %}
 <section class="card">
-  <div class="section-head"><h2>{{ 'Payment reported' if order.status == 'reported' else ('Paid' if order.status == 'paid' else 'Invoice requested') }}</h2>
-    <span class="pill {{ 'pill-done' if order.status == 'paid' else 'pill-running' }}">{{ order.status }}</span></div>
+  <div class="section-head"><h2>{% if order.status == 'paid' %}Paid{% elif order.status == 'cancelled' %}Cancelled{% elif card_order %}Confirming your payment{% elif order.status == 'reported' %}Payment reported{% else %}Invoice requested{% endif %}</h2>
+    <span class="pill {{ 'pill-done' if order.status == 'paid' else ('pill-neg' if order.status == 'cancelled' else 'pill-running') }}">{{ labels.get(order.status, order.status) }}</span></div>
   <p class="sub">Reference <strong>{{ order.ref }}</strong> · {{ order.plan|capitalize }} · ${{ order.amount_usd|round|int }}</p>
   {% if order.status == 'paid' %}
-    <p class="hint">Credits are on your account. <a href="/app">Make a reel</a>.</p>
+    <p class="hint">Your videos are on your account. <a href="/app">Make a reel</a>.</p>
+  {% elif order.status == 'cancelled' %}
+    <p class="hint">This order was cancelled. You can start a new one from <a href="/upgrade">Plans</a>.</p>
+  {% elif card_order %}
+    <p class="hint">Stripe has not confirmed this payment yet. It usually takes a few seconds.</p>
+    <p class="hint">If you left the payment page before paying, nothing was charged.</p>
+    <div class="actions"><a class="btn btn-primary" href="{{ request.url.path }}?{{ request.url.query }}">Check again</a></div>
   {% elif order.pay_link %}
     <p class="hint">Your payment link is ready. It is issued for this order only, so nothing else needs to be quoted.</p>
     <div class="actions"><a class="btn btn-primary" href="{{ order.pay_link }}" target="_blank" rel="noopener">Pay ${{ order.amount_usd|round|int }} now</a></div>
@@ -33,9 +42,13 @@
 
 <section class="card">
   <div class="section-head"><h2>Pay</h2></div>
-  {% if link %}
+  {% if card %}
+    <p class="hint">Pay by card on Stripe's secure checkout page. Your videos are added as soon as the payment clears.</p>
+    <div class="actions"><button type="button" class="btn btn-primary js-checkout" data-plan="{{ p.key }}" data-status="bill-pay-status">Pay ${{ p.price_usd }} by card</button><span class="form-status" id="bill-pay-status" role="status" aria-live="polite"></span></div>
+    <p class="hint">Prefer an invoice for your accounts team? Request one below.</p>
+  {% elif link %}
     <p class="hint">Card or bank transfer. We create your order first so the payment is matched to your account automatically — you'll see a reference to quote.</p>
-    <div class="actions"><button type="button" class="btn btn-primary" id="bill-pay" data-plan="{{ p.key }}">Pay ${{ p.price_usd }} now</button><span class="form-status" id="bill-pay-status"></span></div>
+    <div class="actions"><button type="button" class="btn btn-primary js-checkout" data-plan="{{ p.key }}" data-status="bill-pay-status">Pay ${{ p.price_usd }} now</button><span class="form-status" id="bill-pay-status" role="status" aria-live="polite"></span></div>
     <p class="hint">Prefer an invoice for your accounts team? Request one below.</p>
   {% else %}
     <p class="hint">We invoice for this plan. Request one and we'll send a secure payment link you can pay by card or bank transfer.</p>
@@ -45,21 +58,49 @@
     <textarea id="bill-note" rows="2" placeholder="Optional"></textarea>
   </div>
   <div class="actions">
-    <button type="button" class="btn {{ 'btn-secondary' if link else 'btn-primary' }}" id="bill-request" data-plan="{{ p.key }}">Request an invoice</button>
-    <span class="form-status" id="bill-status"></span>
+    <button type="button" class="btn {{ 'btn-secondary' if card or link else 'btn-primary' }}" id="bill-request" data-plan="{{ p.key }}">Request an invoice</button>
+    <span class="form-status" id="bill-status" role="status" aria-live="polite"></span>
   </div>
   <input type="hidden" id="bill-csrf" value="{{ csrf }}">
 </section>
 {% else %}
-<section class="card"><p class="sub">Pick a plan on the <a href="/#pricing">pricing page</a>.</p></section>
+<section class="plans-page" aria-label="Plans">
+  <p class="sub">{% if card %}You pay once on Stripe's secure checkout page. Your videos are added as soon as the payment clears.{% else %}Card payment is not switched on yet. Choose a plan and request an invoice. We add your videos as soon as it is paid.{% endif %}</p>
+  <div class="lp-grid lp-plans plan-grid">
+    {% for q in plans %}
+    {% set current = account and account.plan == q.key %}
+    <article class="lp-plan{% if current %} is-current{% elif q.highlight %} is-featured{% endif %}" data-plan-card="{{ q.key }}">
+      {% if current %}<span class="lp-pop">Current plan</span>{% endif %}
+      <h2 class="lp-plan-name">{{ q.name }}</h2>
+      <p class="lp-plan-price">{{ q.price_label }}</p>
+      <p class="lp-plan-period">{{ q.period }}</p>
+      <ul>{% for f in q.features %}<li>{{ f }}</li>{% endfor %}</ul>
+      {% if q.key in ('starter', 'commercial') %}
+        {% set label = 'Buy again' if current else ('Buy ' if card else 'Choose ') ~ q.name %}
+        {% if card %}
+        <button type="button" class="btn {{ 'btn-primary' if q.highlight else 'btn-secondary' }} js-checkout" data-plan="{{ q.key }}" data-status="pay-status-{{ q.key }}">{{ label }}</button>
+        <span class="form-status" id="pay-status-{{ q.key }}" role="status" aria-live="polite"></span>
+        {% else %}
+        <a class="btn {{ 'btn-primary' if q.highlight else 'btn-secondary' }}" href="/upgrade?plan={{ q.key }}">{{ label }}</a>
+        {% endif %}
+      {% elif q.key == 'enterprise' %}
+        <p class="hint plan-mail">hello@braivex.com</p>
+        <a class="btn btn-secondary" href="mailto:hello@braivex.com?subject=ReelSieve%20Enterprise">Contact us</a>
+      {% elif current %}
+        <a class="btn btn-secondary" href="/app">Make a reel</a>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </div>
+</section>
 {% endif %}
 
 {% if orders %}
-<section class="card">
+<section class="card orders-card">
   <div class="section-head"><h2>Your orders</h2></div>
   <ul class="user-list">
     {% for o in orders %}
-    <li class="user-row"><span>{{ o.ref }} · {{ o.plan|capitalize }} · ${{ o.amount_usd|round|int }}</span><span class="badge">{{ o.provider }}</span><span class="pill pill-sm {{ 'pill-done' if o.status == 'paid' else 'pill-skipped' }}">{{ o.status }}</span></li>
+    <li class="user-row"><a href="/upgrade?ref={{ o.ref }}">{{ o.ref }}</a><span>{{ o.plan|capitalize }} · ${{ o.amount_usd|round|int }} · {{ o.ts|day }}{{ ' · card' if o.provider == 'stripe' }}</span><span class="pill pill-sm {{ 'pill-done' if o.status == 'paid' else ('pill-neg' if o.status == 'cancelled' else 'pill-skipped') }}">{{ labels.get(o.status, o.status) }}</span></li>
     {% endfor %}
   </ul>
 </section>

@@ -9,9 +9,9 @@
   {% if gdrive.reconnect %}<p class="hint hint-warn" role="alert">Google access for {{ gdrive.email or 'your account' }} expired or was revoked. Reconnect to keep delivering reels.</p>{% endif %}
   {% if not gdrive.configured %}<p class="hint hint-warn">Google Drive delivery is not set up on this install yet. {% if request.state.is_admin %}Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in the hosting environment.{% else %}Ask the ReelSieve team to switch it on.{% endif %}</p>{% endif %}
   <div class="actions">
-    <form method="post" action="/oauth/google/start" class="inline-form">
+    <form method="post" action="/oauth/google/start" class="inline-form" id="gdrive-form" target="_blank">
       <input type="hidden" name="csrf" value="{{ csrf_for(request) }}">
-      <button type="submit" class="btn btn-primary" id="gdrive-connect"{% if not gdrive.configured %} disabled{% endif %}>{{ 'Reconnect Google Drive' if (gdrive.connected or gdrive.reconnect) else 'Connect Google Drive' }}</button>
+      <button type="submit" class="btn btn-primary" id="gdrive-connect" title="Opens Google in a new tab"{% if not gdrive.configured %} disabled{% endif %}>{{ 'Reconnect Google Drive' if (gdrive.connected or gdrive.reconnect) else 'Connect Google Drive' }} ↗</button>
     </form>
     {% if gdrive.connected or gdrive.reconnect %}<button type="button" class="btn btn-secondary" id="gdrive-disconnect">Disconnect</button>{% endif %}
     <span class="form-status" id="gdrive-status" role="status" aria-live="polite"></span>
