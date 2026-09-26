@@ -26,6 +26,10 @@ WHERE u.id = o.owner_id AND o.status = 'paid' AND o.billing_email IS NULL AND u.
 -- Outreach rows are deleted 12 months after their last change (app/retention.py); status and note edits count.
 ALTER TABLE outreach ADD COLUMN IF NOT EXISTS updated DOUBLE PRECISION;
 
+-- Outreach objections ("do not contact"): only a keyed hash of how the person is known (Airbnb user id, or name +
+-- listing), for every user. Kept indefinitely: the list exists to honour the objection.
+CREATE TABLE IF NOT EXISTS outreach_suppressions (key TEXT PRIMARY KEY, ts DOUBLE PRECISION NOT NULL);
+
 -- Accountability for what admins do to other people's accounts. actor_id NULL: operator console or retention.
 -- detail holds references (plan, credits, order ref), never passwords, links or tokens.
 CREATE TABLE IF NOT EXISTS admin_events (

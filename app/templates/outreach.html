@@ -154,6 +154,7 @@
               {% if r.airbnb_profile %}<a class="btn btn-secondary btn-sm" href="{{ r.airbnb_profile }}" target="_blank" rel="noopener">Airbnb profile ↗</a>{% endif %}
               <button type="button" class="btn btn-secondary btn-sm tr-copy" data-msg="{{ r.message or '' }}">Copy message</button>
               <button type="button" class="btn btn-secondary btn-sm tr-note" data-id="{{ r.id }}" data-note="{{ r.note or '' }}">Note</button>
+              <button type="button" class="btn btn-danger btn-sm tr-suppress" data-id="{{ r.id }}" title="They asked not to be contacted: removes them here and from every ReelSieve user's results">Do not contact</button>
             </div>
           </td>
         </tr>

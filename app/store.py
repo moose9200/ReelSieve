@@ -166,6 +166,51 @@ def outreach_set(rid, user=None, **kw):
         c.execute(q, args)
 
 
+def outreach_delete(rid, user):
+    with database.connect() as c:
+        c.execute('DELETE FROM outreach WHERE id=%s AND owner_id=%s', (rid, database.user_id(user, c)))
+
+
+def _suppression_key():
+    # ponytail: derived from SESSION_SECRET like the signal key, so rotating that secret stops old objections
+    # matching. Re-key outreach_suppressions (or pin this key) before any rotation.
+    from app import auth;return hmac.new(auth.secret().encode(),b'reelsieve:outreach-suppression:v1',hashlib.sha256).digest()
+
+
+def suppression_keys(item):
+    """How a prospect is known: their Airbnb user id when we have it, and their name with a listing."""
+    import re
+    ids, pid = [], str(item.get('id') or '')
+    m = re.search(r'/users/show/(\d{1,20})', str(item.get('airbnb_profile') or item.get('profile_url') or ''))
+    uid = m.group(1) if m else (pid[1:] if re.fullmatch(r'u\d{1,20}', pid) else None)
+    if uid:
+        ids.append('user:' + uid)
+    m = re.search(r'/(?:rooms|contact_host)/(\d{1,20})', f"{item.get('listing_url') or ''} {item.get('url') or ''}")
+    listing = m.group(1) if m else (pid if re.fullmatch(r'\d{1,20}', pid) else None)
+    name = ' '.join(str(item.get('name') or '').lower().split())
+    if name and listing:
+        ids.append(f'name:{name}|listing:{listing}')
+    return [hmac.new(_suppression_key(), i.encode(), hashlib.sha256).hexdigest() for i in ids]
+
+
+def suppress(item):
+    """Do not contact this prospect again, for any user. Stores hashes only."""
+    with database.connect() as c:
+        for key in suppression_keys(item):
+            c.execute('INSERT INTO outreach_suppressions(key,ts) VALUES(%s,%s) ON CONFLICT (key) DO NOTHING', (key, time.time()))
+
+
+def unsuppressed(items):
+    """The prospects nobody has asked us to stop contacting."""
+    keyed = [(it, set(suppression_keys(it))) for it in items]
+    wanted = sorted(set().union(*(k for _, k in keyed))) if keyed else []
+    if not wanted:
+        return list(items)
+    with database.connect() as c:
+        hit = {r['key'] for r in c.execute('SELECT key FROM outreach_suppressions WHERE key=ANY(%s)', (wanted,)).fetchall()}
+    return [it for it, k in keyed if not k & hit]
+
+
 def outreach_stats(user=None):
     with database.connect() as c:
         q = 'SELECT status,count(*) AS n FROM outreach'

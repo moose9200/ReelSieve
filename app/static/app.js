@@ -595,6 +595,8 @@
           id: it.id != null ? it.id : null,
           name: it.name || "",
           url: it.url || "",
+          airbnb_profile: it.profile_url || "",
+          listing_url: it.listing_url || "",
           city: city,
           message: orTokens(tpl, { name: it.name || "", city: city, listing_title: it.listing_title || it.title || "" })
         };
@@ -723,7 +725,7 @@
           b.disabled = true;
           orPost("/api/outreach/queue", {
             channel: "linkedin",
-            items: [{ id: it.id != null ? it.id : null, name: it.name || "", url: it.url || "", city: liCity(it), message: liNote(it), airbnb_profile: it.airbnb_profile || "" }]
+            items: [{ id: it.id != null ? it.id : null, name: it.name || "", url: it.url || "", city: liCity(it), message: liNote(it), airbnb_profile: it.airbnb_profile || "", listing_url: it.listing_url || "" }]
           })
             .then(function (d) { orStats(d && d.stats); b.textContent = "Queued"; orSay(liStatus, (it.name || "Prospect") + " added to the tracker — reload to see the row."); })
             .catch(function (err) { orSay(liStatus, err.message, true); b.disabled = false; });
@@ -793,6 +795,17 @@
         var msg = b.getAttribute("data-msg") || "";
         if (!msg.trim()) { orFlashBtn(b, "No message"); return; }
         orCopy(msg, function (ok) { orFlashBtn(b, ok ? "Copied" : "Copy failed"); });
+      });
+    });
+
+    // Do not contact: an objection is honoured for every ReelSieve user, and the row goes.
+    Array.prototype.forEach.call(document.querySelectorAll(".tr-suppress"), function (b) {
+      b.addEventListener("click", function () {
+        if (!window.confirm("They asked not to be contacted? This removes them from your tracker and from every ReelSieve user's results.")) return;
+        b.disabled = true;
+        orPost("/api/outreach/suppress", { id: orNum(b.getAttribute("data-id")) })
+          .then(function (d) { orStats(d && d.stats); var row = b.closest ? b.closest("tr") : null; if (row) row.parentNode.removeChild(row); trFilter(); })
+          .catch(function (err) { window.alert(err.message); b.disabled = false; });
       });
     });
 

@@ -494,6 +494,42 @@ def test_admin_actions_leave_an_accountability_trail(web, db):
     assert admin.get('/settings').text.count('data-event') == 50
 
 
+# ---------------- 13. outreach objection and suppression ----------------
+
+PROFILE = 'https://www.airbnb.co.uk/users/show/4242'
+PROSPECTS = [{'id': str(n), 'name': name, 'url': f'https://www.airbnb.co.uk/contact_host/{n}/send_message',
+              'listing_url': f'https://www.airbnb.co.uk/rooms/{n}', 'profile_url': profile, 'city': 'Leeds', 'listing_title': 'Flat'}
+             for n, name, profile in ((111, 'Jo', PROFILE), (222, 'Sam', None), (333, 'Kim', None))]
+
+
+def test_do_not_contact_suppresses_the_prospect_for_every_user(web, db, monkeypatch):
+    from app import cohost, store
+    monkeypatch.setattr(cohost, 'discover', lambda city, limit=12: {'city': city, 'items': [dict(p) for p in PROSPECTS],
+                                                                    'source': 'operators', 'note': ''})
+    queued = [{'id': p['id'], 'name': p['name'], 'url': p['url'], 'city': 'Leeds', 'message': 'Hi', 'airbnb_profile': p['profile_url'] or '',
+               'listing_url': p['listing_url']} for p in PROSPECTS[:2]]
+    ids = post(web['alice'], '/api/outreach/queue', {'channel': 'cohost', 'items': queued}).json()['ids']
+    assert post(web['bob'], '/api/outreach/suppress', {'id': ids[0]}).status_code == 404  # only the row's owner
+    for rid in ids:
+        r = post(web['alice'], '/api/outreach/suppress', {'id': rid})
+        assert r.status_code == 200 and 'stats' in r.json()
+    assert store.outreach_rows(ALICE) == []
+    assert [p['name'] for p in web['bob'].get('/api/outreach/cohosts?city=Leeds').json()['items']] == ['Kim']
+    assert [p['name'] for p in web['bob'].get('/api/outreach/linkedin?city=Leeds').json()['items']] == ['Kim']
+    search = 'https://www.linkedin.com/search/results/people/?keywords=Jo%20Leeds'
+    post(web['bob'], '/api/outreach/queue', {'channel': 'linkedin', 'items': [
+        {'name': 'Jo', 'url': search, 'city': 'Leeds', 'airbnb_profile': PROFILE},
+        {'name': 'Sam', 'url': search, 'city': 'Leeds', 'listing_url': 'https://www.airbnb.co.uk/rooms/222'},
+        {'name': 'Kim', 'url': search, 'city': 'Leeds', 'listing_url': 'https://www.airbnb.co.uk/rooms/333'}]})
+    assert [r['name'] for r in store.outreach_rows(BOB)] == ['Kim']
+    with db.connect() as c:
+        rows = c.execute('SELECT * FROM outreach_suppressions').fetchall()
+    assert rows and all(set(r) == {'key', 'ts'} for r in rows)
+    assert not any(x in str(rows) for x in ('4242', 'Sam', 'Jo', '222'))
+    page = web['alice'].get('/outreach').text
+    assert 'Do not contact' in web['alice'].get('/static/app.js').text or 'Do not contact' in page
+
+
 # ---------------- 11, 14, 15. transparency at the point of collection and use ----------------
 
 def test_signup_links_terms_and_privacy_at_collection(web):

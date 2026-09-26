@@ -1042,9 +1042,10 @@ def api_cohosts(city: str = ''):
     if not city.strip():
         raise HTTPException(400, 'Enter a city')
     try:
-        return cohost.discover(city.strip()[:120])
+        res = cohost.discover(city.strip()[:120])
     except Exception:
         raise HTTPException(502, 'Lookup failed — try again')
+    return {**res, 'items': store.unsuppressed(res.get('items') or [])}  # people who objected never reappear
 
 
 @app.get('/api/outreach/linkedin')
@@ -1052,9 +1053,10 @@ def api_linkedin(city: str = '', role: str = 'property manager'):
     if not city.strip():
         raise HTTPException(400, 'Enter a city')
     try:
-        return linkedin.build(city.strip()[:120], (role.strip() or 'property manager')[:80])
+        res = linkedin.build(city.strip()[:120], (role.strip() or 'property manager')[:80])
     except Exception:
         raise HTTPException(502, 'Lookup failed — try again')
+    return {**res, 'items': store.unsuppressed(res.get('items') or [])}
 
 
 @app.post('/api/outreach/queue')
@@ -1064,9 +1066,26 @@ async def api_queue(request: Request):
     ids = [store.add_outreach(u, ch, str(it.get('name') or '')[:200], str(it.get('url') or '')[:500], str(it.get('city') or '')[:120],
                               str(it.get('message') or '')[:3000],
                               meta={**{k: it.get(k) for k in ('id', 'listing_title', 'company') if k in it},
+                                    'listing_url': str(it.get('listing_url') or '')[:300],
                                     'airbnb_profile': linkedin.airbnb_profile(it.get('airbnb_profile'))})
-           for it in (b.get('items') or [])[:25]]
+           for it in store.unsuppressed([it for it in (b.get('items') or [])[:25] if isinstance(it, dict)])]
     return {'ok': True, 'ids': ids, 'rows': store.outreach_rows(u), 'stats': store.outreach_stats(u)}
+
+
+@app.post('/api/outreach/suppress')
+async def api_out_suppress(request: Request):
+    """Do not contact: the prospect objected. Suppressed for every user (hashes only) and this row deleted."""
+    b, u = await request.json(), request.state.user
+    r = store.outreach_get(int(b.get('id') or 0), u)
+    if not r:
+        raise HTTPException(404)
+    try:
+        meta = json.loads(r.get('meta') or '{}')
+    except ValueError:
+        meta = {}
+    store.suppress({**(meta if isinstance(meta, dict) else {}), 'name': r['name'], 'url': r['url']})
+    store.outreach_delete(r['id'], u)
+    return {'ok': True, 'stats': store.outreach_stats(u)}
 
 
 @app.post('/api/outreach/status')
