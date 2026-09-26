@@ -314,7 +314,11 @@ def _adopt_legacy_drive():
 _DRIVE_ADOPTED=_adopt_legacy_drive()
 @app.get('/',response_class=HTMLResponse)
 def landing(request:Request):
+    # Canonical and structured data must name the host we are actually served from,
+    # never a hardcoded domain: PUBLIC_BASE_URL is set from RAILWAY_PUBLIC_DOMAIN at boot.
+    base=(os.getenv('PUBLIC_BASE_URL') or str(request.base_url)).rstrip('/')
     return tpl.TemplateResponse(request,'landing.html',{'signed_in':bool(request.state.user),'user':request.state.user,
+        'base_url':base,
         'plans':plans.public_plans(),'products':plans.PRODUCTS,'sample_video':os.getenv('SAMPLE_VIDEO_URL') or None,'sample_poster':os.getenv('SAMPLE_POSTER_URL') or None})
 @app.get('/privacy',response_class=HTMLResponse)
 def privacy(request:Request):return tpl.TemplateResponse(request,'legal.html',{'kind':'privacy'})
