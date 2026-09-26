@@ -35,6 +35,7 @@ class Google:
         self.bad_range = False
         self.interrupt = False
         self.refresh_error = False
+        self.drop_chunk = False
         self.folder_queries = []
 
     def handle(self, req):
@@ -82,6 +83,9 @@ class Google:
                 if len(s['data']) == int(cr.split('/')[-1]):
                     return httpx.Response(200, json=self.files[s['meta']['id']])
                 return httpx.Response(308, headers={'Range': 'bytes=0-' + str(len(s['data']) - 1)} if s['data'] else {})
+            if self.drop_chunk:
+                self.drop_chunk = False
+                return httpx.Response(308)
             start = int(cr.split(' ')[1].split('-')[0])
             s['data'] = s['data'][:start] + req.content
             size = int(cr.split('/')[-1])
@@ -283,3 +287,33 @@ def test_upload_completion_cannot_survive_disconnect(owners, google, tmp_path):
     google.handle = boundary
     with pytest.raises(RuntimeError): gdrive.upload(path, 'listing', 'alice@example.test', job_id='race')
     assert gdrive.receipt('alice@example.test', 'race') is None
+
+
+def test_upload_resumes_when_google_holds_nothing(owners, google, tmp_path):
+    connect(owners, google)
+    path = tmp_path / 'reel.mp4'; path.write_bytes(b'x' * (256 * 1024 + 1))
+    google.drop_chunk = True
+    result = gdrive.upload(path, 'listing', 'alice@example.test', job_id='resume', chunk=256 * 1024)
+    assert result['confirmed'] and google.files[result['id']]['size'] == str(256 * 1024 + 1)
+
+
+def test_upload_pinned_to_admitted_generation(owners, google, tmp_path, db):
+    connect(owners, google)
+    with db.connect() as c:
+        admitted = gdrive.usable_generation(c, db.user_id('alice@example.test', c))
+    connect(owners, google)
+    path = tmp_path / 'reel.mp4'; path.write_bytes(b'video')
+    with pytest.raises(RuntimeError, match='reconnected'):
+        gdrive.upload(path, 'listing', 'alice@example.test', job_id='pin', generation=admitted)
+    assert gdrive.receipt('alice@example.test', 'pin') is None
+
+
+def test_deactivated_owner_disconnect_revokes(owners, google, db):
+    connect(owners, google)
+    owner = db.user_id('alice@example.test')
+    with db.connect() as c:
+        c.execute('UPDATE users SET active=FALSE WHERE id=%s', (owner,))
+    gdrive.disconnect_owner(owner)
+    assert any(r.url.path == '/revoke' for r in google.calls)
+    with db.connect() as c:
+        assert gdrive.usable_generation(c, owner) is None

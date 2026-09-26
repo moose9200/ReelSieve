@@ -159,6 +159,14 @@ def connected(user):
     return status(user)['connected']
 
 
+def usable_generation(c, owner_id):
+    """Inside the caller's transaction: the generation of a usable connection, else None."""
+    row = c.execute('SELECT owner_id,generation,status,credentials FROM drive_connections WHERE owner_id=%s FOR SHARE',
+                    (owner_id,)).fetchone()
+    tok = _decrypt(row)
+    return row['generation'] if tok and tok.get('refresh_token') else None
+
+
 def auth_url(redirect_uri, user, session_token):
     """Start consent for the signed-in owner; the state only completes in that same session."""
     if not user or auth.check(session_token or '') != auth.norm(user):
@@ -275,14 +283,23 @@ def disconnect(user):
     """Disable local access first, then revoke with Google. A failed revocation is reported, never hidden."""
     with database.connect() as c:
         row = _row(c, user)
-        if not row or row['generation'] is None:
+    if row and row['generation'] is not None:
+        disconnect_owner(row['owner_id'])
+
+
+def disconnect_owner(owner_id):
+    """Disconnect by durable owner ID, also for an account that has just been deactivated."""
+    with database.connect() as c:
+        _owner_lock(c, owner_id)
+        row = c.execute('SELECT owner_id,generation,status,credentials FROM drive_connections WHERE owner_id=%s',
+                        (owner_id,)).fetchone()
+        if not row:
             return
-        _owner_lock(c, row['owner_id'])
         tok = _decrypt(row)
         c.execute("UPDATE drive_connections SET generation=generation+1,status='disconnected',credentials=NULL,"
                   'google_sub=NULL,google_email=NULL,scope=NULL,folder_id=NULL,updated=%s WHERE owner_id=%s',
-                  (time.time(), row['owner_id']))
-        c.execute('DELETE FROM drive_oauth_states WHERE owner_id=%s', (row['owner_id'],))
+                  (time.time(), owner_id))
+        c.execute('DELETE FROM drive_oauth_states WHERE owner_id=%s', (owner_id,))
     grant = (tok or {}).get('refresh_token') or (tok or {}).get('access_token')
     if not grant:
         return
@@ -367,12 +384,15 @@ def _confirm(owner_id, job_id, variant, file_id, generation, info):
     return _receipt(row)
 
 
-def upload(path, listing_url, user, description='', chunk=8 * 1024 * 1024, public=False, job_id=None, variant='primary'):
+def upload(path, listing_url, user, description='', chunk=8 * 1024 * 1024, public=False, job_id=None, variant='primary',
+           generation=None):
     """Resumable upload into this owner's own Drive; private unless the owner asked otherwise.
 
     Idempotent per (owner, job, variant): the Drive file ID is generated and recorded before any
     bytes move, so a retry after an interrupted upload finds the finished file instead of
     creating a duplicate. Returns only a receipt Google confirmed (ID, size and properties).
+    `generation` pins the upload to the connection a job was admitted with: after a reconnect
+    or disconnect it fails instead of delivering into a different Google account.
     """
     if not job_id or len(str(job_id)) > 200 or not re.fullmatch(r'[a-z0-9_-]{1,32}', variant or ''):
         raise ValueError('upload needs a job id and a simple variant name')
@@ -384,6 +404,8 @@ def upload(path, listing_url, user, description='', chunk=8 * 1024 * 1024, publi
     if done:
         return set_sharing(user, job_id, True, variant) if public and done['sharing'] != 'public' else done
     token, conn = _access(user)
+    if generation is not None and conn['generation'] != generation:
+        raise RuntimeError('Google Drive was reconnected or disconnected after this reel started — start it again')
     owner_id, generation = conn['owner_id'], conn['generation']
     headers = {'Authorization': 'Bearer ' + token}
     props = {'owner': owner_id, 'job': str(job_id), 'variant': variant}
@@ -420,7 +442,7 @@ def upload(path, listing_url, user, description='', chunk=8 * 1024 * 1024, publi
     session = start.headers.get('Location')
     if not session:
         raise RuntimeError('Google Drive upload start failed (no upload session)')
-    sent, info = 0, None
+    sent, info, stalls = 0, None, 0
     try:
         with path.open('rb') as f, _client(600) as h:
             while info is None:
@@ -432,11 +454,15 @@ def upload(path, listing_url, user, description='', chunk=8 * 1024 * 1024, publi
                 if r.status_code in (200, 201):
                     info = _json(r)
                 elif r.status_code == 308:
-                    # Google reports what it holds; progress must advance and never exceed what was sent.
+                    # Resume from what Google says it holds (no Range = nothing yet). It can never
+                    # hold more than was sent, and a transfer that keeps making no progress stops.
                     got = r.headers.get('Range', '')
                     got = int(got.rsplit('-', 1)[1]) + 1 if got.startswith('bytes=0-') else 0
-                    if not sent < got <= end + 1:
+                    if got > end + 1:
                         raise RuntimeError('Google Drive reported inconsistent upload progress — upload again')
+                    stalls = stalls + 1 if got <= sent else 0
+                    if stalls > 3:
+                        raise RuntimeError('Google Drive stopped accepting the upload — upload again')
                     sent = got
                 else:
                     _require(r, 'upload')
