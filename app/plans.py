@@ -72,6 +72,9 @@ def signup_guard(email,ip,fp):
     return None
 def can_generate(user,listing_url,ip=None,fp=None,conn=None):
     """(ok, reason, meta). Paid: needs credits. Free: layered guardrails. Same listing never costs twice."""
+    with database.transaction(conn) as c:
+        identity=c.execute('SELECT active FROM users WHERE id=%s', (database.user_id(user,c),)).fetchone()
+        if not identity['active']:return False,'This account is no longer active',{}
     a=store.ensure_account(user,_default_plan(user,conn),conn=conn);p=PLANS.get(a.get('plan') or 'free',PLANS['free'])
     if a.get('blocked'):return False,'This account is on hold. Email hello@braivex.com.',{}
     if store.count_usage(user=user,listing_url=listing_url,conn=conn)>0:
@@ -98,6 +101,10 @@ def reserve(user, listing_url, job_id, ip=None, fp=None, conn=None):
         raise ValueError('A job ID is required')
     with database.transaction(conn) as c:
         owner = database.user_id(user, c)
+        # Serialize admission with deactivation, retaining historical owner IDs.
+        identity = c.execute('SELECT active FROM users WHERE id=%s FOR SHARE', (owner,)).fetchone()
+        if not identity['active']:
+            raise ValueError('This account is no longer active')
         # All quota signals use deterministic advisory locks, including cross-owner
         # free network/device budgets. The row lock also coordinates billing/admin edits.
         keys = ['job:' + job_id, 'owner:' + owner]
@@ -131,7 +138,7 @@ def reserve(user, listing_url, job_id, ip=None, fp=None, conn=None):
 
 
 def consume(user, listing_url, job_id, ip=None, fp=None):
-    return reserve(user, listing_url, job_id, ip, fp)
+    reserve(user, listing_url, job_id, ip, fp)
 
 
 def refund(job_id, conn=None):

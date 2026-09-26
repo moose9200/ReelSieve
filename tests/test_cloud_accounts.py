@@ -106,6 +106,64 @@ def test_session_tampering_deletion_and_csrf(db):
     assert auth.check(cookie) is None
 
 
+def test_removal_deactivates_identity_and_preserves_business_records(db):
+    from app import auth, store, plans, billing
+    account()
+    auth.create_user('operator@example.test', 'operator-password', 'admin')
+    store.set_plan(ALICE, 'starter', 3)
+    plans.reserve(ALICE, 'https://example.test/one', 'preserved-job')
+    order = billing.create_order(ALICE, 'commercial')
+    rid = store.add_outreach(ALICE, 'cohost', 'A', 'https://example.test', 'London', 'draft')
+    owner = db.user_id(ALICE)
+    cookie, _ = auth.issue(ALICE)
+    auth.delete_user(ALICE, 'operator@example.test')
+    assert db.user_id(ALICE) == owner
+    assert store.get_account(ALICE)['credits'] == 2
+    assert store.count_usage(user=ALICE) == 1
+    assert billing.get_order(order['ref'])['owner_id'] == owner
+    assert store.outreach_get(rid, user=ALICE)['message'] == 'draft'
+    assert auth.check(cookie) is None
+    assert not auth.verify(ALICE, 'long-initial-password')
+    assert ALICE not in [u['user'] for u in auth.users()]
+    with pytest.raises(ValueError, match='No such user'):
+        auth.issue(ALICE)
+    with pytest.raises(ValueError, match='No such user'):
+        auth.set_password(ALICE, 'replacement-password')
+    with pytest.raises(ValueError, match='already has an account'):
+        account()
+    with pytest.raises(ValueError, match='no longer active'):
+        plans.reserve(ALICE, 'https://example.test/two', 'inactive-job')
+    assert not plans.can_generate(ALICE, 'https://example.test/two')[0]
+    with db.connect() as c:
+        assert not c.execute('SELECT active FROM users WHERE id=%s', (owner,)).fetchone()['active']
+    with pytest.raises(Exception, match='foreign key'):
+        with db.connect() as c:
+            c.execute('DELETE FROM users WHERE id=%s', (owner,))
+
+
+def test_consume_preserves_none_return(db):
+    from app import store, plans
+    account()
+    store.set_plan(ALICE, 'starter', 1)
+    assert plans.consume(ALICE, 'https://example.test/one', 'consumed-job') is None
+    assert store.get_account(ALICE)['credits'] == 0
+
+
+def test_schema_upgrades_initial_cascades_without_losing_records(db):
+    from app import store
+    account()
+    store.set_plan(ALICE, 'starter', 3)
+    with db.connect() as c:
+        c.execute('ALTER TABLE accounts DROP CONSTRAINT accounts_owner_id_fkey')
+        c.execute('ALTER TABLE accounts ADD CONSTRAINT accounts_owner_id_fkey FOREIGN KEY(owner_id) REFERENCES users(id) ON DELETE CASCADE')
+        c.execute('ALTER TABLE users DROP COLUMN active, DROP COLUMN deactivated_at')
+    db.initialize()
+    assert store.get_account(ALICE)['credits'] == 3
+    with db.connect() as c:
+        assert c.execute('SELECT active FROM users WHERE email=%s', (ALICE,)).fetchone()['active']
+        assert c.execute("SELECT confdeltype FROM pg_constraint WHERE conrelid='accounts'::regclass AND conname='accounts_owner_id_fkey'").fetchone()['confdeltype'] == 'a'
+
+
 def test_shared_login_failures_survive_module_reload(db):
     from app import auth
     for _ in range(5):

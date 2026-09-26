@@ -34,12 +34,12 @@ def secret():
 
 def has_account():
     with database.connect() as c:
-        return bool(c.execute('SELECT 1 FROM users LIMIT 1').fetchone())
+        return bool(c.execute('SELECT 1 FROM users WHERE active LIMIT 1').fetchone())
 
 
 def users():
     with database.connect() as c:
-        return c.execute('SELECT email AS "user", role, created FROM users ORDER BY email').fetchall()
+        return c.execute('SELECT email AS "user", role, created FROM users WHERE active ORDER BY email').fetchall()
 
 
 def validate_password(pw):
@@ -66,28 +66,29 @@ def create_user(user, pw, role='member'):
 
 
 def delete_user(user, by):
+    """Deactivate login while retaining the durable owner and business audit history."""
     user, by = norm(user), norm(by)
     if user == by:
         raise ValueError("You can't remove your own account")
     with database.connect() as c:
         # Serialize the last-admin check across application instances.
         c.execute("SELECT pg_advisory_xact_lock(hashtext('reelsieve-admin-membership'))")
-        actor = c.execute('SELECT role FROM users WHERE email=%s', (by,)).fetchone()
+        actor = c.execute('SELECT role FROM users WHERE email=%s AND active', (by,)).fetchone()
         if not actor or actor['role'] != 'admin':
             raise ValueError('Admin only')
-        row = c.execute('SELECT role FROM users WHERE email=%s FOR UPDATE', (user,)).fetchone()
+        row = c.execute('SELECT role FROM users WHERE email=%s AND active FOR UPDATE', (user,)).fetchone()
         if not row:
             raise ValueError('No such user')
-        if row['role'] == 'admin' and c.execute("SELECT count(*) AS n FROM users WHERE role='admin'").fetchone()['n'] <= 1:
+        if row['role'] == 'admin' and c.execute("SELECT count(*) AS n FROM users WHERE role='admin' AND active").fetchone()['n'] <= 1:
             raise ValueError('Keep at least one admin')
-        c.execute('DELETE FROM users WHERE email=%s', (user,))
+        c.execute('UPDATE users SET active=FALSE,deactivated_at=%s,session_version=session_version+1 WHERE email=%s', (time.time(), user))
 
 
 def set_password(user, pw):
     validate_password(pw)
     salt = secrets.token_hex(16)
     with database.connect() as c:
-        row = c.execute('UPDATE users SET salt=%s,hash=%s,iterations=200000,changed=%s,session_version=session_version+1 WHERE email=%s RETURNING id',
+        row = c.execute('UPDATE users SET salt=%s,hash=%s,iterations=200000,changed=%s,session_version=session_version+1 WHERE email=%s AND active RETURNING id',
                         (salt, _hash(pw, salt), time.time(), norm(user))).fetchone()
         if not row:
             raise ValueError('No such user')
@@ -95,13 +96,13 @@ def set_password(user, pw):
 
 def role(user):
     with database.connect() as c:
-        row = c.execute('SELECT role FROM users WHERE email=%s', (norm(user),)).fetchone()
+        row = c.execute('SELECT role FROM users WHERE email=%s AND active', (norm(user),)).fetchone()
         return row['role'] if row else 'member'
 
 
 def verify(user, pw):
     with database.connect() as c:
-        row = c.execute('SELECT salt,hash,iterations FROM users WHERE email=%s', (norm(user),)).fetchone()
+        row = c.execute('SELECT salt,hash,iterations FROM users WHERE email=%s AND active', (norm(user),)).fetchone()
     if not row:
         _hash(pw, '00' * 16)
         return False
@@ -131,7 +132,7 @@ def clear_fails(ip):
 
 def issue(user, long=True):
     with database.connect() as c:
-        row = c.execute('SELECT id,session_version FROM users WHERE email=%s', (norm(user),)).fetchone()
+        row = c.execute('SELECT id,session_version FROM users WHERE email=%s AND active', (norm(user),)).fetchone()
         if not row:
             raise ValueError('No such user')
     ttl = LONG_TTL if long else SHORT_TTL
@@ -153,7 +154,7 @@ def check(token):
     except (ValueError, TypeError, AttributeError, UnicodeError):
         return None
     with database.connect() as c:
-        row = c.execute('SELECT email FROM users WHERE id=%s AND session_version=%s', (owner, version)).fetchone()
+        row = c.execute('SELECT email FROM users WHERE id=%s AND session_version=%s AND active', (owner, version)).fetchone()
         return row['email'] if row else None
 
 
