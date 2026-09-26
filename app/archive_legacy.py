@@ -1,0 +1,92 @@
+"""Encrypted copy of the legacy /data volume, kept in PostgreSQL so the volume can be detached.
+
+    python -m app.archive_legacy /data              # archive once; verifies by reading it back
+    python -m app.archive_legacy --restore <dir>    # write the files back (rollback only)
+
+The archive is a tar.gz of every file except the model cache, encrypted with TOKEN_ENCRYPTION_KEY
+(it contains password hashes and Drive tokens). Output is counts and a digest prefix only.
+"""
+import hashlib
+import io
+import json
+from pathlib import Path
+import sys
+import tarfile
+import time
+
+from app import database, gdrive
+
+NAME = 'legacy-volume'
+SKIP = {'hf-cache', 'lost+found'}
+MAX_BYTES = 200 * 1024 * 1024
+
+
+class ArchiveError(Exception):
+    pass
+
+
+def build(root):
+    root = Path(root)
+    buf, files = io.BytesIO(), 0
+    with tarfile.open(fileobj=buf, mode='w:gz') as tar:
+        for path in sorted(root.rglob('*')):
+            rel = path.relative_to(root)
+            if rel.parts[0] in SKIP or not path.is_file() or path.is_symlink():
+                continue
+            tar.add(path, arcname=str(rel), recursive=False)
+            files += 1
+            if buf.tell() > MAX_BYTES:
+                raise ArchiveError('Legacy data is larger than the archive limit')
+    return buf.getvalue(), files
+
+
+def archive(root):
+    blob, files = build(root)
+    digest = hashlib.sha256(blob).hexdigest()
+    with database.connect() as c:
+        row = c.execute('SELECT sha256 FROM legacy_archives WHERE name=%s', (NAME,)).fetchone()
+        if row:
+            if row['sha256'] != digest:
+                raise ArchiveError('A different legacy archive already exists; refusing to overwrite it')
+            return {'status': 'already-archived', 'files': files, 'size': len(blob), 'sha256': digest[:16]}
+        c.execute('INSERT INTO legacy_archives(name,created,files,size,sha256,data) VALUES(%s,%s,%s,%s,%s,%s)',
+                  (NAME, time.time(), files, len(blob), digest, gdrive._fernet().encrypt(blob)))
+    if hashlib.sha256(_load()).hexdigest() != digest:
+        raise ArchiveError('The stored archive did not read back intact')
+    return {'status': 'archived', 'files': files, 'size': len(blob), 'sha256': digest[:16]}
+
+
+def _load():
+    with database.connect() as c:
+        row = c.execute('SELECT data FROM legacy_archives WHERE name=%s', (NAME,)).fetchone()
+    if not row:
+        raise ArchiveError('No legacy archive stored')
+    return gdrive._fernet().decrypt(bytes(row['data']))
+
+
+def restore(dest):
+    dest = Path(dest).resolve()
+    with tarfile.open(fileobj=io.BytesIO(_load()), mode='r:gz') as tar:
+        members = tar.getmembers()
+        for m in members:
+            target = (dest / m.name).resolve()
+            if not m.isfile() or dest not in target.parents:
+                raise ArchiveError('Archive contains an unsafe entry')
+        for m in members:
+            target = dest / m.name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(tar.extractfile(m).read())
+    return {'status': 'restored', 'files': len(members)}
+
+
+if __name__ == '__main__':
+    database.initialize()
+    try:
+        if len(sys.argv) == 3 and sys.argv[1] == '--restore':
+            print(json.dumps(restore(sys.argv[2])))
+        elif len(sys.argv) == 2:
+            print(json.dumps(archive(sys.argv[1])))
+        else:
+            sys.exit('usage: python -m app.archive_legacy <legacy-dir> | --restore <dir>')
+    except ArchiveError as e:
+        sys.exit(str(e))

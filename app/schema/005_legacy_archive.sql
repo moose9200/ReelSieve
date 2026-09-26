@@ -1,0 +1,8 @@
+CREATE TABLE IF NOT EXISTS legacy_archives (
+    name TEXT PRIMARY KEY,
+    created DOUBLE PRECISION NOT NULL,
+    files INTEGER NOT NULL,
+    size BIGINT NOT NULL,
+    sha256 TEXT NOT NULL,
+    data BYTEA NOT NULL
+);

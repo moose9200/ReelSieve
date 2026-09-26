@@ -291,8 +291,16 @@ async def api_user_plan(request: Request):
     if pl not in plans.PLANS:
         raise HTTPException(400, 'Unknown plan')
     cr = b.get('credits')
+    try:
+        credits = int(cr) if cr not in (None, '') else (plans.PLANS[pl]['videos'] or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(400, 'Credits must be a whole number')
+    if not 0 <= credits <= 100000:
+        raise HTTPException(400, 'Credits must be between 0 and 100000')
+    if u not in {x['user'] for x in auth.users()}:
+        raise HTTPException(404, 'No such user')
     store.ensure_account(u)
-    store.set_plan(u, pl, int(cr) if cr not in (None, '') else plans.PLANS[pl]['videos'] or 0)
+    store.set_plan(u, pl, credits, note=f'set by {request.state.user}')
     return {'ok': True, 'account': plans.account_view(u)}
 
 

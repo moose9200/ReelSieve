@@ -14,5 +14,5 @@ huggingface_hub
 playwright
 higgsfield-client
 
-psycopg[binary]>=3.2,<4
+psycopg[binary,pool]>=3.2,<4
 cryptography>=43

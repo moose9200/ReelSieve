@@ -422,12 +422,31 @@
         li.innerHTML = "<span class=\"u-mail\"></span><span class=\"badge\"></span><span class=\"u-actions\"></span>";
         li.querySelector(".u-mail").textContent = u.user + (u.user === d.me ? " (you)" : ""); li.querySelector(".badge").textContent = u.role;
         var acts = li.querySelector(".u-actions");
+        // Plan and credits: an admin can grant or correct a customer's balance by hand.
+        var pl = document.createElement("div"); pl.className = "u-plan";
+        var sid = "u-plan-" + Math.random().toString(36).slice(2), cid = sid + "-c";
+        pl.innerHTML = '<label for="' + sid + '">Plan</label><select id="' + sid + '"></select>' +
+          '<label for="' + cid + '">Credits</label><input type="number" min="0" max="100000" step="1" inputmode="numeric" id="' + cid + '">' +
+          '<button type="button" class="btn btn-secondary btn-sm">Save plan</button>';
+        var sel = pl.querySelector("select"), cr = pl.querySelector("input"), sv = pl.querySelector("button");
+        (d.plan_keys || ["free", "starter", "commercial", "enterprise"]).forEach(function (k) {
+          var o = document.createElement("option"); o.value = k; o.textContent = k.charAt(0).toUpperCase() + k.slice(1); sel.appendChild(o);
+        });
+        sel.value = u.plan || "free"; cr.value = u.credits == null ? 0 : u.credits;
+        sv.addEventListener("click", function () {
+          sv.disabled = true; nuStatus.className = "form-status";
+          postJSON("/api/users/plan", { user: u.user, plan: sel.value, credits: cr.value })
+            .then(function (r) { var a = r.account; nuStatus.textContent = u.user + ": " + a.plan_name + ", " + (a.remaining == null ? "unlimited" : a.remaining + " video" + (a.remaining === 1 ? "" : "s") + " left") + "."; })
+            .catch(function (e) { nuStatus.textContent = e.message; nuStatus.classList.add("is-error"); })
+            .then(function () { sv.disabled = false; });
+        });
         var rp = document.createElement("button"); rp.type = "button"; rp.className = "btn btn-secondary btn-sm"; rp.textContent = "Reset password";
         rp.addEventListener("click", function () { var np = prompt("New password for " + u.user + " (min 8):"); if (!np) return; postJSON("/api/users/password", { user: u.user, password: np }).then(function () { nuStatus.textContent = "Password set for " + u.user; }).catch(function (e) { nuStatus.textContent = e.message; }); });
         acts.appendChild(rp);
         if (u.user !== d.me) { var rm = document.createElement("button"); rm.type = "button"; rm.className = "btn btn-secondary btn-sm"; rm.textContent = "Remove";
-          rm.addEventListener("click", function () { if (!confirm("Remove " + u.user + "?")) return; postJSON("/api/users/delete", { user: u.user }).then(function (dd) { renderUsers({ users: dd.users, me: d.me }); nuStatus.textContent = dd.warning ? u.user + " removed. " + dd.warning : u.user + " removed; their Drive access was revoked."; }).catch(function (e) { nuStatus.textContent = e.message; }); });
+          rm.addEventListener("click", function () { if (!confirm("Remove " + u.user + "?")) return; postJSON("/api/users/delete", { user: u.user }).then(function (dd) { getJSON("/api/users").then(renderUsers); nuStatus.textContent = dd.warning ? u.user + " removed. " + dd.warning : u.user + " removed; their Drive access was revoked."; }).catch(function (e) { nuStatus.textContent = e.message; }); });
           acts.appendChild(rm); }
+        li.appendChild(pl);
         userList.appendChild(li);
       });
     }

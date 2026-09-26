@@ -30,8 +30,11 @@ def test_imports_never_connect_or_write(monkeypatch):
     from app import database, auth, store, plans, billing
     def forbidden(*args, **kwargs):
         raise AssertionError('Import attempted a database connection')
-    monkeypatch.setattr(database.psycopg, 'connect', forbidden)
-    for module in (database, auth, store, plans, billing):
+    import psycopg
+    monkeypatch.setattr(psycopg, 'connect', forbidden)
+    monkeypatch.setattr(psycopg.Connection, 'connect', classmethod(forbidden))  # what the pool uses
+    from app import gdrive, jobs, worker, migrate_cloud, start
+    for module in (database, auth, store, plans, billing, gdrive, jobs, worker, migrate_cloud, start):
         importlib.reload(module)
 
 
@@ -317,3 +320,18 @@ def test_network_and_device_signals_expire_after_retention(db):
         assert c.execute('SELECT ip_hash,fp_hash FROM usage').fetchone() == {'ip_hash': None, 'fp_hash': None}
         assert c.execute('SELECT ip_hash,fp_hash FROM accounts').fetchone() == {'ip_hash': None, 'fp_hash': None}
     assert store.count_usage(user='old@example.test') == 1
+
+
+def test_pool_reuses_connections_and_survives_a_killed_connection(db):
+    pids = set()
+    for _ in range(20):
+        with db.connect() as c:
+            pids.add(c.execute('SELECT pg_backend_pid() AS pid').fetchone()['pid'])
+    assert len(pids) <= 10  # bounded by DB_POOL_MAX: reused, never a new connection per transaction
+    first = pids.pop()
+    import os, psycopg
+    with psycopg.connect(os.environ['DATABASE_URL'], autocommit=True) as admin:
+        for pid in [first, *pids]:
+            admin.execute('SELECT pg_terminate_backend(%s)', (pid,))
+    with db.connect() as c:
+        assert c.execute('SELECT 1 AS one').fetchone()['one'] == 1

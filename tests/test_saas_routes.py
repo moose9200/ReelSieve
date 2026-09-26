@@ -215,3 +215,21 @@ def test_startup_refuses_missing_configuration(monkeypatch):
     monkeypatch.setenv('SESSION_SECRET', 'x')
     with pytest.raises(RuntimeError, match='TOKEN_ENCRYPTION_KEY'):
         server.validate_config()
+
+
+def test_admin_sets_plan_and_credits_members_cannot(web, owners):
+    from app import plans
+    auth.create_user('ops@example.test', 'synthetic-password', 'admin')
+    ops = auth.issue('ops@example.test')[0]
+    admin = client_for(ops)
+    r = admin.post('/api/users/plan', json={'user': 'bob@example.test', 'plan': 'starter', 'credits': 7}, headers=csrf(ops))
+    assert r.status_code == 200 and r.json()['account']['plan'] == 'starter' and r.json()['account']['credits'] == 7
+    assert plans.account_view('bob@example.test')['remaining'] == 7
+    listed = {u['user']: u for u in admin.get('/api/users').json()['users']}
+    assert listed['bob@example.test']['plan'] == 'starter' and listed['bob@example.test']['credits'] == 7
+    assert web['alice'].post('/api/users/plan', json={'user': 'alice@example.test', 'plan': 'commercial', 'credits': 99},
+                             headers=csrf(owners['alice'])).status_code == 403
+    assert admin.post('/api/users/plan', json={'user': 'nobody@example.test', 'plan': 'starter', 'credits': 1}, headers=csrf(ops)).status_code == 404
+    for bad in [{'plan': 'starter', 'credits': -1}, {'plan': 'starter', 'credits': 'lots'}, {'plan': 'gold', 'credits': 1}]:
+        assert admin.post('/api/users/plan', json={'user': 'bob@example.test', **bad}, headers=csrf(ops)).status_code == 400
+    assert plans.account_view('bob@example.test')['credits'] == 7

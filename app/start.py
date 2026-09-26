@@ -4,15 +4,18 @@
 2. Apply the schema.
 3. With LEGACY_MIGRATION_ENABLED=1 only: import LEGACY_SOURCE_DIR once (a completion marker
    makes later starts a no-op; a changed source or any ownership doubt stops the start).
-4. Run the web process and, with WORKER_ENABLED=1 (default), the render worker. SIGTERM/SIGINT
-   are passed on; if either child exits the other is stopped and the container exits non-zero.
-   As PID 1 it also reaps orphaned render processes.
+4. Run the web process (WEB_ENABLED=1, default) and/or the render worker (WORKER_ENABLED=1,
+   default). A worker-only service (WEB_ENABLED=0) still answers /healthz for the platform.
+   SIGTERM/SIGINT are passed on; if a child exits the others are stopped and the container
+   exits non-zero. As PID 1 it also reaps orphaned render processes.
 """
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 from app import database, migrate_cloud
@@ -21,7 +24,35 @@ from app import database, migrate_cloud
 def commands():
     web = [sys.executable, '-m', 'uvicorn', 'app.server:app', '--host', '0.0.0.0', '--port', os.getenv('PORT', '8787')]
     worker = [sys.executable, '-m', 'app.worker']
-    return [web] + ([worker] if os.getenv('WORKER_ENABLED', '1') == '1' else [])
+    cmds = ([web] if os.getenv('WEB_ENABLED', '1') == '1' else []) + ([worker] if os.getenv('WORKER_ENABLED', '1') == '1' else [])
+    if not cmds:
+        raise SystemExit('Nothing to run: set WEB_ENABLED and/or WORKER_ENABLED to 1')
+    return cmds
+
+
+def health_server(port, build):
+    """For worker-only containers: /healthz reports whether the database is reachable."""
+    class Health(BaseHTTPRequestHandler):
+        def do_GET(self):
+            try:
+                with database.connect() as c:
+                    c.execute('SELECT 1')
+                db = True
+            except Exception:
+                db = False
+            ok = db and self.path == '/healthz'
+            body = json.dumps({'ok': ok, 'role': 'worker', 'build': build, 'db': db}).encode()
+            self.send_response(200 if ok else 503)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args):
+            pass
+    server = ThreadingHTTPServer(('0.0.0.0', port), Health)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
 
 
 def _reap(procs):
@@ -72,7 +103,10 @@ def main():
             print(json.dumps({'legacy_migration': migrate_cloud.run(source, apply=True)}, sort_keys=True), flush=True)
         except migrate_cloud.MigrationError as e:
             sys.exit(str(e))
-    sys.exit(supervise(commands()))
+    cmds = commands()
+    if os.getenv('WEB_ENABLED', '1') != '1':
+        health_server(int(os.getenv('PORT', '8787')), server.BUILD)
+    sys.exit(supervise(cmds))
 
 
 if __name__ == '__main__':

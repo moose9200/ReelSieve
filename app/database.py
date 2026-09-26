@@ -1,12 +1,22 @@
-"""PostgreSQL connection boundary. Importing this module never opens a database."""
+"""PostgreSQL connection boundary. Importing this module never opens a database.
+
+Connections come from a per-process pool (DB_POOL_MAX, default 10) created on first use. A
+connection found dead on its first statement (database restart) is discarded and another taken,
+so a restart costs a reconnect, not an error. Each `with connect()` block is one transaction: commit on exit, rollback on error.
+"""
 from contextlib import contextmanager
 import os
 from pathlib import Path
 import re
+import threading
 
 import psycopg
 from psycopg import sql
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
+
+_pools = {}
+_pools_lock = threading.Lock()
 
 
 def schema_name():
@@ -25,11 +35,42 @@ def connect():
         raise RuntimeError('DATABASE_URL is required')
     if not dsn.startswith(('postgresql://', 'postgres://')):
         raise RuntimeError('DATABASE_URL must use PostgreSQL')
-    schema = schema_name()
-    # Explicit UTF-8 also makes TEXT values strings on SQL_ASCII test clusters.
-    with psycopg.connect(dsn, row_factory=dict_row, client_encoding='UTF8') as conn:
-        conn.execute(sql.SQL('SET LOCAL search_path TO {}').format(sql.Identifier(schema)))
+    search_path = sql.SQL('SET LOCAL search_path TO {}').format(sql.Identifier(schema_name()))
+    pool = _pool(dsn)
+    for attempt in range(1, _pool_size(pool) + 2):
+        conn = pool.getconn(timeout=30)
+        try:
+            conn.execute(search_path)
+            break
+        except psycopg.OperationalError:
+            # A pooled connection died (database restart, idle drop): discard it and take another.
+            pool.putconn(conn)
+            if attempt > _pool_size(pool):
+                raise
+    try:
         yield conn
+        conn.commit()
+    except BaseException:
+        if not conn.closed:
+            conn.rollback()
+        raise
+    finally:
+        pool.putconn(conn)
+
+
+def _pool_size(pool):
+    return pool.get_stats().get('pool_size', 1)
+
+
+def _pool(dsn):
+    with _pools_lock:
+        pool = _pools.get(dsn)
+        if pool is None:
+            # Explicit UTF-8 also makes TEXT values strings on SQL_ASCII test clusters.
+            pool = ConnectionPool(dsn, min_size=1, max_size=int(os.getenv('DB_POOL_MAX', '10')), name='reelsieve',
+                                  kwargs={'row_factory': dict_row, 'client_encoding': 'UTF8'}, open=True)
+            _pools[dsn] = pool
+        return pool
 
 
 @contextmanager
