@@ -167,6 +167,8 @@ async def security_headers(request, call_next):
     response = await call_next(request)
     for k, v in SECURITY_HEADERS.items():
         response.headers.setdefault(k, v)
+    if os.getenv('SEO_NOINDEX') == '1':  # staging and previews: never compete with the real site in search
+        response.headers['X-Robots-Tag'] = 'noindex, nofollow'
     if request.url.path.startswith('/static/') and response.status_code < 400:
         # File names are not fingerprinted: one day caps how long a deploy's CSS/JS can be stale; then the ETag gives a 304.
         response.headers.setdefault('Cache-Control', 'public, max-age=86400')
@@ -263,6 +265,8 @@ ReelSieve is independent and is not endorsed by or associated with Airbnb, Inc.
 
 @app.get('/robots.txt')
 def robots_txt():
+    if os.getenv('SEO_NOINDEX') == '1':
+        return PlainTextResponse('User-agent: *\nDisallow: /\n')
     # Disallow lines come first so first-match parsers agree with Google's longest-match rule.
     rules = ''.join(f'Disallow: {p}\n' for p in PRIVATE_PATHS)
     return PlainTextResponse(f'User-agent: *\n{rules}Allow: /\n\nSitemap: {site_url()}/sitemap.xml\n')

@@ -101,3 +101,12 @@ def test_asset_urls_carry_the_build_so_deploys_bust_the_cache(web):
     assert f'/static/landing.css?v={server.BUILD}' in anon.get('/').text
     login = anon.get('/login').text
     assert f'/static/style.css?v={server.BUILD}' in login and f'/static/app.js?v={server.BUILD}' in login
+
+
+def test_staging_switch_keeps_the_whole_site_out_of_search(web, monkeypatch):
+    anon, _ = web
+    monkeypatch.setenv('SEO_NOINDEX', '1')
+    assert get(anon, '/robots.txt').text == 'User-agent: *\nDisallow: /\n'
+    assert get(anon, '/').headers['x-robots-tag'] == 'noindex, nofollow'
+    monkeypatch.delenv('SEO_NOINDEX')
+    assert 'x-robots-tag' not in get(anon, '/').headers
