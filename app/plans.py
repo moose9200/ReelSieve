@@ -13,22 +13,30 @@ import os,re,time
 from app import store, database
 PLANS={
  'free':      {'key':'free','name':'Free','price_label':'$0','period':'2 videos','videos':2,'price_usd':0,
-               'max_seconds':60,'ai_motion':False,'vertical':False,'drive':False,'outro':'ReelSieve',
-               'features':['2 videos total','Up to 60 seconds','1080p MP4 download','Route-ordered walkthrough','Real review captions','ReelSieve outro'],
-               'cta_label':'Start free','cta_href':'/signup'},
+               'max_seconds':60,'ai_motion':False,'cta_label':'Start free','cta_href':'/signup'},
  'starter':   {'key':'starter','name':'Starter','price_label':'$100','period':'one-off · 3 videos','videos':3,'price_usd':100,
-               'max_seconds':90,'ai_motion':True,'vertical':True,'drive':True,'outro':'own','highlight':True,
-               'features':['3 videos','AI camera motion (Higgsfield Seedance)','Up to 90 seconds','1080p + 9:16 vertical cut','Google Drive delivery','No ReelSieve outro'],
-               'cta_label':'Choose Starter','cta_href':'/signup?plan=starter'},
+               'max_seconds':90,'ai_motion':True,'highlight':True,'cta_label':'Choose Starter','cta_href':'/signup?plan=starter'},
  'commercial':{'key':'commercial','name':'Commercial','price_label':'$500','period':'one-off · 20 videos','videos':20,'price_usd':500,
-               'max_seconds':90,'ai_motion':True,'vertical':True,'drive':True,'outro':'own',
-               'features':['20 videos','AI camera motion','Up to 90 seconds','Bulk queue','Brand your own outro','Priority rendering','Email + Drive delivery'],
-               'cta_label':'Choose Commercial','cta_href':'/signup?plan=commercial'},
- 'enterprise':{'key':'enterprise','name':'Enterprise','price_label':"Let's talk",'period':'unlimited · your brand','videos':None,'price_usd':None,
-               'max_seconds':90,'ai_motion':True,'vertical':True,'drive':True,'outro':'own',
-               'features':['Unlimited volume','Your brand throughout','API access','Bulk import from a spreadsheet','Dedicated support','White-label option'],
-               'cta_label':'Talk to us','cta_href':'mailto:hello@braivex.com?subject=ReelSieve%20Enterprise'},
+               'max_seconds':90,'ai_motion':True,'cta_label':'Choose Commercial','cta_href':'/signup?plan=commercial'},
+ 'enterprise':{'key':'enterprise','name':'Enterprise','price_label':"Let's talk",'period':'unlimited videos','videos':None,'price_usd':None,
+               'max_seconds':90,'ai_motion':True,'cta_label':'Talk to us','cta_href':'mailto:hello@braivex.com?subject=ReelSieve%20Enterprise'},
 }
+
+
+def _features(p):
+    """Only what the product does today, built from the limits it enforces (tests/test_plan_features.py)."""
+    return [f for f in [
+        'Unlimited videos' if p['videos'] is None else f"{p['videos']} videos",
+        f"Up to {p['max_seconds']} seconds per video",
+        'AI camera motion' if p['ai_motion'] else None,
+        'Full HD 16:9 or 9:16 video, plus a 720p copy',
+        'Saved to your Google Drive, private until you share it',
+        'Failed renders refunded, and remaking a listing is free',
+    ] if f]
+
+
+for _p in PLANS.values():
+    _p['features'] = _features(_p)
 ORDER=['free','starter','commercial','enterprise']
 FREE_LIFETIME=int(os.getenv('FREE_LIFETIME','2'))
 FREE_PER_NET=int(os.getenv('FREE_PER_NET','12'))  # offices and mobile carriers share a /24; the per-account cap is the real control
@@ -54,7 +62,7 @@ def account_view(user):
     elif p['videos'] is None:remaining=None
     else:remaining=max(0,int(a.get('credits') or 0))
     return {'user':user,'plan':p['key'],'plan_name':p['name'],'credits':a.get('credits') or 0,'used':used,'remaining':remaining,
-            'max_seconds':p['max_seconds'],'ai_motion':p['ai_motion'],'vertical':p['vertical'],'blocked':bool(a.get('blocked'))}
+            'max_seconds':p['max_seconds'],'ai_motion':p['ai_motion'],'blocked':bool(a.get('blocked'))}
 def check_email(email):
     e=(email or '').strip().lower()
     if not re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]{2,}',e):return 'Enter a valid email address'

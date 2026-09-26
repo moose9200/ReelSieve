@@ -7,6 +7,9 @@
 {%- set poster = sample_poster or '/static/sample/poster.jpg' -%}
 {#- The chapter strip is timed to the bundled demo file only. -#}
 {%- set bundled = video.endswith('/static/sample/reel.mp4') -%}
+{#- Bundled files are cached for a day; the build in the URL makes a new cut or poster show at once. -#}
+{%- set video_src = video ~ ('?v=' ~ asset_version if bundled else '') -%}
+{%- set poster_src = poster ~ ('?v=' ~ asset_version if poster.endswith('/static/sample/poster.jpg') else '') -%}
 {%- set chapters = [
   (0, 4.4, 'Intro'), (5.0, 4.4, 'Rating card'), (9.2, 4.0, 'Exterior'), (13.2, 7.7, 'Living room'),
   (21.0, 7.9, 'Kitchen'), (28.9, 3.8, 'Dining'), (32.7, 7.8, 'Outdoors'), (40.5, 4.9, 'Review card'), (45.4, 5.0, 'Outro')] -%}
@@ -105,7 +108,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Assistant:wght@400;600;700;800&display=swap" rel="stylesheet">
-  <link rel="preload" as="image" href="{{ poster }}">
+  <link rel="preload" as="image" href="{{ poster_src }}">
   <link rel="stylesheet" href="/static/landing.css?v={{ asset_version }}">
   <script type="application/ld+json">
   {"@context": "https://schema.org", "@graph": [
@@ -177,8 +180,8 @@
         {{ lines(['This one uses the cinematic 16:9 style.', 'Pick a scene to jump to it.'] if bundled else ['This one uses the cinematic 16:9 style.']) }}
       </div>
       <div class="lp-screen">
-        <video id="lp-video" controls playsinline preload="none" poster="{{ poster }}" width="1280" height="720" aria-label="ReelSieve sample reel in the cinematic 16:9 style"{% if bundled %} aria-describedby="sample-note"{% endif %}>
-          <source src="{{ video }}" type="video/mp4">
+        <video id="lp-video" controls playsinline preload="none" poster="{{ poster_src }}" width="1920" height="1080" aria-label="ReelSieve sample reel in the cinematic 16:9 style"{% if bundled %} aria-describedby="sample-note"{% endif %}>
+          <source src="{{ video_src }}" type="video/mp4">
         </video>
       </div>
       {% if bundled %}
