@@ -22,3 +22,11 @@ def test_privacy_notice_keeps_the_items_the_law_requires(db):
                      'ico.org.uk/make-a-complaint', 'within one month', 'Object to outreach',
                      'strictly necessary', 'Limited Use requirements', 'drive.file', 'under 18']:
         assert required in text, required
+
+
+def test_https_responses_carry_hsts_and_plain_http_does_not(db):
+    from fastapi.testclient import TestClient
+    from app import server
+    c = TestClient(server.app)
+    assert c.get('/healthz', headers={'x-forwarded-proto': 'https'}).headers.get('strict-transport-security') == 'max-age=31536000'
+    assert 'strict-transport-security' not in c.get('/healthz').headers

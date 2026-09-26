@@ -170,6 +170,8 @@ async def security_headers(request, call_next):
     response = await call_next(request)
     for k, v in SECURITY_HEADERS.items():
         response.headers.setdefault(k, v)
+    if _secure(request):  # browsers only honour HSTS over HTTPS; one year, this host only
+        response.headers.setdefault('Strict-Transport-Security', 'max-age=31536000')
     if os.getenv('SEO_NOINDEX') == '1':  # staging and previews: never compete with the real site in search
         response.headers['X-Robots-Tag'] = 'noindex, nofollow'
     if request.url.path.startswith('/static/') and response.status_code < 400:
