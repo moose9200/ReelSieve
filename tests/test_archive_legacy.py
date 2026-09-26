@@ -45,3 +45,13 @@ def test_diff_lists_paths_changed_since_the_archive(volume):
     (volume / 'jobs' / 'abcdef1234' / 'job.json').unlink()
     assert archive_legacy.diff(volume) == {'added': ['reelsieve.db-wal'], 'removed': ['jobs/abcdef1234/job.json'],
                                            'changed': ['auth.json']}
+
+
+def test_rearchiving_unchanged_files_later_is_recognised(volume, monkeypatch):
+    import os
+    import time
+    archive_legacy.archive(volume)
+    later = time.time() + 3600
+    monkeypatch.setattr(time, 'time', lambda: later)  # gzip stamps the current time into the archive
+    os.utime(volume / 'auth.json', (later, later))  # same bytes, newer modification time
+    assert archive_legacy.archive(volume)['status'] == 'already-archived'

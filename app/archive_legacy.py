@@ -45,11 +45,13 @@ def archive(root):
     blob, files = build(root)
     digest = hashlib.sha256(blob).hexdigest()
     with database.connect() as c:
-        row = c.execute('SELECT sha256 FROM legacy_archives WHERE name=%s', (NAME,)).fetchone()
-        if row:
-            if row['sha256'] != digest:
-                raise ArchiveError('A different legacy archive already exists; refusing to overwrite it')
-            return {'status': 'already-archived', 'files': files, 'size': len(blob), 'sha256': digest[:16]}
+        stored = c.execute('SELECT sha256 FROM legacy_archives WHERE name=%s', (NAME,)).fetchone()
+    if stored:
+        # Compare file contents: the archive bytes themselves change with every build (gzip and tar timestamps).
+        if any(diff(root).values()):
+            raise ArchiveError('A different legacy archive already exists; refusing to overwrite it')
+        return {'status': 'already-archived', 'files': files, 'size': len(blob), 'sha256': stored['sha256'][:16]}
+    with database.connect() as c:
         c.execute('INSERT INTO legacy_archives(name,created,files,size,sha256,data) VALUES(%s,%s,%s,%s,%s,%s)',
                   (NAME, time.time(), files, len(blob), digest, gdrive._fernet().encrypt(blob)))
     if hashlib.sha256(_load()).hexdigest() != digest:
