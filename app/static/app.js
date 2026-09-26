@@ -35,6 +35,8 @@
       });
     });
   }
+  // Listing photos come through our own server, so the visitor's browser never contacts Airbnb's CDN.
+  function imgSrc(u) { return "/img?u=" + encodeURIComponent(u); }
   function getJSON(url) {
     return fetch(url, { headers: { "Accept": "application/json" } }).then(function (r) {
       if (!r.ok) throw new Error("HTTP " + r.status); return r.json();
@@ -78,7 +80,7 @@
       data.items.forEach(function (it) {
         var el = document.createElement("article"); el.className = "result"; el.setAttribute("data-id", it.id);
         var rating = it.rating != null ? "★ " + it.rating + (it.reviews != null ? " (" + it.reviews + ")" : "") : "New";
-        el.innerHTML = (it.photo ? '<img loading="lazy" src="' + esc(it.photo) + '?im_w=720" alt="">' : "") +
+        el.innerHTML = (it.photo ? '<img loading="lazy" src="' + esc(imgSrc(it.photo + "?im_w=720")) + '" alt="">' : "") +
           '<div class="rb"><div class="rn">' + esc(it.name || it.title) + "</div>" +
           '<div class="rt">' + esc(it.title) + "</div>" + (it.summary ? '<div class="rs">' + esc(it.summary) + "</div>" : "") +
           (it.badges && it.badges.length ? '<div><span class="badge">' + esc(it.badges[0]) + "</span></div>" : "") +
@@ -612,7 +614,7 @@
         row.className = "or-row";
         row.innerHTML =
           '<label class="or-check"><input type="checkbox" class="or-pick" data-i="' + i + '" checked aria-label="Include ' + orEsc(it.name || "this co-host") + '"></label>' +
-          (it.avatar ? '<img class="or-avatar" loading="lazy" alt="" src="' + orEsc(it.avatar) + '">' : "") +
+          (it.avatar ? '<img class="or-avatar" loading="lazy" alt="" src="' + orEsc(imgSrc(it.avatar)) + '">' : "") +
           '<div class="or-row-body"><span class="or-name">' + orEsc(it.name || "Co-host") + "</span>" +
           (it.listings != null ? '<span class="or-badge">' + orEsc(it.listings) + " listings</span>" : "") +
           (it.tagline ? '<span class="or-sub">' + orEsc(it.tagline) + "</span>" : "") + "</div>" +

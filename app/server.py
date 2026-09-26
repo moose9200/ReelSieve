@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import quote
 from xml.sax.saxutils import escape
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse,
                                Response, StreamingResponse)
@@ -23,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app import admin, auth, billing, cohost, database, gdrive, hostmsg, jobs, linkedin, plans, retention, store
+from app import admin, auth, billing, cohost, database, fetch, gdrive, hostmsg, jobs, linkedin, plans, retention, store
 from app import search as listing_search
 
 HERE = Path(__file__).resolve().parent
@@ -720,7 +721,8 @@ def job_view(j, receipts=None):
         'stream_url': f"/api/jobs/{j['id']}/video" if primary else None,
         'download_url': f"/api/jobs/{j['id']}/video?download=1" if primary else None,
         'drive_link': primary['webViewLink'] if primary else None, 'shared': shared, 'reel_link': link,
-        'poster': listing.get('photo'), 'host_status': m.get('host_status'), 'host_error': m.get('host_error'),
+        'poster': img_src(listing['photo'] + ('?im_w=1200' if '?' not in listing['photo'] else '')) if listing.get('photo') else None,
+        'host_status': m.get('host_status'), 'host_error': m.get('host_error'),
         'message': msg, 'message_final': final, 'search_phrase': phrase,
         'youtube_title': phrase.replace(' ReelSieve', ' — by ReelSieve'),
         'contact_url': hostmsg.contact_url(lid) if lid else None}
@@ -861,6 +863,45 @@ def reels_index(request: Request):
         if lid and v['status'] == 'done':
             out.setdefault(lid, []).append({'id': v['id'], 'created': v['created'], 'drive_link': v['drive_link']})
     return out
+
+
+# ---------------- listing photos ----------------
+
+# ponytail: the one Airbnb CDN host seen in listing, search and co-host data; add a host here when another appears.
+IMG_HOSTS = ('a0.muscache.com',)
+IMG_MAX = 8 * 1024 * 1024
+IMG_MAGIC = ((b'\xff\xd8\xff', 'image/jpeg'), (b'\x89PNG\r\n\x1a\n', 'image/png'), (b'GIF87a', 'image/gif'), (b'GIF89a', 'image/gif'))
+
+
+def img_src(url):
+    """Pages show listing photos through /img, so a visitor's browser never contacts Airbnb's CDN."""
+    return '/img?u=' + quote(url, safe='') if url else None
+
+
+def _image_type(body):
+    """From the bytes, not the upstream header: only raster formats a browser shows (never SVG or HTML)."""
+    for magic, kind in IMG_MAGIC:
+        if body.startswith(magic):
+            return kind
+    if body[:4] == b'RIFF' and body[8:12] == b'WEBP':
+        return 'image/webp'
+    return 'image/avif' if body[4:12] in (b'ftypavif', b'ftypavis') else None
+
+
+@app.get('/img')
+def image_proxy(u: str = ''):
+    """Signed-in only (the Gate). https to IMG_HOSTS only, every redirect re-checked (app.fetch), size-capped."""
+    try:
+        _, body = fetch.get(u, headers={'User-Agent': listing_search.UA['User-Agent'], 'Accept': 'image/avif,image/webp,image/*'},
+                            timeout=20, max_bytes=IMG_MAX, hosts=IMG_HOSTS)
+    except ValueError:
+        raise HTTPException(400, 'Not an allowed image')
+    except httpx.HTTPError:
+        raise HTTPException(502, 'Image unavailable')
+    kind = _image_type(body)
+    if not kind:
+        raise HTTPException(400, 'Not an allowed image')
+    return Response(body, media_type=kind, headers={'Cache-Control': 'private, max-age=86400'})
 
 
 # ---------------- listing search ----------------

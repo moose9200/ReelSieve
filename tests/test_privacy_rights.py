@@ -5,6 +5,7 @@ import hmac
 import json
 import re
 import time
+from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
@@ -352,6 +353,61 @@ def test_worker_runs_retention_hourly(db, monkeypatch, tmp_path):
     worker.run_once('w')
     worker.run_once('w')
     assert calls == [1]
+
+
+# ---------------- 9. listing photos through our own server ----------------
+
+JPEG = b'\xff\xd8\xff\xe0' + b'0' * 64
+PHOTO = 'https://a0.muscache.com/im/pictures/hosting/Hosting-1/original/a.jpeg'
+
+
+@pytest.fixture
+def cdn(monkeypatch):
+    """Synthetic Airbnb CDN (and one foreign host) behind MockTransport; DNS answers a public address."""
+    import socket
+    import httpx
+    calls = []
+
+    def handler(req):
+        calls.append(str(req.url))
+        if req.url.path.endswith('redirect.jpg'):
+            return httpx.Response(302, headers={'Location': 'https://evil.example.org/x.jpg'})
+        if req.url.path.endswith('page.html'):
+            return httpx.Response(200, content=b'<html>not an image</html>', headers={'content-type': 'image/jpeg'})
+        if req.url.path.endswith('huge.jpg'):
+            return httpx.Response(200, content=JPEG + b'0' * (9 * 1024 * 1024))
+        return httpx.Response(200, content=JPEG, headers={'content-type': 'image/jpeg'})
+    original = httpx.Client
+    monkeypatch.setattr(httpx, 'Client', lambda **kw: original(transport=httpx.MockTransport(handler), **kw))
+    monkeypatch.setattr(socket, 'getaddrinfo', lambda host, port, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('93.184.216.34', port))])
+    return calls
+
+
+def test_image_proxy_serves_only_airbnb_cdn_images(web, cdn):
+    r = web['alice'].get('/img', params={'u': PHOTO + '?im_w=720'})
+    assert r.status_code == 200 and r.content == JPEG and r.headers['content-type'] == 'image/jpeg'
+    assert r.headers['cache-control'] == 'private, max-age=86400' and r.headers['x-content-type-options'] == 'nosniff'
+    assert cdn == [PHOTO + '?im_w=720']
+    for bad in ('http://a0.muscache.com/im/a.jpg', 'https://evil.example.org/a.jpg', 'https://a0.muscache.com.evil.example.org/a.jpg',
+                'https://a0.muscache.com@evil.example.org/a.jpg', 'https://a0.muscache.com:8443/a.jpg',
+                'https://a0.muscache.com/im/redirect.jpg', 'https://a0.muscache.com/im/page.html',
+                'https://a0.muscache.com/im/huge.jpg', '', 'file:///etc/passwd'):
+        assert web['alice'].get('/img', params={'u': bad}).status_code == 400, bad
+    assert not any('evil' in u for u in cdn)  # the redirect target was refused before any request went there
+    assert web['anon'].get('/img', params={'u': PHOTO}, follow_redirects=False).status_code == 303
+
+
+def test_pages_load_listing_photos_through_the_proxy(web, db):
+    with db.connect() as c:
+        _job(c, 'bbbbbb000001', db.user_id(ALICE), time.time(), {'listing': {'title': 'Flat', 'photo': PHOTO}})
+    proxied = '/img?u=' + quote(PHOTO + '?im_w=1200', safe='')
+    for path in ('/jobs/bbbbbb000001', '/reels'):
+        page = web['alice'].get(path).text
+        assert proxied.replace('&', '&amp;') in page or proxied in page, path
+        assert 'muscache.com/im' not in page.replace(quote('muscache.com/im', safe=''), ''), path
+    assert web['alice'].get('/api/jobs/bbbbbb000001').json()['poster'] == proxied
+    js = web['alice'].get('/static/app.js').text
+    assert 'imgSrc(it.photo' in js and 'imgSrc(it.avatar' in js and 'src="\' + esc(it.photo)' not in js
 
 
 # ---------------- 7. abuse signals: minimal, pseudonymised, described honestly ----------------

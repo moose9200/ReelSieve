@@ -24,12 +24,15 @@ def check(url):
     return url
 
 
-def get(url, headers=None, timeout=45, max_bytes=MAX_BYTES, redirects=5):
-    """(final_url, body bytes). Raises ValueError for unsafe targets, oversize bodies or HTTP errors."""
+def get(url, headers=None, timeout=45, max_bytes=MAX_BYTES, redirects=5, hosts=None):
+    """(final_url, body bytes). Raises ValueError for unsafe targets, oversize bodies or HTTP errors.
+    hosts: when given, every hop (redirects included) must be https to one of these exact host names."""
     # ponytail: DNS is checked before each connection; a rebinding resolver could still swap the
     # address in between. Pin the resolved IP in a custom transport if that threat becomes real.
     with httpx.Client(headers=headers, timeout=timeout, follow_redirects=False) as client:
         for _ in range(redirects + 1):
+            if hosts is not None and (urlsplit(url).scheme != 'https' or urlsplit(url).hostname not in hosts):
+                raise ValueError('That host is not allowed')
             check(url)
             with client.stream('GET', url) as r:
                 if r.is_redirect:
