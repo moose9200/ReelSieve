@@ -38,7 +38,8 @@ Each test gets its own disposable PostgreSQL schema. Google is an HTTPX mock; re
 | `WORKER_ENABLED` | `1` (default) runs the render worker in the container; `0` for web-only staging. |
 | `RENDER_TMP_DIR` | Disposable scratch for renders (default `/tmp/reelsieve`). |
 | `HF_KEY` | Higgsfield `key-id:key-secret` — enables AI camera motion (billable). |
-| `CHECKOUT_STARTER`, `CHECKOUT_COMMERCIAL`, `BILLING_WEBHOOK_SECRET`, `BILLING_NOTE` | Payments. |
+| `CHECKOUT_STARTER`, `CHECKOUT_COMMERCIAL`, `BILLING_WEBHOOK_SECRET`, `BILLING_NOTE` | Payments without Stripe: reusable payment links, generic signed webhook, invoice note. |
+| `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | Card payments on hosted Stripe Checkout. Both must be set; otherwise the plans page falls back to invoice / payment link. Webhook endpoint `<PUBLIC_BASE_URL>/api/billing/webhook/stripe`, events `checkout.session.completed` and `checkout.session.async_payment_succeeded`. |
 | `GDRIVE_FOLDER`, `DEFAULT_MESSAGE` | Drive folder name; default host message. |
 | `LEGACY_MIGRATION_ENABLED`, `LEGACY_SOURCE_DIR` | One-time import of the old volume (see below). |
 
