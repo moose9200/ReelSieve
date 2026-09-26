@@ -18,7 +18,8 @@ priced separately — ACH debit 2%, minimum $9. So Starter ($100) costs $9 via I
 and Commercial ($500) costs $10 against $19. Minimum transaction is $50 and InstaLinks expect a US payer.
 """
 import os,re,json,time,hmac,hashlib,secrets
-from app import store,plans
+from app import store,plans,database
+from psycopg.errors import UniqueViolation
 PROVIDERS={
  'skydo':{'name':'Skydo InstaLink','kind':'order-link','note':'RBI-authorised, zero FX markup. Each link is single use, so mint one per order and attach it below.'},
  'razorpay':{'name':'Razorpay','kind':'link','note':'Cards and UPI. International needs activation.'},
@@ -26,16 +27,6 @@ PROVIDERS={
  'paypal':{'name':'PayPal','kind':'link','note':'Instant to set up, best for small tickets.'},
  'invoice':{'name':'Invoice / bank transfer','kind':'invoice','note':'You send a link or account details, then mark it paid.'},
 }
-def _schema():
-    with store._lock,store.conn() as c:
-        c.execute("""CREATE TABLE IF NOT EXISTS orders(
-          id INTEGER PRIMARY KEY AUTOINCREMENT, ref TEXT UNIQUE, ts REAL, user TEXT, plan TEXT,
-          amount_usd REAL, provider TEXT, status TEXT DEFAULT 'pending', paid_at REAL, note TEXT, meta TEXT)""")
-        c.execute('CREATE INDEX IF NOT EXISTS ix_orders_user ON orders(user)')
-        cols={r[1] for r in c.execute('PRAGMA table_info(orders)').fetchall()}
-        if 'pay_link' not in cols:c.execute('ALTER TABLE orders ADD COLUMN pay_link TEXT')
-        c.commit()
-_schema()
 PLACEHOLDER=re.compile(r'(example\.|localhost|127\.0\.0\.1|abc123|your[-_]?link|xxxx|placeholder|<|\{)',re.I)
 # Some providers mint a link per payment, not per product. Skydo's InstaLink is one of them: its own FAQ says a
 # link "cannot be used again" once paid. Reused as a plan-wide link it works for exactly one customer and then
@@ -53,44 +44,54 @@ def checkout_link(plan_key):
 def create_order(user,plan_key,provider='invoice',note='',meta=None):
     p=plans.PLANS.get(plan_key)
     if not p or p['price_usd'] in (None,0):raise ValueError('That plan is not purchasable here')
-    import sqlite3
-    for _ in range(6):   # ref is UNIQUE; a collision must retry, not 500 at the moment someone tries to pay
+    for _ in range(6):
         ref='RS-'+time.strftime('%y%m%d')+'-'+secrets.token_hex(3).upper()
         try:
-            with store._lock,store.conn() as c:
-                c.execute('INSERT INTO orders(ref,ts,user,plan,amount_usd,provider,status,note,meta) VALUES(?,?,?,?,?,?,?,?,?)',
-                          (ref,time.time(),user,plan_key,float(p['price_usd']),provider,'pending',note[:400],json.dumps(meta or {})));c.commit()
-            return get_order(ref)
-        except sqlite3.IntegrityError:continue
+            with database.connect() as c:
+                c.execute('INSERT INTO orders(ref,ts,owner_id,plan,amount_usd,provider,status,note,meta) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)',
+                          (ref,time.time(),database.user_id(user,c),plan_key,float(p['price_usd']),provider,'pending',note[:400],json.dumps(meta or {})))
+                return get_order(ref,conn=c)
+        except UniqueViolation:
+            continue
     raise ValueError('Could not allocate an order reference — try again')
-def get_order(ref):
-    with store._lock,store.conn() as c:
-        r=c.execute('SELECT * FROM orders WHERE ref=?',(ref,)).fetchone();return dict(r) if r else None
+
+
+def get_order(ref,conn=None):
+    with database.transaction(conn) as c:
+        return c.execute('SELECT o.*,u.email AS "user" FROM orders o JOIN users u ON u.id=o.owner_id WHERE ref=%s',(ref,)).fetchone()
+
+
 def get_order_for(ref,user,admin=False):
-    """The order, but only if this tenant owns it. A reference is a bearer-ish string that gets pasted into
-    bank transfers and emails, so knowing one must not reveal another tenant's plan, price or status."""
-    o=get_order(ref) if ref else None
-    if not o:return None
-    return o if (admin or (o.get('user') and o['user']==user)) else None
+    if not ref:return None
+    with database.connect() as c:
+        q='SELECT o.*,u.email AS "user" FROM orders o JOIN users u ON u.id=o.owner_id WHERE ref=%s'
+        args=[ref]
+        if not admin:
+            q+=' AND u.email=%s'
+            args.append((user or '').strip().lower())
+        return c.execute(q,args).fetchone()
+
+
 def set_pay_link(ref,url):
-    """Attach a minted per-payment link (e.g. a Skydo InstaLink) to exactly one order.
-    One link, one order, one tenant — which is what makes a provider with no reference field multi-tenant safe."""
     u=(url or '').strip()
     if u and not u.startswith('https://'):raise ValueError('The payment link must start with https://')
     if u and PLACEHOLDER.search(u):raise ValueError('That looks like a placeholder, not a real payment link')
-    o=get_order(ref)
-    if not o:raise ValueError('No such order')
-    if o['status'] in ('paid','cancelled'):raise ValueError(f'Order {ref} is already {o["status"]}')
-    with store._lock,store.conn() as c:
-        c.execute('UPDATE orders SET pay_link=? WHERE ref=?',(u or None,ref));c.commit()
-    return get_order(ref)
+    with database.connect() as c:
+        o=c.execute('SELECT * FROM orders WHERE ref=%s FOR UPDATE',(ref,)).fetchone()
+        if not o:raise ValueError('No such order')
+        if o['status'] in ('paid','cancelled'):raise ValueError(f'Order {ref} is already {o["status"]}')
+        c.execute('UPDATE orders SET pay_link=%s WHERE ref=%s',(u or None,ref))
+        return get_order(ref,conn=c)
+
+
 def orders(user=None,limit=200):
-    q='SELECT * FROM orders';a=[]
-    if user:q+=' WHERE user=?';a.append(user)
-    q+=' ORDER BY ts DESC LIMIT ?';a.append(limit)
-    with store._lock,store.conn() as c:return [dict(r) for r in c.execute(q,a).fetchall()]
+    return store._owned_rows('orders',user,limit)
+
+
 def pending_count():
-    with store._lock,store.conn() as c:return c.execute("SELECT COUNT(*) n FROM orders WHERE status IN ('pending','reported')").fetchone()['n']
+    with database.connect() as c:
+        return c.execute("SELECT count(*) AS n FROM orders WHERE status IN ('pending','reported')").fetchone()['n']
+
 def pay_url(plan_key,ref,base):
     """Static provider links can't tell tenants apart, so every order carries its own reference.
     We append it in the shapes the common providers read, and show it to the customer to quote."""
@@ -101,32 +102,34 @@ def pay_url(plan_key,ref,base):
     ret=f'{base.rstrip("/")}/upgrade/paid?ref={q(ref)}'
     return f'{link}{sep}ref={q(ref)}&client_reference_id={q(ref)}&reference={q(ref)}&redirect_url={q(ret)}'
 def mark_reported(ref):
-    o=get_order(ref)
-    if not o or o['status']!='pending':return o
-    with store._lock,store.conn() as c:
-        c.execute("UPDATE orders SET status='reported' WHERE ref=? AND status='pending'",(ref,));c.commit()
-    return get_order(ref)
+    with database.connect() as c:
+        c.execute("UPDATE orders SET status='reported' WHERE ref=%s AND status='pending'",(ref,))
+        return get_order(ref,conn=c)
+
+
 def settle(ref,by='admin',provider=None):
-    """Mark paid and grant the plan's credits. Idempotent — settling twice never double-credits."""
-    o=get_order(ref)
-    if not o:raise ValueError('No such order')
-    if o['status'] in ('paid','cancelled'):return o
-    p=plans.PLANS[o['plan']]
-    store.ensure_account(o['user'])
-    store.set_plan(o['user'],o['plan'],credits=int((store.get_account(o['user']) or {}).get('credits') or 0)+int(p['videos'] or 0))
-    with store._lock,store.conn() as c:
-        c.execute('UPDATE orders SET status="paid",paid_at=?,note=COALESCE(note,"")||? ,provider=COALESCE(?,provider) WHERE ref=?',
-                  (time.time(),f' · settled by {by}',provider,ref));c.commit()
-    return get_order(ref)
+    """Lock the order and grant credits in the same transaction as the paid record."""
+    with database.connect() as c:
+        o=c.execute('SELECT * FROM orders WHERE ref=%s FOR UPDATE',(ref,)).fetchone()
+        if not o:raise ValueError('No such order')
+        if o['status'] in ('paid','cancelled'):return get_order(ref,conn=c)
+        p=plans.PLANS[o['plan']]
+        c.execute('INSERT INTO accounts(owner_id,created) VALUES(%s,%s) ON CONFLICT(owner_id) DO NOTHING',
+                  (o['owner_id'],time.time()))
+        c.execute('UPDATE accounts SET plan=%s,credits=credits+%s WHERE owner_id=%s',
+                  (o['plan'],int(p['videos'] or 0),o['owner_id']))
+        c.execute("UPDATE orders SET status='paid',paid_at=%s,note=COALESCE(note,'')||%s,provider=COALESCE(%s,provider) WHERE ref=%s",
+                  (time.time(),f' · settled by {by}',provider,ref))
+        return get_order(ref,conn=c)
+
+
 def cancel(ref,note=''):
-    """A paid order is a record of money received; cancelling it would erase that and, because settle()
-    skips cancelled orders, cancel-then-settle would leave a paying customer with nothing."""
-    o=get_order(ref)
-    if not o:raise ValueError('No such order')
-    if o['status']=='paid':raise ValueError(f'{ref} is already paid — refund it in your provider instead')
-    with store._lock,store.conn() as c:
-        c.execute('UPDATE orders SET status="cancelled",note=COALESCE(note,"")||? WHERE ref=?',(' · '+note[:200],ref));c.commit()
-    return get_order(ref)
+    with database.connect() as c:
+        o=c.execute('SELECT * FROM orders WHERE ref=%s FOR UPDATE',(ref,)).fetchone()
+        if not o:raise ValueError('No such order')
+        if o['status']=='paid':raise ValueError(f'{ref} is already paid — refund it in your provider instead')
+        c.execute("UPDATE orders SET status='cancelled',note=COALESCE(note,'')||%s WHERE ref=%s",(' · '+note[:200],ref))
+        return get_order(ref,conn=c)
 # ---------- webhook ----------
 def verify(provider,body,signature,secret=None):
     """HMAC-SHA256 of the raw body, hex or base64, constant-time. Providers differ only in header name."""

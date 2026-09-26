@@ -10,7 +10,7 @@ Layered abuse prevention (industry practice: never rely on one signal):
 Raw IPs/fingerprints are never stored (see store.py). Paid plans skip 2–4; they are spend-limited by credits.
 """
 import os,re,time
-from app import store
+from app import store, database
 PLANS={
  'free':      {'key':'free','name':'Free','price_label':'$0','period':'2 videos','videos':2,'price_usd':0,
                'max_seconds':60,'ai_motion':False,'vertical':False,'drive':False,'outro':'ReelSieve',
@@ -39,11 +39,11 @@ sharklasers.com getnada.com trashmail.com maildrop.cc dispostable.com fakeinbox.
 moakt.com emailondeck.com tempr.email discard.email spamgourmet.com mytemp.email burnermail.io grr.la spam4.me
 mailcatch.com inboxbear.com tempmailo.com tmpmail.org luxusmail.org anonbox.net'''.split())
 ROLE_LOCAL={'admin','info','support','contact','sales','billing','noreply','no-reply','postmaster','webmaster','abuse','test'}
-def _default_plan(user):
+def _default_plan(user, conn=None):
     """Admins (the people running this install) are never metered; everyone else starts free."""
-    try:
-        from app import auth;return 'enterprise' if auth.role(user)=='admin' else 'free'
-    except Exception:return 'free'
+    with database.transaction(conn) as c:
+        row = c.execute('SELECT role FROM users WHERE id=%s', (database.user_id(user, c),)).fetchone()
+        return 'enterprise' if row['role'] == 'admin' else 'free'
 def plan_of(user):
     a=store.get_account(user) or {}
     return PLANS.get(a.get('plan') or 'free',PLANS['free'])
@@ -70,34 +70,83 @@ def signup_guard(email,ip,fp):
     if store.count_usage(ip=ip,since_days=30)>=FREE_PER_NET*2:
         return 'This network has made a lot of free videos today. Choose a plan, or email hello@braivex.com and we will lift it.'
     return None
-def can_generate(user,listing_url,ip=None,fp=None):
+def can_generate(user,listing_url,ip=None,fp=None,conn=None):
     """(ok, reason, meta). Paid: needs credits. Free: layered guardrails. Same listing never costs twice."""
-    a=store.ensure_account(user,_default_plan(user));p=PLANS.get(a.get('plan') or 'free',PLANS['free'])
+    a=store.ensure_account(user,_default_plan(user,conn),conn=conn);p=PLANS.get(a.get('plan') or 'free',PLANS['free'])
     if a.get('blocked'):return False,'This account is on hold. Email hello@braivex.com.',{}
-    if store.count_usage(user=user,listing_url=listing_url)>0:
+    if store.count_usage(user=user,listing_url=listing_url,conn=conn)>0:
         return True,None,{'free_rerun':True,'reason':'same listing already generated — no credit used'}
     if p['key']!='free':
         if p['videos'] is None:return True,None,{}
         if int(a.get('credits') or 0)<=0:return False,f'No credits left on {p["name"]}. Top up to keep going.',{'upgrade':True}
         return True,None,{}
-    used=store.count_usage(user=user)
+    used=store.count_usage(user=user,conn=conn)
     if used>=FREE_LIFETIME:
         return False,f'Free plan covers {FREE_LIFETIME} videos and you have used them. Starter is $100 for 3 with AI camera motion.',{'upgrade':True}
-    if ip and store.count_usage(ip=ip,since_days=30)>=FREE_PER_NET:
+    if ip and store.count_usage(ip=ip,since_days=30,conn=conn)>=FREE_PER_NET:
         return False,'A lot of free videos have come from this network. Choose a plan, or email hello@braivex.com and we will lift it.',{'upgrade':True}
-    if fp and store.count_usage(fp=fp)>=FREE_PER_DEVICE:
+    if fp and store.count_usage(fp=fp,conn=conn)>=FREE_PER_DEVICE:
         return False,'The free allowance for this device is used up. Choose a plan to continue.',{'upgrade':True}
-    last=store.last_usage_ts(user)
+    last=store.last_usage_ts(user,conn=conn)
     if last and (time.time()-last)<FREE_COOLDOWN_H*3600:
         wait=FREE_COOLDOWN_H-(time.time()-last)/3600
         return False,f'Free plan makes one video every {int(FREE_COOLDOWN_H)} hours — next one in about {max(1,int(wait))} h. Starter removes the wait.',{'upgrade':True}
     return True,None,{'free_remaining':FREE_LIFETIME-used-1}
-def consume(user,listing_url,job_id,ip=None,fp=None):
-    a=store.ensure_account(user,_default_plan(user));p=PLANS.get(a.get('plan') or 'free',PLANS['free'])
-    if store.count_usage(user=user,listing_url=listing_url)>0:
-        store.record_usage(user,p['key'],listing_url,job_id,ip,fp,kind='rerun',credits=0);return
-    store.record_usage(user,p['key'],listing_url,job_id,ip,fp,kind='video',credits=1)
-    if p['key']!='free' and p['videos'] is not None:store.add_credits(user,-1)
+def reserve(user, listing_url, job_id, ip=None, fp=None, conn=None):
+    """Validate and reserve once. A caller can atomically insert its job using conn."""
+    if not job_id:
+        raise ValueError('A job ID is required')
+    with database.transaction(conn) as c:
+        owner = database.user_id(user, c)
+        # All quota signals use deterministic advisory locks, including cross-owner
+        # free network/device budgets. The row lock also coordinates billing/admin edits.
+        keys = ['job:' + job_id, 'owner:' + owner]
+        if ip:
+            keys.append('net:' + store.ip_hash(ip))
+        if fp:
+            keys.append('device:' + store.fp_hash(fp))
+        for key in sorted(keys):
+            c.execute('SELECT pg_advisory_xact_lock(hashtext(%s))', (key,))
+        existing = c.execute('SELECT * FROM usage WHERE job_id=%s', (job_id,)).fetchone()
+        if existing:
+            if existing['owner_id'] != owner or existing['listing_key'] != store.listing_key(listing_url):
+                raise ValueError('Job reservation does not match this request')
+            if existing['refunded_at'] is not None:
+                raise ValueError('This reservation was released; start a new job')
+            return {'free_rerun': existing['kind'] == 'rerun', 'reserved': True}
+        store.ensure_account(user, _default_plan(user, c), conn=c)
+        a = c.execute('SELECT * FROM accounts WHERE owner_id=%s FOR UPDATE', (owner,)).fetchone()
+        ok, reason, meta = can_generate(user, listing_url, ip, fp, conn=c)
+        if not ok:
+            raise ValueError(reason)
+        p = PLANS.get(a['plan'], PLANS['free'])
+        rerun = bool(meta.get('free_rerun'))
+        debited = not rerun and p['key'] != 'free' and p['videos'] is not None
+        if debited:
+            c.execute('UPDATE accounts SET credits=credits-1 WHERE owner_id=%s', (owner,))
+        store.record_usage(user, p['key'], listing_url, job_id, ip, fp,
+                           kind='rerun' if rerun else 'video', credits=0 if rerun else 1,
+                           debited=debited, conn=c)
+        return {**meta, 'reserved': True}
+
+
+def consume(user, listing_url, job_id, ip=None, fp=None):
+    return reserve(user, listing_url, job_id, ip, fp)
+
+
+def refund(job_id, conn=None):
+    """Release a reservation once, in the caller's transaction when supplied."""
+    with database.transaction(conn) as c:
+        # Same job lock as reserve; row update arbitrates concurrent refunds.
+        c.execute('SELECT pg_advisory_xact_lock(hashtext(%s))', ('job:' + job_id,))
+        row = c.execute('UPDATE usage SET refunded_at=%s WHERE job_id=%s AND refunded_at IS NULL RETURNING *',
+                        (time.time(), job_id)).fetchone()
+        if not row:
+            return False
+        if row['debited']:
+            c.execute('UPDATE accounts SET credits=credits+%s WHERE owner_id=%s', (row['credits'], row['owner_id']))
+        return True
+
 def public_plans():
     return [dict(PLANS[k]) for k in ORDER]
 PRODUCTS=[
