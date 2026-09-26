@@ -1,26 +1,56 @@
 # ReelSieve — by Braivex
 
-Paste an Airbnb listing URL → a ~30 s cinematic 16:9 reel (intro, trust card, depth-parallax walkthrough, real review card, outro "by Braivex.com") → handed to the **listing host through Airbnb messaging** (pre-filled from your own Airbnb account; you press Send).
+Paste an Airbnb listing URL → a cinematic reel (intro, trust card, depth-parallax walkthrough, real review card, outro "by Braivex.com") delivered **privately to the customer's own Google Drive**, plus a link-free message the customer sends to the host from their own Airbnb inbox.
 
-## Run
+## Architecture (cloud only)
+- **Web** (`app/server.py`, FastAPI): accounts, jobs, billing, outreach tracker, Drive connection. Writes nothing to local disk.
+- **PostgreSQL**: identities, sessions, plans/usage, orders, outreach, jobs, encrypted Drive credentials, OAuth state, Drive delivery receipts. Schema in `app/schema/*.sql`, applied at start.
+- **Worker** (`app/worker.py`): claims jobs (`SKIP LOCKED`, fenced leases), renders each in its own process group under `RENDER_TMP_DIR`, uploads every output to the owner's Drive, deletes the scratch. Interrupted jobs are failed and refunded, never re-run.
+- **Google Drive**: each account connects its own Google account (`drive.file` scope). Reels are private until the owner creates a public link on the job page.
+- `python -m app.start` validates config, applies the schema, optionally runs the one-time legacy import, then supervises web + worker.
+
+## Run locally
 ```bash
 uv venv .venv --python 3.12
-VIRTUAL_ENV=$PWD/.venv uv pip install torch torchvision transformers pillow opencv-python-headless numpy higgsfield-client python-dotenv fastapi "uvicorn[standard]" httpx jinja2 python-multipart playwright
+VIRTUAL_ENV=$PWD/.venv uv pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt
 .venv/bin/python -m playwright install chromium
-.venv/bin/uvicorn app.server:app --port 8787
+cp .env.example .env   # fill in a local PostgreSQL URL and generated secrets; never commit it
+set -a; source .env; set +a
+.venv/bin/python -m app.start
 ```
-Open http://localhost:8787 → Settings → add keys (written to `.env.local`, chmod 600, git-ignored, never rendered back).
+There is no SQLite/JSON fallback: without `DATABASE_URL`, `SESSION_SECRET` and a Fernet `TOKEN_ENCRYPTION_KEY` the app refuses to start.
 
-## Settings
-| Setting | Purpose |
+## Tests
+```bash
+TEST_DATABASE_URL=postgresql://user@127.0.0.1:5432/reelsieve_test .venv/bin/python -m pytest -q tests
+```
+Each test gets its own disposable PostgreSQL schema. Google is an HTTPX mock; renders are tiny fake child processes. No test calls a paid provider or sends a message.
+
+## Configuration
+| Variable | Purpose |
 |---|---|
-| Airbnb account | "Connect Airbnb" opens a Chrome window (Playwright persistent profile in `.listing-reel/airbnb-profile`); log in once. Used only to open the host's contact form pre-filled. |
-| Public link | Airbnb messages can't carry video, so the reel is linked. Set `PUBLIC_BASE_URL`, or "Start tunnel" (cloudflared quick tunnel, live while the app runs). |
-| Message template | `DEFAULT_MESSAGE`, `{reel_link}` is replaced with the public link. |
-| `HF_KEY` | Higgsfield API `key-id:key-secret` — enables "AI camera motion" (Seedance 2.5 image-to-video, billable). |
+| `DATABASE_URL` | PostgreSQL connection (Railway: the private URL). Required. |
+| `DATABASE_SCHEMA` | Optional schema, e.g. `reelsieve_staging` for an isolated staging service. |
+| `SESSION_SECRET` | Signs sessions and CSRF tokens; also keys network/device hashes. Required. |
+| `TOKEN_ENCRYPTION_KEY` | Fernet key for Drive credentials, separate from the session secret. Required. `TOKEN_ENCRYPTION_OLD_KEYS` (comma-separated) keeps old keys readable during rotation. |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Web-application OAuth client customers connect their Drive through. |
+| `PUBLIC_BASE_URL` | Public address (OAuth redirect and payment return links). Falls back to `RAILWAY_PUBLIC_DOMAIN`. |
+| `WORKER_ENABLED` | `1` (default) runs the render worker in the container; `0` for web-only staging. |
+| `RENDER_TMP_DIR` | Disposable scratch for renders (default `/tmp/reelsieve`). |
+| `HF_KEY` | Higgsfield `key-id:key-secret` — enables AI camera motion (billable). |
+| `CHECKOUT_STARTER`, `CHECKOUT_COMMERCIAL`, `BILLING_WEBHOOK_SECRET`, `BILLING_NOTE` | Payments. |
+| `GDRIVE_FOLDER`, `DEFAULT_MESSAGE` | Drive folder name; default host message. |
+| `LEGACY_MIGRATION_ENABLED`, `LEGACY_SOURCE_DIR` | One-time import of the old volume (see below). |
+
+Settings in the app are read-only; change values in the hosting environment and redeploy.
+
+## Google Drive OAuth
+Google Cloud Console → Credentials → OAuth client (Web application). Authorised redirect URI: `<PUBLIC_BASE_URL>/oauth/google/callback` (Settings shows the exact value). Scopes: `drive.file`, `openid`, `email`. The consent screen must be published for external users before customers outside the test-user list can connect.
+
+Security properties: OAuth state is one-time, expires in 10 minutes and only completes in the session that started it; the granted Drive scope and Google identity are checked before a connection is stored; credentials are encrypted and bound to their owner; disconnect disables access first and reports a failed revocation instead of hiding it.
 
 ## Sending to the host (by design, never automatic)
-Job page → "Open pre-filled Airbnb message" → a browser window opens `airbnb.co.uk/contact_host/<id>/send_message` with the message filled in → you review and press **Send message**. Or copy the link/message and use "Open contact form in this browser".
+Job page → "Message host on Airbnb" copies the message and opens `airbnb.co.uk/contact_host/<id>/send_message` in the customer's own browser; they paste and press **Send message**. ReelSieve never drives an Airbnb session, and outreach rows are drafts the customer sends themselves.
 
 ## Pipeline (`app/pipeline.py`)
 1. `scrape_listing` — public listing HTML: title, city, rating, review count, guests, superhost, category ratings, amenities, photos with room labels.
@@ -35,13 +65,6 @@ CLI: `.venv/bin/python app/pipeline.py <airbnb_url> jobs/<name> [--email you@x.c
 `main.py` — Seedance 2.5 text-to-video SDK smoke test (`subscribe`, handles Failed/NSFW/Cancelled).
 Skill: `~/.claude/skills/property-to-generator` (same renderer, manual/agent workflow).
 
-## Keep it running (macOS)
-Installed as a LaunchAgent so it survives Claude sessions and reboots:
-`~/Library/LaunchAgents/com.braivex.listing-reel.plist` → http://localhost:8787, logs in `logs/server.log`.
-```bash
-launchctl kickstart -k gui/$(id -u)/com.braivex.listing-reel   # restart after code changes
-launchctl bootout gui/$(id -u)/com.braivex.listing-reel        # stop
-```
 
 ## QA guards (never repeat a fixed mistake)
 `pipeline.lint_manifest` runs on every job before rendering and fails the job on: duplicate captions, a photo used twice, outro sharing the trust/review background, fewer than 6 distinct photos, repeated facts in intro/outro lines, unsanitised review text (leading ", ·" or "Stayed with kids" tags), brand watermark on, missing image files, or a reel outside 26–36 s.
@@ -61,18 +84,25 @@ Host message: "Message host on Airbnb" copies the message and opens the contact 
 `swiss-home/` — 10-image chained prompt set (exterior → living → open-plan → dining/stairs → kitchen → island → living hero → lanai → rear lawn → drone). Images generated in Gemini (free) with each result as the next reference; `prompts.json` holds the prompts. Then `depth.py images depth` + `render_v3.py manifest.json out/…mp4`. Higgsfield had 0 credits/no unlimited allowance, so Gemini was used.
 Gemini download quirk: the "Download full-sized image" button only fires when the image is scrolled into view and hovered first.
 
-## Deployment
-- GitHub: https://github.com/moose9200/ReelSieve (private, commits by Hemant Kumar Sain)
-- Railway: project `listing-reel` in workspace "Hemant Kumar Sain's Projects", service `listing-reel`, volume `/data` (jobs + HF model cache), public URL https://reelsieve-production.up.railway.app
-- Env vars on Railway: `HF_KEY`, `JOBS_DIR=/data/jobs`, `HF_HOME=/data/hf-cache`; `PUBLIC_BASE_URL` derives from `RAILWAY_PUBLIC_DOMAIN` so reel links are public without a tunnel.
-- Deploy: `railway up --detach --ci` from this folder (Dockerfile build, ~10 min: CPU torch + Chromium). Encoding uses libx264 off macOS.
+
+## Deployment (Railway)
+- GitHub: https://github.com/moose9200/ReelSieve (private). Railway project `listing-reel`, service `ReelSieve`, custom domain https://www.reelsieve.braivex.com.
+- Build: `Dockerfile` (CPU torch, Chromium, ffmpeg, Depth-Anything model baked into the image). Start: `python -m app.start` (`railway.json`). Health: `/healthz` checks the database and reports a build fingerprint.
+- `/healthz` → `{"ok": true, "build": "<fingerprint>", "db": true}`; compare the fingerprint with a local `python -c "from app import server; print(server.BUILD)"` to prove what is deployed.
+
+## One-time legacy import
+The old app kept everything on the `/data` volume. With `LEGACY_MIGRATION_ENABLED=1` and `LEGACY_SOURCE_DIR=/data`, the first start imports it before web or worker run: accounts with their original password hashes, balances, orders, outreach, jobs (interrupted ones become failed) and Drive tokens (encrypted). Any record without exactly one known owner halts the start; nothing is assigned to "the first admin". A completion marker makes later starts a no-op, and a changed source is refused. Rehearse first: `python -m app.migrate_cloud /data --dry-run` prints counts only. The source files are never modified or deleted.
+
+## Operator console
+No public admin setup exists. From a shell in the service (e.g. `railway ssh`):
+```bash
+python -m app.admin list
+read -rs PW && printf '%s\n' "$PW" | python -m app.admin set-password someone@example.com   # keeps it out of shell history
+```
 
 ## In-app listing picker (19 Sep 2026)
 "Find a listing" on the home page: location + optional dates + guests → `GET /api/search` parses Airbnb's public search page (no login; both page variants: `data-deferred-state` and `data-injector-instances`) → results grid (photo, name, rating, price, badges, photo count) → "Use this listing" fills the URL field. Fixture test in `tests/`.
 
-## Login (19 Sep 2026)
-The whole app is gated. First visit → `/setup` creates the admin login (stored salted PBKDF2 in `.listing-reel/auth.json`, `/data/auth.json` on Railway). Session = HMAC-signed cookie, 30 days. `/logout`, change password in Settings. Env override: `APP_USER` / `APP_PASSWORD` / `SESSION_SECRET`. Public paths: `/static`, `/media` (shared reel files), `/healthz`, OAuth callback.
-Local service: LaunchAgent `com.braivex.reelsieve`.
 
 ## AI camera motion (property-video-ai method, 19 Sep 2026)
 `app/aimotion.py` — audit → author → generate → assemble.

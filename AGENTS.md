@@ -14,7 +14,10 @@ FastAPI SaaS for property reels. Python 3.12; production on Railway.
 
 ## Commands
 
-- Tests: `.venv/bin/python -m pytest -q tests`
+- Tests: `TEST_DATABASE_URL=... .venv/bin/python -m pytest -q tests` (each test uses a disposable schema)
+- Run: `python -m app.start` (validates config, applies schema, optional one-time legacy import, supervises web + worker)
+- Legacy import rehearsal: `python -m app.migrate_cloud <dir> --dry-run` (counts only)
+- Operator console: `python -m app.admin list|create-admin|set-password` (password on stdin)
 - Syntax: `.venv/bin/python -m compileall -q app tests`
 - Local synthetic PostgreSQL for this task: port 55439; DB `reelsieve_test`; no production data.
 - Cloud DB tests get `TEST_DATABASE_URL` through environment. Use isolated test schemas and never test against public production schema.
@@ -25,6 +28,9 @@ FastAPI SaaS for property reels. Python 3.12; production on Railway.
 - `app/server.py`: routes, sessions, customer UI.
 - `app/auth.py`, `app/store.py`, `app/plans.py`, `app/billing.py`: identity and business persistence.
 - `app/gdrive.py`: per-user Google OAuth and Drive delivery.
+- `app/jobs.py`, `app/worker.py`: durable jobs, fenced leases, disposable render scratch, Drive delivery.
+- `app/fetch.py`: public-host guard for user-influenced URLs.
+- `app/migrate_cloud.py`, `app/start.py`, `app/admin.py`: legacy import, container entry point, operator console.
 - `app/pipeline.py`: rendering orchestration.
 - `app/templates/`, `app/static/`: existing visual identity; preserve design.
 
