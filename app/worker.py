@@ -25,8 +25,10 @@ from app import gdrive, jobs, store
 LEASE = int(os.getenv('WORKER_LEASE_SECONDS', '90'))
 BEAT = max(1.0, LEASE / 6)
 EXIT_GRACE = 30  # seconds a finished child may take to exit (torch teardown) before it is killed
-STEPS = ['Fetching', 'Reviews', 'Downloaded', 'Scored', 'Audit', 'AI motion plan', 'Seedance', 'Estimating depth',
-         'Rendering', 'Rendered', 'Uploading']
+# Log-line prefixes in pipeline order; progress only ever rises (jobs.report keeps the max), so a later
+# "Estimating depth for N more frames" line leaves the bar where it is.
+STEPS = ['Fetching', 'Captured', 'Downloaded', 'Scoring', 'Estimating depth', 'Scored', 'Audit', 'AI motion plan',
+         'Seedance', 'Rendering', 'Rendered', 'Uploading']
 VARIANTS = (('primary', 'video'), ('720p', 'video_720'))
 _stop = threading.Event()
 _last_purge = [0.0]
@@ -152,7 +154,7 @@ def _progress(job, line):
     pct = None
     for i, s in enumerate(STEPS):
         if line.startswith(s):
-            pct = int(8 + i * 9)
+            pct = 8 + i * 8
     jobs.report(job['id'], job['lease_token'], step=line, progress=pct, line=line)
 
 

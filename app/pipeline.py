@@ -233,13 +233,15 @@ def lint_manifest(m,min_images=6):
 def download_photos(d,imgdir,cb=None,needed=None):
     """Photo URLs come from a scraped page, so each goes through the public-host guard."""
     from app import fetch
+    from concurrent.futures import ThreadPoolExecutor
     imgdir.mkdir(parents=True,exist_ok=True);urls=needed or [p['url'] for p in d['photos']]
-    for u in urls:
+    def one(u):
         f=imgdir/Path(u).name
-        if f.exists():continue
+        if f.exists():return
         try:_,body=fetch.get(u+('?im_w=1920' if 'muscache.com' in u else ''),headers=UA,timeout=60)
-        except (ValueError,httpx.HTTPError):continue
+        except (ValueError,httpx.HTTPError):return
         f.write_bytes(body)
+    with ThreadPoolExecutor(6) as ex:list(ex.map(one,urls))   # small pool: one CDN host, politely bounded
     log(cb,f'Downloaded {len(list(imgdir.iterdir()))} photos')
 def seedance_clips(m,workdir,cb=None,duration=4):
     """Optional: Higgsfield Seedance 2.5 image-to-video per scene (billable). Falls back per scene on any failure."""
@@ -258,8 +260,10 @@ def seedance_clips(m,workdir,cb=None,duration=4):
             if not url:log(cb,f'Seedance scene {i+1}: no video url — using parallax');continue
             out=workdir/f'clip{i}.mp4';out.write_bytes(httpx.get(url,timeout=120).content);s['clip']=str(out);log(cb,f'Seedance scene {i+1} ready')
         except Exception as e:log(cb,f'Seedance scene {i+1} failed ({type(e).__name__}: {str(e)[:60]}) — using parallax')
+def render_images(m):
+    return sorted({s['image'] for s in m['scenes']}|{m['intro']['image'],m['outro']['image']}|({m['trust']['image']} if 'trust' in m else set())|set(m.get('reviews',{}).get('bg',[])))
 def render(m,workdir,out,cb=None,renderer='v2'):
-    imgs=sorted({s['image'] for s in m['scenes']}|{m['intro']['image'],m['outro']['image']}|({m['trust']['image']} if 'trust' in m else set())|set(m.get('reviews',{}).get('bg',[])))
+    imgs=render_images(m)
     sel=workdir/'sel';sel.mkdir(exist_ok=True)
     for i in imgs:shutil.copy(i,sel/Path(i).name)
     missing=[i for i in imgs if not (Path(m['depth_dir'])/(Path(i).stem+'.png')).exists()]
@@ -314,10 +318,13 @@ def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer
     (out_dir/'listing.json').write_text(json.dumps({**d,'reviews':revs},indent=1))
     imgdir=work/'images';download_photos(d,imgdir,cb)   # every photo, so selection is on quality not on Airbnb's order
     from app import photoscore
-    scores=photoscore.score_all([imgdir/Path(p['url']).name for p in d['photos'] if (imgdir/Path(p['url']).name).exists()],'9:16' if renderer=='v3' else '16:9')
+    have=[imgdir/Path(p['url']).name for p in d['photos'] if (imgdir/Path(p['url']).name).exists()]
+    log(cb,f'Scoring {len(have)} photos for sharpness, light and colour')
+    scores=photoscore.score_all(have,'9:16' if renderer=='v3' else '16:9')
     # depth maps for the shortlist (top 18 by cheap score) so the depth axis can count
     short=sorted(scores,key=lambda k:-scores[k]['score'])[:18];sel=work/'sel';sel.mkdir(exist_ok=True)
     for k in short:shutil.copy(imgdir/k,sel/k)
+    log(cb,f'Estimating depth for {len(short)} photos')
     subprocess.run([PY,str(HERE/'depth.py'),str(sel),str(work/'depth')],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     photoscore.add_depth(scores,work/'depth')
     m=build_manifest(d,revs,imgdir,work/'depth',scores=scores);m['photo_scores']=scores
@@ -328,9 +335,10 @@ def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer
     # --- audit (free): is this photo set video-worthy? ---
     from app import aimotion
     try:
-        depth_dir=work/'depth';sel2=work/'sel2';sel2.mkdir(exist_ok=True);missing=[sc['image'] for sc in m['scenes'] if not (depth_dir/(Path(sc['image']).stem+'.png')).exists()]
+        # every frame the render will need, not just the scenes, so render() never loads the depth model a third time
+        depth_dir=work/'depth';sel2=work/'sel2';sel2.mkdir(exist_ok=True);missing=[i for i in render_images(m) if not (depth_dir/(Path(i).stem+'.png')).exists()]
         for im_ in missing:shutil.copy(im_,sel2/Path(im_).name)
-        if missing:subprocess.run([PY,str(HERE/'depth.py'),str(sel2),str(depth_dir)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        if missing:log(cb,f'Estimating depth for {len(missing)} more frames');subprocess.run([PY,str(HERE/'depth.py'),str(sel2),str(depth_dir)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
         aud=aimotion.audit([sc['image'] for sc in m['scenes']],depth_dir,{Path(sc['image']).name:sc.get('room') for sc in m['scenes']});m['audit']=aud
         log(cb,f"Audit: {aud['verdict']} ({aud['score']}/100) — "+'; '.join(aud['reasons']))
     except Exception as e:log(cb,f'Audit skipped ({type(e).__name__})')
