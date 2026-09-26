@@ -157,7 +157,7 @@ class Gate(BaseHTTPMiddleware):
 
 app.add_middleware(Gate)
 
-SECURITY_HEADERS ={'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'strict-origin-when-cross-origin',
+SECURITY_HEADERS = {'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'strict-origin-when-cross-origin',
                     'X-Frame-Options': 'DENY'}
 
 
@@ -198,6 +198,8 @@ def build_id():
 
 
 BUILD = build_id()
+# Static files are cached for a day; the build in each asset URL makes a deploy fetch fresh CSS/JS at once.
+tpl.env.globals['asset_version'] = BUILD
 
 
 @app.get('/favicon.ico')

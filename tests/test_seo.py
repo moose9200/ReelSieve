@@ -93,3 +93,11 @@ def test_security_and_static_cache_headers(web):
         assert r.headers['x-frame-options'] == 'DENY'
     assert get(anon, '/static/style.css').headers['cache-control'] == 'public, max-age=86400'
     assert 'cache-control' not in anon.get('/static/missing.css').headers
+
+
+def test_asset_urls_carry_the_build_so_deploys_bust_the_cache(web):
+    from app import server
+    anon, _ = web
+    assert f'/static/landing.css?v={server.BUILD}' in anon.get('/').text
+    login = anon.get('/login').text
+    assert f'/static/style.css?v={server.BUILD}' in login and f'/static/app.js?v={server.BUILD}' in login
