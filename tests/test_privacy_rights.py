@@ -82,6 +82,167 @@ def test_order_views_carry_only_what_the_pages_show(web):
         assert set(order) == ORDER_VIEW, path
 
 
+# ---------------- 3. export and 4. erasure ----------------
+
+def seed(db, email, marker, drive=True):
+    """A row in every table that holds an owner's data. `marker` makes this owner's values recognisable."""
+    from psycopg.types.json import Jsonb
+    from app import plans, store
+    owner, now, job = db.user_id(email), time.time(), marker[:4] + 'abcdef0123'
+    store.set_plan(email, 'starter', 3)
+    plans.reserve(email, 'https://www.airbnb.co.uk/rooms/' + str(len(marker)), job + '-usage')  # job ids are random, not personal
+    billing.settle(billing.create_order(email, 'starter', note=marker + ' Ltd, VAT XX1')['ref'])
+    billing.create_order(email, 'commercial', note=marker + ' pending')
+    billing.cancel(billing.create_order(email, 'commercial', note=marker + ' cancelled')['ref'])
+    store.add_outreach(email, 'cohost', marker + '-host', 'https://www.airbnb.co.uk/users/show/9', 'Leeds', marker + ' message')
+    store.admin_event('plan', None, email, plan='starter', credits=3)
+    with db.connect() as c:
+        c.execute("INSERT INTO jobs(id,owner_id,idempotency_key,request_hash,url,params,status,log,meta,drive_generation,created,updated,"
+                  "finished_at) VALUES(%s,%s,%s,'h','https://www.airbnb.co.uk/rooms/7',%s,'done',%s,%s,1,%s,%s,%s)",
+                  (job, owner, marker, Jsonb({'message': marker + ' template'}), Jsonb([marker + ' log line']),
+                   Jsonb({'listing': {'host': marker + '-hostname', 'title': 'Flat'}, 'message': marker + ' hello'}), now, now, now))
+        if drive:
+            c.execute("INSERT INTO drive_connections(owner_id,generation,status,credentials,google_sub,google_email,scope,folder_id,"
+                      "connected_at,updated) VALUES(%s,1,'connected',%s,%s,%s,'drive.file','folder-1',%s,%s)",
+                      (owner, marker + '-secret-credentials', marker + '-sub', marker + '@gmail.test', now, now))
+        c.execute("INSERT INTO drive_uploads(owner_id,job_id,variant,file_id,generation,status,name,created) "
+                  "VALUES(%s,%s,'primary',%s,1,'confirmed','https://www.airbnb.co.uk/rooms/7.mp4',%s)", (owner, job, marker + '-file', now))
+        c.execute("INSERT INTO drive_oauth_states(state_hash,owner_id,session_hash,redirect_uri,created,expires_at) "
+                  "VALUES(%s,%s,%s,'https://app.test/callback',%s,%s)", (marker + '-state', owner, marker + '-session', now, now + 600))
+
+
+def owned_tables(db):
+    with db.connect() as c:
+        return {r['table_name'] for r in c.execute(
+            "SELECT DISTINCT table_name FROM information_schema.columns WHERE table_schema=current_schema() "
+            "AND column_name IN ('owner_id','target_id','actor_id')").fetchall()}
+
+
+def dump(db):
+    with db.connect() as c:
+        tables = [r['table_name'] for r in c.execute(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema=current_schema()").fetchall()]
+        return {t: str(c.execute(f'SELECT * FROM {t}').fetchall()) for t in tables}
+
+
+def test_export_has_every_table_and_nothing_of_anyone_else(web, db):
+    seed(db, ALICE, 'alicemark')
+    seed(db, BOB, 'bobmark')
+    r = web['alice'].get('/api/account/export')
+    assert r.status_code == 200 and r.headers['content-type'].startswith('application/json')
+    assert r.headers['content-disposition'].startswith('attachment') and 'no-store' in r.headers['cache-control']
+    data, text = r.json(), r.text
+    tables = owned_tables(db) | {'users'}
+    assert tables <= set(data) and all(data[t] for t in tables), sorted(t for t in tables if not data.get(t))
+    assert 'bobmark' not in text and BOB not in text and db.user_id(BOB) not in text
+    assert 'alicemark@gmail.test' in text and 'alicemark-hostname' in text and 'alicemark log line' in text
+    for secret in ('alicemark-secret-credentials', 'alicemark-state', 'alicemark-session'):
+        assert secret not in text
+    assert data['users'][0]['email'] == ALICE and not {'hash', 'salt', 'iterations'} & set(data['users'][0])
+    assert 'credentials' not in data['drive_connections'][0] and data['privacy_notice'].endswith('/privacy')
+    assert web['anon'].get('/api/account/export').status_code == 401
+
+
+def test_erase_removes_or_anonymises_every_table(web, owners, google, db):
+    from fakes import connect
+    from app import admin
+    connect(owners, google)  # Alice's real (encrypted, revocable) Drive grant
+    seed(db, ALICE, 'alicemark', drive=False)
+    seed(db, BOB, 'bobmark')
+    owner, before = db.user_id(ALICE), dump(db)
+    with db.connect() as c:
+        paid = c.execute("SELECT ref FROM orders WHERE owner_id=%s AND status='paid'", (owner,)).fetchone()['ref']
+    assert admin.erase(ALICE, ADMIN) is None
+    assert [r.url.path for r in google.calls][-1] == '/revoke'
+    after = dump(db)
+    everything = ''.join(after.values())
+    assert 'alicemark' not in everything and 'google-alice' not in everything
+    assert everything.count(ALICE) == 1  # the billing email snapshot on the paid order
+    with db.connect() as c:
+        u = c.execute('SELECT * FROM users WHERE id=%s', (owner,)).fetchone()
+        assert u['email'] == f'deleted-{owner}@erased.invalid' and not u['active'] and u['erased_at'] and u['role'] == 'member'
+        assert c.execute('SELECT ip_hash,fp_hash,note FROM accounts WHERE owner_id=%s', (owner,)).fetchone() == \
+            {'ip_hash': None, 'fp_hash': None, 'note': None}
+        usage = c.execute('SELECT listing_key,fp_hash FROM usage WHERE owner_id=%s', (owner,)).fetchall()
+        assert usage and all(r['listing_key'] is None and r['fp_hash'] is None for r in usage)
+        for table in ('jobs', 'outreach', 'drive_uploads', 'drive_oauth_states'):
+            assert c.execute(f'SELECT count(*) AS n FROM {table} WHERE owner_id=%s', (owner,)).fetchone()['n'] == 0, table
+        d = c.execute('SELECT * FROM drive_connections WHERE owner_id=%s', (owner,)).fetchone()
+        assert d['status'] == 'disconnected' and not any(d[k] for k in ('credentials', 'google_sub', 'google_email', 'folder_id', 'connected_at'))
+        orders = c.execute('SELECT * FROM orders WHERE owner_id=%s', (owner,)).fetchall()
+        assert [(o['ref'], o['status'], o['billing_email'], o['note'], o['meta'], o['pay_link']) for o in orders] == \
+            [(paid, 'paid', ALICE, None, None, None)]
+        assert orders[0]['amount_usd'] == 100 and orders[0]['paid_at'] and orders[0]['plan'] == 'starter'
+        ev = c.execute("SELECT actor_id,detail FROM admin_events WHERE target_id=%s AND action='erase'", (owner,)).fetchone()
+        assert ev == {'actor_id': db.user_id(ADMIN), 'detail': {'via': 'admin'}}
+    for table in ('jobs', 'outreach', 'orders', 'drive_uploads', 'drive_connections', 'drive_oauth_states'):
+        assert before[table].count('bobmark') == after[table].count('bobmark'), table
+    assert not auth.verify(ALICE, 'synthetic-password')
+    auth.create_user(ALICE, 'a-fresh-password')
+    assert db.user_id(ALICE) != owner and auth.verify(ALICE, 'a-fresh-password')
+    with pytest.raises(ValueError, match='No such user'):
+        admin.erase(f'deleted-{owner}@erased.invalid')
+
+
+def test_self_service_deletion_needs_the_password_and_DELETE(web, db):
+    alice = web['alice']
+    for body in ({'password': 'wrong-password', 'confirm': 'DELETE'}, {'password': 'synthetic-password', 'confirm': 'delete'}):
+        assert post(alice, '/api/account/delete', body).status_code == 400
+    assert auth.verify(ALICE, 'synthetic-password')
+    r = post(alice, '/api/account/delete', {'password': 'synthetic-password', 'confirm': 'DELETE'})
+    assert r.status_code == 200 and r.json()['redirect'] == '/login?notice=deleted'
+    assert alice.get('/api/account').status_code == 401
+    anon = web['anon']
+    page = anon.get('/login?notice=deleted').text
+    assert 'Your account has been deleted' in page
+    token = re.search(r'name="csrf" value="([0-9a-f]+)"', page).group(1)
+    assert anon.post('/login', data={'csrf': token, 'user': ALICE, 'password': 'synthetic-password'}).status_code == 401
+    r = anon.post('/signup', data={'csrf': token, 'user': ALICE, 'password': 'a-fresh-password'}, follow_redirects=False)
+    assert r.status_code == 303 and auth.verify(ALICE, 'a-fresh-password')
+    with db.connect() as c:
+        assert c.execute("SELECT detail FROM admin_events WHERE action='erase'").fetchone()['detail'] == {'via': 'self'}
+
+
+def test_the_last_admin_cannot_erase_themselves(web, db):
+    from app import admin
+    r = post(web['admin'], '/api/account/delete', {'password': 'operator-password', 'confirm': 'DELETE'})
+    assert r.status_code == 400 and 'admin' in r.json()['detail']
+    with pytest.raises(ValueError, match='Keep at least one admin'):
+        admin.erase(ADMIN)
+    auth.create_user('second@example.test', 'second-password', 'admin')
+    assert post(web['admin'], '/api/account/delete', {'password': 'operator-password', 'confirm': 'DELETE'}).status_code == 200
+
+
+def test_admin_erase_is_separate_from_remove_and_admin_only(web, db):
+    assert post(web['alice'], '/api/users/erase', {'user': BOB}).status_code == 403
+    assert post(web['admin'], '/api/users/delete', {'user': ALICE}).status_code == 200
+    assert post(web['admin'], '/api/users/erase', {'user': BOB}).status_code == 200
+    with db.connect() as c:
+        rows = {r['email']: r for r in c.execute('SELECT email,active,erased_at FROM users').fetchall()}
+    assert ALICE in rows and rows[ALICE]['erased_at'] is None and not rows[ALICE]['active']  # removed, not erased
+    assert BOB not in rows
+    assert sum(1 for e, r in rows.items() if e.endswith('@erased.invalid') and r['erased_at']) == 1
+
+
+def test_account_page_offers_download_and_delete_and_settings_offers_erase(web):
+    page = web['alice'].get('/account').text
+    assert 'href="/api/account/export"' in page and 'Download my data' in page
+    assert all(f'id="{i}"' in page for i in ('del-password', 'del-confirm', 'del-btn')) and 'Delete my account' in page
+    assert 'kept for 8 years' in page and 'subject=Delete' not in page  # no more "email us and we delete it within a day"
+    js = web['alice'].get('/static/app.js').text
+    assert '/api/account/delete' in js and '/api/users/erase' in js
+    assert 'Erase deletes' in web['admin'].get('/settings').text
+
+
+def test_operator_console_erases_active_and_deactivated_accounts(owners, db):
+    from app import admin
+    assert admin.main(['deactivate', ALICE]) == 0
+    assert admin.main(['erase', ALICE]) == 0 and admin.main(['erase', BOB]) == 0
+    assert admin.main(['erase', 'nobody@example.test']) == 1
+    with db.connect() as c:
+        assert c.execute('SELECT count(*) AS n FROM users WHERE erased_at IS NOT NULL').fetchone()['n'] == 2
+
+
 # ---------------- 7. abuse signals: minimal, pseudonymised, described honestly ----------------
 
 def test_signup_stores_no_fingerprint_and_no_network_hash_on_the_account(web, db):

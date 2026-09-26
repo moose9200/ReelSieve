@@ -16,6 +16,13 @@ BEGIN
     END LOOP;
 END $$;
 
+-- Erasure: the users row stays (other records point at it) but is anonymised and stamped.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS erased_at DOUBLE PRECISION;
+-- Paid orders keep the billing email as it was when paid; it outlives erasure for the statutory record period only.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS billing_email TEXT;
+UPDATE orders o SET billing_email = u.email FROM users u
+WHERE u.id = o.owner_id AND o.status = 'paid' AND o.billing_email IS NULL AND u.erased_at IS NULL;
+
 -- Accountability for what admins do to other people's accounts. actor_id NULL: operator console or retention.
 -- detail holds references (plan, credits, order ref), never passwords, links or tokens.
 CREATE TABLE IF NOT EXISTS admin_events (

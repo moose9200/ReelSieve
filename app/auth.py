@@ -89,6 +89,27 @@ def delete_user(user, by):
         c.execute('UPDATE users SET active=FALSE,deactivated_at=%s,session_version=session_version+1 WHERE email=%s', (time.time(), user))
 
 
+def begin_erase(user, by=None):
+    """First step of erasure: end sign-in for good (the account may already be deactivated). Returns the owner id.
+    by: the admin doing it, the account itself (self-service) or None (operator console, retention)."""
+    user, by = norm(user), (norm(by) if by is not None else None)
+    with database.connect() as c:
+        c.execute("SELECT pg_advisory_xact_lock(hashtext('reelsieve-admin-membership'))")
+        if by is not None and by != user:
+            actor = c.execute('SELECT role FROM users WHERE email=%s AND active', (by,)).fetchone()
+            if not actor or actor['role'] != 'admin':
+                raise ValueError('Admin only')
+        row = c.execute('SELECT id,role,active FROM users WHERE email=%s AND erased_at IS NULL FOR UPDATE', (user,)).fetchone()
+        if not row:
+            raise ValueError('No such user')
+        if row['active'] and row['role'] == 'admin' and \
+                c.execute("SELECT count(*) AS n FROM users WHERE role='admin' AND active").fetchone()['n'] <= 1:
+            raise ValueError('Keep at least one admin')
+        c.execute('UPDATE users SET active=FALSE,deactivated_at=COALESCE(deactivated_at,%s),session_version=session_version+1 '
+                  'WHERE id=%s', (time.time(), row['id']))
+        return row['id']
+
+
 def set_password(user, pw):
     validate_password(pw)
     salt = secrets.token_hex(16)

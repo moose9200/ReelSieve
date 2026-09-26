@@ -452,7 +452,11 @@
         acts.appendChild(rp);
         if (u.user !== d.me) { var rm = document.createElement("button"); rm.type = "button"; rm.className = "btn btn-secondary btn-sm"; rm.textContent = "Remove";
           rm.addEventListener("click", function () { if (!confirm("Remove " + u.user + "?")) return; postJSON("/api/users/delete", { user: u.user }).then(function (dd) { getJSON("/api/users").then(renderUsers); nuStatus.textContent = dd.warning ? u.user + " removed. " + dd.warning : u.user + " removed; their Drive access was revoked."; }).catch(function (e) { nuStatus.textContent = e.message; }); });
-          acts.appendChild(rm); }
+          acts.appendChild(rm);
+          // Erase is not Remove: personal data goes now; paid orders stay for the tax record period.
+          var er = document.createElement("button"); er.type = "button"; er.className = "btn btn-danger btn-sm"; er.textContent = "Erase";
+          er.addEventListener("click", function () { var typed = prompt("Erase " + u.user + " for good? Their reels list, outreach and account details are deleted; paid orders are kept for tax records.\nType ERASE to confirm:"); if (typed !== "ERASE") return; postJSON("/api/users/erase", { user: u.user }).then(function (dd) { getJSON("/api/users").then(renderUsers); nuStatus.textContent = u.user + " erased." + (dd.warning ? " " + dd.warning : ""); }).catch(function (e) { nuStatus.textContent = e.message; }); });
+          acts.appendChild(er); }
         li.appendChild(pl);
         userList.appendChild(li);
       });
@@ -471,6 +475,19 @@
     postJSON("/api/account/password", { current: document.getElementById("pw-current").value, new: document.getElementById("pw-new").value })
       .then(function (d) { out.textContent = "Password changed — signing you in again…"; setTimeout(function () { window.location.href = (d && d.relogin) || "/login"; }, 800); })
       .catch(function (err) { out.textContent = err.message; out.classList.add("is-error"); });
+  });
+  var delBtn = document.getElementById("del-btn");
+  if (delBtn) delBtn.addEventListener("click", function () {
+    var out = document.getElementById("del-status"), confirmed = document.getElementById("del-confirm").value.trim();
+    out.className = "form-status";
+    if (confirmed !== "DELETE") { out.textContent = "Type DELETE to confirm."; out.classList.add("is-error"); return; }
+    delBtn.disabled = true; out.textContent = "Deleting your account…";
+    postJSON("/api/account/delete", { password: document.getElementById("del-password").value, confirm: confirmed })
+      .then(function (d) {
+        out.textContent = "Account deleted." + (d.warning ? " " + d.warning : "");
+        setTimeout(function () { window.location.href = d.redirect || "/login"; }, d.warning ? 5000 : 800);
+      })
+      .catch(function (err) { out.textContent = err.message; out.classList.add("is-error"); delBtn.disabled = false; });
   });
   // Google consent opens in a new tab; when the person comes back here, show the new Drive status.
   var gdForm = document.getElementById("gdrive-form");

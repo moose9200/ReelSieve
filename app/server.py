@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app import admin, auth, billing, cohost, database, gdrive, hostmsg, jobs, linkedin, plans, store
+from app import admin, auth, billing, cohost, database, gdrive, hostmsg, jobs, linkedin, plans, retention, store
 from app import search as listing_search
 
 HERE = Path(__file__).resolve().parent
@@ -308,7 +308,8 @@ def login_page(request: Request, next: str = '/app', notice: str = ''):
     if request.state.user:
         return RedirectResponse(_safe_next(next), status_code=303)
     msg = {'out': 'You have been signed out.', 'created': 'Account created — sign in.',
-           'pw': 'Password changed — sign in with the new one.'}.get(notice, '')
+           'pw': 'Password changed — sign in with the new one.',
+           'deleted': 'Your account has been deleted.'}.get(notice, '')
     return tpl.TemplateResponse(request, 'login.html', {'next': _safe_next(next), 'notice': msg})
 
 
@@ -388,6 +389,32 @@ def api_account(request: Request):
     return plans.account_view(request.state.user)
 
 
+@app.get('/api/account/export')
+def account_export(request: Request):
+    """Download my data (UK/EU GDPR Art 15 and 20): every table's rows for the signed-in owner, as JSON."""
+    data = {'exported_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'privacy_notice': site_url() + '/privacy',
+            **store.export(request.state.user)}
+    return Response(json.dumps(data, indent=1, default=str), media_type='application/json',
+                    headers={'Content-Disposition': 'attachment; filename="reelsieve-my-data.json"', 'Cache-Control': 'private, no-store'})
+
+
+@app.post('/api/account/delete')
+async def account_delete(request: Request):
+    """Delete my account (Art 17 / DPDP s12) after a password re-check and a typed DELETE."""
+    b = await request.json()
+    if (b.get('confirm') or '').strip() != 'DELETE':
+        raise HTTPException(400, 'Type DELETE to confirm')
+    if not auth.verify(request.state.user, b.get('password') or ''):
+        raise HTTPException(400, 'Password is wrong')
+    try:
+        warning = admin.erase(request.state.user, request.state.user)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    resp = JSONResponse({'ok': True, 'warning': warning, 'redirect': '/login?notice=deleted'})
+    resp.delete_cookie(auth.COOKIE)
+    return resp
+
+
 @app.post('/api/users/plan')
 async def api_user_plan(request: Request):
     _require_admin(request)
@@ -436,6 +463,18 @@ async def api_users_del(request: Request):
     target = ((await request.json()).get('user') or '').strip().lower()
     try:
         warning = admin.deactivate(target, request.state.user)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {'users': auth.users(), 'warning': warning}
+
+
+@app.post('/api/users/erase')
+async def api_users_erase(request: Request):
+    """Erase, unlike Remove: personal data deleted or anonymised; paid orders kept for the tax record period."""
+    _require_admin(request)
+    target = ((await request.json()).get('user') or '').strip().lower()
+    try:
+        warning = admin.erase(target, request.state.user)
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {'users': auth.users(), 'warning': warning}
@@ -1051,4 +1090,5 @@ def settings_api(request: Request):
 def account_page(request: Request, saved: int = 0, flash: str = ''):
     return tpl.TemplateResponse(request, 'account.html', {
         'account': plans.account_view(request.state.user), 'plans': plans.public_plans(),
-        'gdrive': gdrive.status(request.state.user), 'saved': bool(saved), 'flash': flash[:400]})
+        'gdrive': gdrive.status(request.state.user), 'saved': bool(saved), 'flash': flash[:400],
+        'records_years': retention.FINANCIAL_RECORDS_YEARS})

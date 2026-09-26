@@ -210,3 +210,28 @@ def admin_events(limit=50):
         return c.execute('SELECT e.ts,e.action,e.detail,a.email AS actor,t.email AS target FROM admin_events e '
                          'LEFT JOIN users a ON a.id=e.actor_id LEFT JOIN users t ON t.id=e.target_id '
                          'ORDER BY e.ts DESC,e.id DESC LIMIT %s', (limit,)).fetchall()
+
+
+def export(user):
+    """Everything held about one owner, every table (UK/EU GDPR Art 15 and 20; Account > Download my data).
+    Never password material, Drive credentials, OAuth state hashes or other people's identities."""
+    with database.connect() as c:
+        o = {'o': database.user_id(user, c)}
+        rows = lambda q: c.execute(q, o).fetchall()  # noqa: E731
+        return {
+            'users': rows('SELECT id,email,role,created,changed,active,deactivated_at,erased_at FROM users WHERE id=%(o)s'),
+            'accounts': rows('SELECT * FROM accounts WHERE owner_id=%(o)s'),
+            'usage': rows('SELECT * FROM usage WHERE owner_id=%(o)s ORDER BY ts'),
+            'jobs': rows('SELECT id,url,params,status,progress,step,log,meta,error,created,updated,finished_at '
+                         'FROM jobs WHERE owner_id=%(o)s ORDER BY created'),
+            'orders': rows('SELECT ref,ts,plan,amount_usd,provider,status,paid_at,note,meta,pay_link,billing_email '
+                           'FROM orders WHERE owner_id=%(o)s ORDER BY ts'),
+            'outreach': rows('SELECT * FROM outreach WHERE owner_id=%(o)s ORDER BY ts'),
+            'drive_connections': rows('SELECT status,google_email,google_sub,scope,folder_id,connected_at,updated '
+                                      'FROM drive_connections WHERE owner_id=%(o)s'),
+            'drive_uploads': rows('SELECT job_id,variant,file_id,status,name,web_view_link,size,sharing,created,confirmed_at '
+                                  'FROM drive_uploads WHERE owner_id=%(o)s ORDER BY created'),
+            'drive_oauth_states': rows('SELECT redirect_uri,created,expires_at FROM drive_oauth_states WHERE owner_id=%(o)s'),
+            'admin_events': rows('SELECT ts,action,detail,actor_id=%(o)s AS by_you,target_id=%(o)s AS about_you '
+                                 'FROM admin_events WHERE actor_id=%(o)s OR target_id=%(o)s ORDER BY ts'),
+        }
