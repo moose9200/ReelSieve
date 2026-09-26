@@ -14,6 +14,7 @@ from app import auth, database, gdrive, jobs, plans, store
 def deactivate(email, by=None):
     """Deactivate an account, stop its jobs and revoke its Drive grant. Returns a warning or None."""
     auth.delete_user(email, by)
+    store.admin_event('deactivate', by, email)
     owner = database.user_id(email)
     jobs.cancel_owner(owner)
     try:
@@ -35,6 +36,7 @@ def main(argv):
             return 2
         try:
             store.set_plan(email, plan, int(credits), note='set by operator console')
+            store.admin_event('plan', None, email, plan=plan, credits=int(credits))
         except ValueError as e:
             print(e, file=sys.stderr)
             return 1
@@ -57,6 +59,7 @@ def main(argv):
             auth.create_user(argv[1], password, 'admin')
         else:
             auth.set_password(argv[1], password)
+            store.admin_event('password_reset', None, argv[1].strip().lower())
     except ValueError as e:
         print(e, file=sys.stderr)
         return 1

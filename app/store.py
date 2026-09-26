@@ -10,6 +10,7 @@ import hashlib
 import json
 import ipaddress
 from psycopg import sql
+from psycopg.types.json import Jsonb
 from app import database
 
 # Compatibility name for callers; this is a real psycopg transaction context.
@@ -194,3 +195,18 @@ def cities(user=None, limit=12):
             q += ' AND owner_id=%s'
             args.append(database.user_id(user, c))
         return [r['city'] for r in c.execute(q + ' GROUP BY city ORDER BY n DESC LIMIT %s', args + [limit]).fetchall()]
+
+
+def admin_event(action, actor=None, target=None, conn=None, **detail):
+    """Accountability trail. actor/target are emails (actor None: operator console or retention); detail never holds secrets."""
+    with database.transaction(conn) as c:
+        c.execute('INSERT INTO admin_events(ts,actor_id,target_id,action,detail) VALUES(%s,%s,%s,%s,%s)',
+                  (time.time(), database.user_id(actor, c) if actor else None, database.user_id(target, c) if target else None,
+                   action, Jsonb(detail)))
+
+
+def admin_events(limit=50):
+    with database.connect() as c:
+        return c.execute('SELECT e.ts,e.action,e.detail,a.email AS actor,t.email AS target FROM admin_events e '
+                         'LEFT JOIN users a ON a.id=e.actor_id LEFT JOIN users t ON t.id=e.target_id '
+                         'ORDER BY e.ts DESC,e.id DESC LIMIT %s', (limit,)).fetchall()

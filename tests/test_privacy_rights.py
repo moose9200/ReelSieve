@@ -135,6 +135,37 @@ def test_account_page_describes_the_network_code_as_pseudonymised(web):
     assert not any(w in card.lower() for w in ('one-way', 'irreversible', 'cannot be reversed', 'device'))
 
 
+# ---------------- 8. admin accountability ----------------
+
+def test_admin_actions_leave_an_accountability_trail(web, db):
+    from app import store
+    ref = post(web['alice'], '/api/billing/request', {'plan': 'starter'}).json()['order']['ref']
+    ref2 = post(web['alice'], '/api/billing/request', {'plan': 'commercial'}).json()['order']['ref']
+    admin = web['admin']
+    for path, body in (('/api/users/plan', {'user': ALICE, 'plan': 'starter', 'credits': 5}),
+                       ('/api/users/password', {'user': ALICE, 'password': 'admin-set-password'}),
+                       ('/api/billing/link', {'ref': ref, 'url': 'https://pay.provider.test/one'}),
+                       ('/api/billing/settle', {'ref': ref}), ('/api/billing/cancel', {'ref': ref2}),
+                       ('/api/users/delete', {'user': BOB})):
+        assert post(admin, path, body).status_code == 200, path
+    with db.connect() as c:
+        rows = c.execute('SELECT e.action,a.email AS actor,t.email AS target,e.detail FROM admin_events e '
+                         'JOIN users a ON a.id=e.actor_id JOIN users t ON t.id=e.target_id ORDER BY e.id').fetchall()
+        notes = str(c.execute('SELECT note FROM accounts UNION ALL SELECT note FROM orders').fetchall())
+    assert [(r['action'], r['actor'], r['target']) for r in rows] == [
+        ('plan', ADMIN, ALICE), ('password_reset', ADMIN, ALICE), ('order_link', ADMIN, ALICE),
+        ('order_settle', ADMIN, ALICE), ('order_cancel', ADMIN, ALICE), ('deactivate', ADMIN, BOB)]
+    assert rows[0]['detail'] == {'plan': 'starter', 'credits': 5} and rows[3]['detail'] == {'ref': ref}
+    assert 'admin-set-password' not in str(rows) and 'pay.provider.test' not in str(rows)
+    assert ADMIN not in notes  # who did it lives in the trail, not in the customer's records
+    page = admin.get('/settings').text
+    assert 'Admin activity' in page and 'Password reset' in page and page.count('data-event') == 6
+    assert web['alice'].get('/settings', follow_redirects=False).status_code == 303
+    for _ in range(55):
+        store.admin_event('plan', ADMIN, ALICE, plan='free', credits=0)
+    assert admin.get('/settings').text.count('data-event') == 50
+
+
 # ---------------- 10. password hashing (Art 32) ----------------
 
 def test_new_password_hashes_use_the_owasp_pbkdf2_sha256_work_factor(db):

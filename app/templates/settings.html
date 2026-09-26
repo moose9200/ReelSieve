@@ -37,6 +37,18 @@
   <div class="actions"><button type="button" class="btn btn-primary" id="nu-btn">Add user</button><span class="form-status" id="nu-status" role="status" aria-live="polite"></span></div>
 </section>
 
+<section class="card" id="events-card">
+  <div class="section-head"><h2>Admin activity</h2><span class="pill pill-skipped">Read-only</span></div>
+  <p class="hint">The last 50 changes made to other people's accounts and orders, newest first. Kept for 2 years.</p>
+  {% if events %}
+  <ul class="user-list">
+    {% for e in events %}
+    <li class="user-row" data-event><span class="u-mail">{{ e.ts|when }} · {{ event_labels.get(e.action, e.action) }}{% if e.detail.ref %} · {{ e.detail.ref }}{% endif %}{% if e.detail.plan %} · {{ e.detail.plan|capitalize }}, {{ e.detail.credits }} credits{% endif %}</span><span class="hint">{{ e.target or '—' }} · by {{ e.actor or e.detail.via or 'operator console' }}</span></li>
+    {% endfor %}
+  </ul>
+  {% else %}<p class="hint">No admin activity yet.</p>{% endif %}
+</section>
+
 {% include '_gdrive_card.html' %}
 
 <section class="card" id="config-card">

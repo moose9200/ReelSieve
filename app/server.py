@@ -87,6 +87,7 @@ def site_url():
 
 tpl.env.globals['site_url'] = site_url
 tpl.env.filters['day'] = lambda ts: time.strftime('%d %b %Y', time.gmtime(ts or 0))
+tpl.env.filters['when'] = lambda ts: time.strftime('%d %b %Y %H:%M UTC', time.gmtime(ts or 0))
 
 
 def _secure(request):
@@ -404,7 +405,8 @@ async def api_user_plan(request: Request):
     if u not in {x['user'] for x in auth.users()}:
         raise HTTPException(404, 'No such user')
     store.ensure_account(u)
-    store.set_plan(u, pl, credits, note=f'set by {request.state.user}')
+    store.set_plan(u, pl, credits, note='set by admin')
+    store.admin_event('plan', request.state.user, u, plan=pl, credits=credits)
     return {'ok': True, 'account': plans.account_view(u)}
 
 
@@ -447,6 +449,7 @@ async def api_users_pw(request: Request):
         auth.set_password(b.get('user', ''), b.get('password', ''))
     except ValueError as e:
         raise HTTPException(400, str(e))
+    store.admin_event('password_reset', request.state.user, b.get('user', ''))
     return {'ok': True}
 
 
@@ -560,9 +563,10 @@ async def billing_settle(request: Request):
     _require_admin(request)
     b = await request.json()
     try:
-        o = billing.settle((b.get('ref') or '').strip(), by=request.state.user)
+        o = billing.settle((b.get('ref') or '').strip(), by='admin')
     except ValueError as e:
         raise HTTPException(400, str(e))
+    store.admin_event('order_settle', request.state.user, o['user'], ref=o['ref'])
     return {'ok': True, 'order': billing.view(o), 'account': plans.account_view(o['user'])}
 
 
@@ -570,7 +574,9 @@ async def billing_settle(request: Request):
 async def billing_cancel(request: Request):
     _require_admin(request)
     b = await request.json()
-    return {'ok': True, 'order': billing.view(billing.cancel((b.get('ref') or '').strip(), b.get('note') or 'cancelled'))}
+    o = billing.cancel((b.get('ref') or '').strip(), b.get('note') or 'cancelled')
+    store.admin_event('order_cancel', request.state.user, o['user'], ref=o['ref'])
+    return {'ok': True, 'order': billing.view(o)}
 
 
 @app.post('/api/billing/link')
@@ -582,6 +588,7 @@ async def billing_link(request: Request):
         o = billing.set_pay_link((b.get('ref') or '').strip(), b.get('url') or '')
     except ValueError as e:
         raise HTTPException(400, str(e))
+    store.admin_event('order_link', request.state.user, o['user'], ref=o['ref'])
     return {'ok': True, 'order': billing.view(o)}
 
 
@@ -1013,6 +1020,11 @@ def api_out_csv(request: Request):
 
 # ---------------- settings ----------------
 
+EVENT_LABELS = {'plan': 'Plan or credits changed', 'password_reset': 'Password reset', 'deactivate': 'Removed (deactivated)',
+                'erase': 'Account erased', 'order_settle': 'Order marked paid', 'order_cancel': 'Order cancelled',
+                'order_link': 'Pay link set'}
+
+
 def settings_view():
     """Cloud-managed configuration, read-only: secrets show only whether they are set."""
     return [{'key': k, 'configured': bool((os.getenv(k) or '').strip()), 'secret': secret, 'hint': hint,
@@ -1025,6 +1037,7 @@ def settings(request: Request, saved: int = 0, flash: str = ''):
         return RedirectResponse('/account' + (('?flash=' + quote(flash)) if flash else ('?saved=1' if saved else '')), status_code=303)
     return tpl.TemplateResponse(request, 'settings.html', {
         'settings': settings_view(), 'gdrive': gdrive.status(request.state.user), 'saved': bool(saved), 'flash': flash[:400],
+        'events': store.admin_events(50), 'event_labels': EVENT_LABELS,
         'redirect_uri': _redirect_uri(request), 'webhook_base': (public_base() or str(request.base_url).rstrip('/'))})
 
 
