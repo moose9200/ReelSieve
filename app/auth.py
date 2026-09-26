@@ -143,20 +143,21 @@ def verify(user, pw):
     return True
 
 
-def _ip_key(ip):
-    return hmac.new(secret().encode(), ('login|' + str(ip)).encode(), hashlib.sha256).hexdigest()
+def _ip_key(ip, purpose='login'):
+    return hmac.new(secret().encode(), (purpose + '|' + str(ip)).encode(), hashlib.sha256).hexdigest()
 
 
-def too_many(ip):
+def too_many(ip, purpose='login'):
+    """5 per 10 minutes per address. purpose keeps limits apart: 'login' failures, 'privacy' request submissions."""
     with database.connect() as c:
         return c.execute('SELECT count(*) AS n FROM login_failures WHERE ip_hash=%s AND ts>%s',
-                         (_ip_key(ip), time.time() - 600)).fetchone()['n'] >= 5
+                         (_ip_key(ip, purpose), time.time() - 600)).fetchone()['n'] >= 5
 
 
-def record_fail(ip):
+def record_fail(ip, purpose='login'):
     with database.connect() as c:
         c.execute('DELETE FROM login_failures WHERE ts<%s', (time.time() - 600,))
-        c.execute('INSERT INTO login_failures(ip_hash,ts) VALUES(%s,%s)', (_ip_key(ip), time.time()))
+        c.execute('INSERT INTO login_failures(ip_hash,ts) VALUES(%s,%s)', (_ip_key(ip, purpose), time.time()))
 
 
 def clear_fails(ip):

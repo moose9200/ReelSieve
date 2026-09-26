@@ -840,6 +840,18 @@
     });
   }
 
+  // ---------- admin: privacy requests ----------
+  Array.prototype.forEach.call(document.querySelectorAll(".req-done"), function (b) {
+    b.addEventListener("click", function () {
+      var out = document.getElementById("req-status"), ref = b.getAttribute("data-ref");
+      if (!confirm("Mark " + ref + " handled? Do this once you have replied.")) return;
+      b.disabled = true; out.className = "form-status";
+      postJSON("/api/privacy-requests/handled", { ref: ref })
+        .then(function () { var li = b.closest("li"); if (li) li.parentNode.removeChild(li); out.textContent = ref + " marked handled."; })
+        .catch(function (e) { out.textContent = e.message; out.classList.add("is-error"); b.disabled = false; });
+    });
+  });
+
   // ---------- admin: orders ----------
   var ordList = document.getElementById("ord-list");
   if (ordList) {

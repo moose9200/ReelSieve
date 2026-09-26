@@ -280,4 +280,44 @@ def export(user):
             'drive_oauth_states': rows('SELECT redirect_uri,created,expires_at FROM drive_oauth_states WHERE owner_id=%(o)s'),
             'admin_events': rows('SELECT ts,action,detail,actor_id=%(o)s AS by_you,target_id=%(o)s AS about_you '
                                  'FROM admin_events WHERE actor_id=%(o)s OR target_id=%(o)s ORDER BY ts'),
+            'privacy_requests': rows('SELECT ref,ts,type,name,details,airbnb_profile_id,status,due_at,handled_at FROM privacy_requests '
+                                     'WHERE lower(email)=(SELECT email FROM users WHERE id=%(o)s) ORDER BY ts'),
         }
+
+
+PRIVACY_REQUEST_TYPES = {'access': 'Access', 'erasure': 'Erasure', 'rectification': 'Rectification',
+                         'objection': 'Objection to outreach', 'complaint': 'Complaint', 'other': 'Other'}
+
+
+def one_month_after(ts):
+    """UK GDPR Art 12(3) 'within one month of receipt': the same day next month, or that month's last day."""
+    import calendar
+    import datetime as dt
+    d = dt.datetime.fromtimestamp(ts, dt.timezone.utc)
+    y, m = (d.year + 1, 1) if d.month == 12 else (d.year, d.month + 1)
+    return d.replace(year=y, month=m, day=min(d.day, calendar.monthrange(y, m)[1])).timestamp()
+
+
+def add_privacy_request(kind, email, name, details, airbnb_profile_id=None):
+    """Store a request and return (ref, received ts). The on-screen reference is the acknowledgement."""
+    import secrets
+    now = time.time()
+    for _ in range(6):
+        ref = 'PR-' + time.strftime('%y%m%d', time.gmtime(now)) + '-' + secrets.token_hex(3).upper()
+        with database.connect() as c:
+            if c.execute('INSERT INTO privacy_requests(ref,ts,type,email,name,details,airbnb_profile_id,due_at) '
+                         'VALUES(%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (ref) DO NOTHING RETURNING ref',
+                         (ref, now, kind, email, name, details, airbnb_profile_id, one_month_after(now))).fetchone():
+                return ref, now
+    raise RuntimeError('Could not allocate a request reference')
+
+
+def open_privacy_requests():
+    with database.connect() as c:
+        return c.execute("SELECT * FROM privacy_requests WHERE status='open' ORDER BY due_at").fetchall()
+
+
+def handle_privacy_request(ref):
+    with database.connect() as c:
+        return c.execute("UPDATE privacy_requests SET status='handled',handled_at=%s WHERE ref=%s AND status='open' RETURNING ref",
+                         (time.time(), ref)).fetchone()

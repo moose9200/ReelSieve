@@ -31,7 +31,7 @@ HERE = Path(__file__).resolve().parent
 REQUIRED = ('DATABASE_URL', 'SESSION_SECRET', 'TOKEN_ENCRYPTION_KEY')
 CSRF_COOKIE = 'reelsieve_csrf'
 PUBLIC_PREFIXES = ('/static/', '/oauth/google/callback', '/favicon.ico', '/api/billing/webhook/')
-PUBLIC_EXACT = ('/', '/login', '/signup', '/setup', '/forgot', '/healthz', '/privacy', '/terms',
+PUBLIC_EXACT = ('/', '/login', '/signup', '/setup', '/forgot', '/healthz', '/privacy', '/terms', '/privacy/request',
                 '/robots.txt', '/sitemap.xml', '/llms.txt')
 DAILY_CAP = int(os.getenv('OUTREACH_DAILY_CAP', '5'))
 TRUSTED_HOPS = int(os.getenv('TRUSTED_PROXY_HOPS', '1'))
@@ -515,6 +515,49 @@ def privacy(request: Request):
 @app.get('/terms', response_class=HTMLResponse)
 def terms(request: Request):
     return tpl.TemplateResponse(request, 'legal.html', {'kind': 'terms'})
+
+
+def _request_page(request, status=200, **ctx):
+    return tpl.TemplateResponse(request, 'privacy_request.html', {'types': store.PRIVACY_REQUEST_TYPES, 'f': {}, **ctx},
+                                status_code=status)
+
+
+@app.get('/privacy/request', response_class=HTMLResponse)
+def privacy_request_page(request: Request):
+    """Rights requests and complaints from anyone, signed in or not (UK DPA 2018 s.164A; Art 12: one month)."""
+    return _request_page(request)
+
+
+@app.post('/privacy/request')
+async def privacy_request_post(request: Request):
+    f = {k: (v or '').strip() for k, v in (await _form(request)).items() if k != 'csrf'}
+    ip = _ip(request)
+    if auth.too_many(ip, 'privacy'):
+        return _request_page(request, 429, f=f, error='Too many requests from this network. Try again in 10 minutes, or email hello@braivex.com.')
+    profile = linkedin.airbnb_profile(f.get('airbnb_profile', ''))
+    error = ('Choose what the request is about' if f.get('type') not in store.PRIVACY_REQUEST_TYPES else
+             'Enter a valid email address so we can reply' if not auth.EMAIL.match(f.get('email', '')) else
+             'Tell us what you would like us to do' if not f.get('details') else
+             'Paste the link to your Airbnb profile (airbnb.co.uk/users/show/<number>), or leave it empty'
+             if f.get('airbnb_profile') and not profile else None)
+    if error:
+        return _request_page(request, 400, f=f, error=error)
+    auth.record_fail(ip, 'privacy')  # counts submissions, not failures
+    ref, received = store.add_privacy_request(f['type'], auth.norm(f['email']), f.get('name', '')[:200] or None, f['details'][:4000],
+                                              profile.rsplit('/', 1)[-1] if profile else None)
+    if f['type'] == 'objection' and profile:
+        store.suppress({'airbnb_profile': profile})  # stop outreach to them at once, for every user
+    return _request_page(request, ack={'ref': ref, 'received': received, 'due': store.one_month_after(received)})
+
+
+@app.post('/api/privacy-requests/handled')
+async def privacy_request_handled(request: Request):
+    _require_admin(request)
+    ref = ((await request.json()).get('ref') or '').strip()
+    if not store.handle_privacy_request(ref):
+        raise HTTPException(404, 'No open request with that reference')
+    store.admin_event('privacy_request_handled', request.state.user, None, ref=ref)
+    return {'ok': True}
 
 
 def _upgrade_page(request, plan='', order=None, note='We send the invoice within a few hours and add your credits the moment it clears.', **extra):
@@ -1121,7 +1164,7 @@ def api_out_csv(request: Request):
 
 EVENT_LABELS = {'plan': 'Plan or credits changed', 'password_reset': 'Password reset', 'deactivate': 'Removed (deactivated)',
                 'erase': 'Account erased', 'order_settle': 'Order marked paid', 'order_cancel': 'Order cancelled',
-                'order_link': 'Pay link set'}
+                'order_link': 'Pay link set', 'privacy_request_handled': 'Privacy request handled'}
 
 
 def settings_view():
@@ -1137,6 +1180,7 @@ def settings(request: Request, saved: int = 0, flash: str = ''):
     return tpl.TemplateResponse(request, 'settings.html', {
         'settings': settings_view(), 'gdrive': gdrive.status(request.state.user), 'saved': bool(saved), 'flash': flash[:400],
         'events': store.admin_events(50), 'event_labels': EVENT_LABELS,
+        'requests': store.open_privacy_requests(), 'request_types': store.PRIVACY_REQUEST_TYPES, 'now': time.time(),
         'redirect_uri': _redirect_uri(request), 'webhook_base': (public_base() or str(request.base_url).rstrip('/'))})
 
 

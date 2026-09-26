@@ -20,6 +20,7 @@ THIRD_PARTY_JOB_DAYS = 30      # host name, host message, review data in a finis
 OUTREACH_MONTHS = 12           # after the row's last change
 DEACTIVATED_DAYS = 30          # "Remove" deactivates; erasure follows
 ADMIN_EVENT_YEARS = 2
+PRIVACY_REQUEST_YEARS = 2      # after the request was handled
 
 # A job keeps the customer's own reel history; only other people's data goes. Legacy jobs stored the finished
 # host message as the customer's template too.
@@ -41,6 +42,8 @@ def run(now=None):
             ('outreach', 'DELETE FROM outreach WHERE GREATEST(ts,sent_at,updated)<%s', now - OUTREACH_MONTHS * YEAR / 12),
             ('paid_orders', "DELETE FROM orders WHERE status='paid' AND paid_at<%s", now - FINANCIAL_RECORDS_YEARS * YEAR),
             ('admin_events', 'DELETE FROM admin_events WHERE ts<%s', now - ADMIN_EVENT_YEARS * YEAR),
+            ('privacy_requests', "DELETE FROM privacy_requests WHERE status='handled' AND handled_at<%s",
+             now - PRIVACY_REQUEST_YEARS * YEAR),
             ('legacy_archives', 'DELETE FROM legacy_archives WHERE created<%s', now - keep_archive * DAY),
         ]}
         due = [r['email'] for r in c.execute('SELECT email FROM users WHERE NOT active AND erased_at IS NULL AND deactivated_at<%s',

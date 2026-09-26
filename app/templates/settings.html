@@ -37,6 +37,19 @@
   <div class="actions"><button type="button" class="btn btn-primary" id="nu-btn">Add user</button><span class="form-status" id="nu-status" role="status" aria-live="polite"></span></div>
 </section>
 
+<section class="card" id="requests-card">
+  <div class="section-head"><h2>Privacy requests</h2><span class="pill {{ 'pill-running' if requests else 'pill-done' }}">{{ requests|length }} open</span></div>
+  <p class="hint">From the public form at <a href="/privacy/request">/privacy/request</a>. Reply by email within one month of receipt, then mark it handled. Objections to outreach with an Airbnb profile are already suppressed.</p>
+  {% if requests %}
+  <ul class="user-list" id="req-list">
+    {% for r in requests %}
+    <li class="user-row" data-request="{{ r.ref }}"><span class="u-mail">{{ r.ref }} · {{ request_types.get(r.type, r.type) }} · {{ r.email }}{% if r.name %} ({{ r.name }}){% endif %}{% if r.airbnb_profile_id %} · Airbnb user {{ r.airbnb_profile_id }}{% endif %}</span><span class="pill pill-sm {{ 'pill-neg' if r.due_at < now else 'pill-skipped' }}">Due {{ r.due_at|day }}</span><span class="u-actions"><button type="button" class="btn btn-secondary btn-sm req-done" data-ref="{{ r.ref }}">Mark handled</button></span><p class="hint">Received {{ r.ts|when }}. {{ r.details }}</p></li>
+    {% endfor %}
+  </ul>
+  {% else %}<p class="hint">No open requests.</p>{% endif %}
+  <p class="form-status" id="req-status" role="status" aria-live="polite"></p>
+</section>
+
 <section class="card" id="events-card">
   <div class="section-head"><h2>Admin activity</h2><span class="pill pill-skipped">Read-only</span></div>
   <p class="hint">The last 50 changes made to other people's accounts and orders, newest first. Kept for 2 years.</p>

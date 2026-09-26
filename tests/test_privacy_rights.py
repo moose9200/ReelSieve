@@ -494,6 +494,73 @@ def test_admin_actions_leave_an_accountability_trail(web, db):
     assert admin.get('/settings').text.count('data-event') == 50
 
 
+# ---------------- 12. public privacy request and complaint form ----------------
+
+def _request(client, **fields):
+    page = client.get('/privacy/request').text
+    token = re.search(r'name="csrf" value="([0-9a-f]+)"', page).group(1)
+    data = {'csrf': token, 'name': 'Pat Host', 'email': 'pat@example.org', 'type': 'objection', 'details': 'Please stop messaging me.',
+            'airbnb_profile': '', **fields}
+    return client.post('/privacy/request', data=data)
+
+
+def test_privacy_request_form_is_public_acknowledged_and_handled_by_admins(web, db):
+    from app import store
+    page = web['anon'].get('/privacy/request').text
+    for label in ('Access', 'Erasure', 'Rectification', 'Objection to outreach', 'Complaint', 'Other', 'Airbnb profile'):
+        assert label in page, label
+    assert 'href="/privacy/request"' in web['anon'].get('/privacy').text  # linked from the footer
+    r = _request(web['anon'], airbnb_profile=' https://www.airbnb.co.uk/users/show/777 ')
+    assert r.status_code == 200
+    ref = re.search(r'PR-\d{6}-[0-9A-F]{6}', r.text).group(0)
+    assert 'Received' in r.text and time.strftime('%d %b %Y', time.gmtime()) in r.text
+    with db.connect() as c:
+        row = c.execute('SELECT * FROM privacy_requests').fetchone()
+    assert (row['ref'], row['type'], row['email'], row['name'], row['airbnb_profile_id'], row['status']) == \
+        (ref, 'objection', 'pat@example.org', 'Pat Host', '777', 'open')
+    assert 28 * DAY <= row['due_at'] - row['ts'] <= 31 * DAY and row['handled_at'] is None
+    assert store.unsuppressed([{'name': 'Pat', 'airbnb_profile': 'https://www.airbnb.co.uk/users/show/777'}]) == []  # objection honoured
+    settings = web['admin'].get('/settings').text
+    assert ref in settings and 'Due' in settings and 'pat@example.org' in settings
+    assert post(web['alice'], '/api/privacy-requests/handled', {'ref': ref}).status_code == 403
+    assert post(web['admin'], '/api/privacy-requests/handled', {'ref': ref}).status_code == 200
+    with db.connect() as c:
+        row = c.execute('SELECT status,handled_at FROM privacy_requests').fetchone()
+    settings = web['admin'].get('/settings').text
+    assert row['status'] == 'handled' and row['handled_at']
+    assert ref not in settings.split('id="requests-card"', 1)[1].split('</section>', 1)[0] and 'Privacy request handled' in settings
+    for bad in ({'type': 'lawsuit'}, {'email': 'not-an-email'}, {'airbnb_profile': 'https://evil.example.org/users/show/1'}, {'details': ''}):
+        assert _request(client_for(), **bad).status_code == 400, bad
+
+
+def test_due_date_is_one_calendar_month_after_receipt():
+    import calendar
+    from app import store
+    jan31 = calendar.timegm((2026, 1, 31, 10, 0, 0))
+    assert time.gmtime(store.one_month_after(jan31))[:3] == (2026, 2, 28)
+    assert time.gmtime(store.one_month_after(calendar.timegm((2026, 12, 15, 9, 0, 0))))[:3] == (2027, 1, 15)
+
+
+def test_privacy_requests_are_rate_limited_per_network(web):
+    for _ in range(5):
+        assert _request(web['anon'], type='access', airbnb_profile='').status_code == 200
+    assert _request(web['anon'], type='access').status_code == 429
+
+
+def test_own_privacy_requests_are_in_the_export_and_leave_two_years_after_handling(web, db):
+    from app import retention
+    _request(client_for(), email=ALICE, type='access', details='Copy of my data please')
+    _request(client_for(), email=BOB, type='access', details='Bob asks too')
+    data = web['alice'].get('/api/account/export').json()
+    assert [r['details'] for r in data['privacy_requests']] == ['Copy of my data please'] and BOB not in json.dumps(data)
+    with db.connect() as c:
+        c.execute("UPDATE privacy_requests SET status='handled',handled_at=%s WHERE email=%s", (time.time() - (2 * 365.25 + 1) * DAY, ALICE))
+        c.execute("UPDATE privacy_requests SET status='handled',handled_at=%s WHERE email=%s", (time.time() - 300 * DAY, BOB))
+    retention.run()
+    with db.connect() as c:
+        assert [r['email'] for r in c.execute('SELECT email FROM privacy_requests').fetchall()] == [BOB]
+
+
 # ---------------- 13. outreach objection and suppression ----------------
 
 PROFILE = 'https://www.airbnb.co.uk/users/show/4242'
