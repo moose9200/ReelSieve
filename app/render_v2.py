@@ -3,7 +3,8 @@
 lower-third scenes, animated review cards and outro. Requires depth maps from depth.py (same stem, .png, near=bright).
 usage: render_v2.py manifest.json out.mp4 [--workers 6] [--threads <CPU budget>]
 manifest: {brand, intro{eyebrow,title,subtitle,image}, trust{rating,count,five_star_pct,badges[],categories{}}, scenes[{image,title,subtitle}],
-           reviews{bg,items[{name,stars,date,text}]}, outro{eyebrow,title,subtitle,cta,image}, depth_dir, scene_seconds}"""
+           reviews{bg,items[{stars,date,text}]}, outro{eyebrow,title,subtitle,cta,image}, depth_dir, scene_seconds}
+The review card never shows a guest's name, even if an older manifest carries one."""
 import json,sys,os,math,subprocess,wave,argparse,concurrent.futures as cf
 import numpy as np,cv2,platform
 def VCODEC(bitrate,threads):   # explicit x264 threads: its auto count follows the host's 48 cores, not the container's quota
@@ -211,8 +212,8 @@ def seg_review(k,rv,dur,bgimg):
                 if shown-acc<=len(ln):break
                 acc+=len(ln)+1
             cw_=d.textlength(lines[li][:shown-acc],font=fq);d.rectangle((cx+82+cw_,cy+dy+136+li*60,cx+85+cw_,cy+dy+176+li*60),fill=GOLD+(255,))
-        na=ease(clamp((t-3.3)/0.6));d.text((cx+80,cy+ch+dy-92),rv['name'],font=fn,fill=WHITE+(int(255*na),))
-        d.text((cx+80+d.textlength(rv['name'],font=fn)+16,cy+ch+dy-86),f"·  Airbnb guest, {rv['date']}",font=fd,fill=GOLD+(int(255*na),))
+        na=ease(clamp((t-3.3)/0.6));d.text((cx+80,cy+ch+dy-92),'Guest review',font=fn,fill=WHITE+(int(255*na),))
+        d.text((cx+80+d.textlength('Guest review',font=fn)+16,cy+ch+dy-86),f"·  {rv['date']}",font=fd,fill=GOLD+(int(255*na),))
         fr=comp(fr,L);fr=grade(fr);fr=letterbox(fr);yield fr
 def seg_outro(spec,dur):
     P=Plate(spec['image'],dark=0.4);n=int(dur*FPS);ft=serif(110);fs=sans(28);fe=sans(22,True);fb=serif(60);fc=sans(26,True)

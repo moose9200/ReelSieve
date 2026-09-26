@@ -110,7 +110,8 @@ def scrape_reviews(url,cb=None,limit=12):
     for r in out:
         k=(r['name'],r['text'][:40])
         if k not in seen:seen.add(k);dedup.append(r)
-    log(cb,f'Captured {len(dedup)} reviews');return dedup
+    log(cb,f'Captured {len(dedup)} reviews')
+    return [{k:v for k,v in r.items() if k!='name'} for r in dedup]   # names only told duplicates apart; the reel never names a guest
 def pick_review(revs):
     """Shortest 5-star review that names a concrete feature, trimmed to ~140 chars at a sentence boundary."""
     kws=['hot tub','sauna','clean','spotless','host','view','location','beach','bed','kitchen','garden','pool','beautiful','amazing','perfect']
@@ -190,9 +191,9 @@ def build_manifest(d,revs,imgdir,depth_dir,scenes_n=None,max_scenes=14,min_scene
     for sc in m['scenes']:sc['caption']=sc['title'];sc['accent']=sc['title'].split()[-1]
     m['overlays']={'title':m['intro']['title'],'subtitle':m['intro']['subtitle'],
         'trust':(f"{d['rating']:.2f} \u2605 from {d['count']} reviews" if d.get('rating') else None),
-        'review':(rv['text'] if rv else None),'review_by':(f"{rv['name']}, Airbnb guest" if rv else None),
+        'review':(rv['text'] if rv else None),'review_by':(f"Guest review, {month_word(rv['date'])}" if rv else None),
         'cta':'Your next escape awaits','cta_pill':'BOOK ON AIRBNB','by':'by Braivex.com'}
-    if rv:m['reviews']={'seconds':5.5,'bg':[str(imgdir/Path(bg_review['url']).name)],'items':[{'name':rv['name'],'stars':rv['stars'],'date':month_word(rv['date']),'text':rv['text']}]}
+    if rv:m['reviews']={'seconds':5.5,'bg':[str(imgdir/Path(bg_review['url']).name)],'items':[{'stars':rv['stars'],'date':month_word(rv['date']),'text':rv['text']}]}
     return m
 
 # ---------------- QA guards (regression: each rule maps to a mistake already made once) ----------------
