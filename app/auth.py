@@ -66,16 +66,18 @@ def create_user(user, pw, role='member'):
 
 
 def delete_user(user, by):
-    """Deactivate login while retaining the durable owner and business audit history."""
-    user, by = norm(user), norm(by)
+    """Deactivate login while retaining the durable owner and business audit history.
+    by=None is the operator console (a shell in the service), which has no admin account."""
+    user, by = norm(user), (norm(by) if by is not None else None)
     if user == by:
         raise ValueError("You can't remove your own account")
     with database.connect() as c:
         # Serialize the last-admin check across application instances.
         c.execute("SELECT pg_advisory_xact_lock(hashtext('reelsieve-admin-membership'))")
-        actor = c.execute('SELECT role FROM users WHERE email=%s AND active', (by,)).fetchone()
-        if not actor or actor['role'] != 'admin':
-            raise ValueError('Admin only')
+        if by is not None:
+            actor = c.execute('SELECT role FROM users WHERE email=%s AND active', (by,)).fetchone()
+            if not actor or actor['role'] != 'admin':
+                raise ValueError('Admin only')
         row = c.execute('SELECT role FROM users WHERE email=%s AND active FOR UPDATE', (user,)).fetchone()
         if not row:
             raise ValueError('No such user')

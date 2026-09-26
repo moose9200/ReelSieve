@@ -23,7 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app import auth, billing, cohost, database, gdrive, hostmsg, jobs, linkedin, plans, store
+from app import admin, auth, billing, cohost, database, gdrive, hostmsg, jobs, linkedin, plans, store
 from app import search as listing_search
 
 HERE = Path(__file__).resolve().parent
@@ -430,16 +430,9 @@ async def api_users_del(request: Request):
     _require_admin(request)
     target = ((await request.json()).get('user') or '').strip().lower()
     try:
-        auth.delete_user(target, request.state.user)
+        warning = admin.deactivate(target, request.state.user)
     except ValueError as e:
         raise HTTPException(400, str(e))
-    owner = database.user_id(target)
-    jobs.cancel_owner(owner)
-    warning = None
-    try:
-        gdrive.disconnect_owner(owner)
-    except RuntimeError as e:
-        warning = str(e)
     return {'users': auth.users(), 'warning': warning}
 
 

@@ -346,3 +346,11 @@ def test_operator_console_sets_a_plan_and_refuses_bad_input(owners, db):
     assert admin.main(['set-plan', 'alice@example.test', 'starter', '-1']) == 2
     assert admin.main(['set-plan', 'nobody@example.test', 'starter', '1']) == 1
     assert plans.account_view('alice@example.test')['plan'] == 'starter'
+
+
+def test_operator_console_deactivates_without_an_admin_session(owners, db):
+    from app import admin, auth, jobs
+    assert admin.main(['deactivate', 'alice@example.test']) == 0
+    assert 'alice@example.test' not in {u['user'] for u in auth.users()}
+    assert not auth.verify('alice@example.test', 'long-initial-password')
+    assert admin.main(['deactivate', 'nobody@example.test']) == 1

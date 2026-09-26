@@ -4,10 +4,23 @@
     python -m app.admin set-password <email>     # password read from stdin; signs the account out everywhere
     python -m app.admin list                     # emails and roles only
     python -m app.admin set-plan <email> <plan> <credits>   # e.g. give free credits
+    python -m app.admin deactivate <email>       # stops their jobs, revokes their Drive grant, keeps history
 """
 import sys
 
-from app import auth, database, plans, store
+from app import auth, database, gdrive, jobs, plans, store
+
+
+def deactivate(email, by=None):
+    """Deactivate an account, stop its jobs and revoke its Drive grant. Returns a warning or None."""
+    auth.delete_user(email, by)
+    owner = database.user_id(email)
+    jobs.cancel_owner(owner)
+    try:
+        gdrive.disconnect_owner(owner)
+    except RuntimeError as e:
+        return str(e)
+    return None
 
 
 def main(argv):
@@ -26,6 +39,14 @@ def main(argv):
             print(e, file=sys.stderr)
             return 1
         print(email, plan, int(credits))
+        return 0
+    if argv[:1] == ['deactivate'] and len(argv) == 2:
+        try:
+            warning = deactivate(argv[1])
+        except ValueError as e:
+            print(e, file=sys.stderr)
+            return 1
+        print('deactivated', auth.norm(argv[1]) + (f' (warning: {warning})' if warning else ''))
         return 0
     if len(argv) != 2 or argv[0] not in ('create-admin', 'set-password'):
         print(__doc__.strip(), file=sys.stderr)

@@ -102,7 +102,7 @@
     <div class="section-head"><h2>Photo audit</h2><span class="pill {{ 'pill-done' if (job.audit and job.audit.verdict == 'PASS') else ('pill-running' if (job.audit and job.audit.verdict == 'WEAK') else 'pill-failed') }}" id="audit-pill">{{ job.audit.verdict if job.audit else '—' }}{% if job.audit %} · {{ job.audit.score }}/100{% endif %}</span></div>
     <p class="hint" id="audit-reasons">{% if job.audit %}{{ job.audit.reasons|join('; ') }} · {{ job.audit.photos }} frames · colour spread {{ job.audit.rgb_spread }}{% endif %}</p>
     {% if job.ai_plan %}
-    <p class="eyebrow">AI motion plan · {{ job.ai_plan.model }} @ {{ job.ai_plan.resolution }} · ≈{{ job.ai_plan.credits_estimate }} credits</p>
+    <p class="eyebrow">AI motion plan · {{ job.ai_plan.model }} @ {{ job.ai_plan.resolution }}</p>
     <ul class="shot-list">
       {% for sh in job.ai_plan.shots %}
       <li class="shot-row"><span class="badge">{{ sh.move }}</span><span>{{ sh.room or 'scene' }}</span><span class="pill pill-sm {{ 'pill-done' if sh.status == 'ok' else 'pill-skipped' }}">{{ sh.status or 'planned' }}</span><span class="rs">{% if sh.profile %}motion {{ sh.profile.mean_motion }} · kept {{ sh.profile.best_window[0] }}–{{ sh.profile.best_window[1] }}s{% elif sh.error %}{{ sh.error }}{% endif %}</span>
