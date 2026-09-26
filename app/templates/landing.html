@@ -1,333 +1,508 @@
+{#- Public landing page. Standalone: loads landing.css only, not style.css or app.js.
+    Owner rule: one sentence per line, so body copy goes through lines() or one element per sentence.
+    Pricing and every number in the copy come from `plans`; the FAQ JSON-LD is built from the same `faqs` list as the visible FAQ. -#}
+{%- set canonical = 'https://www.reelsieve.braivex.com/' -%}
+{%- set P = {} -%}{%- for p in plans %}{% set _ = P.update({p.key: p}) %}{% endfor -%}
+{%- set video = sample_video or '/static/sample/reel.mp4' -%}
+{%- set poster = sample_poster or '/static/sample/poster.jpg' -%}
+{#- The chapter strip is timed to the bundled demo file only. -#}
+{%- set bundled = video.endswith('/static/sample/reel.mp4') -%}
+{%- set chapters = [
+  (0, 4.4, 'Intro'), (5.0, 4.4, 'Rating card'), (9.2, 4.0, 'Exterior'), (13.2, 7.7, 'Living room'),
+  (21.0, 7.9, 'Kitchen'), (28.9, 3.8, 'Dining'), (32.7, 7.8, 'Outdoors'), (40.5, 4.9, 'Review card'), (45.4, 5.0, 'Outro')] -%}
+{%- set description = 'Paste an Airbnb listing link and ReelSieve makes a walkthrough video from its own photos and real guest reviews, saved to your Google Drive. ' ~ P.free.videos ~ ' free videos.' -%}
+{%- set faqs = [
+  {'q': 'What is ReelSieve?', 'a': [
+    'ReelSieve is a web app from Braivex that turns an Airbnb listing link into a walkthrough video.',
+    "It builds the video from the listing's own photos and real guest reviews.",
+    'Finished videos are saved to your own Google Drive.']},
+  {'q': 'How do I make an Airbnb video tour from my listing photos?', 'a': [
+    "Sign up to ReelSieve, connect your Google Drive and paste the listing's Airbnb link.",
+    'ReelSieve downloads the photos itself, so there is nothing to upload.',
+    "It picks the best photo of each room, puts the rooms in walking order and adds captions from the listing's features."]},
+  {'q': 'Which listing links does ReelSieve accept?', 'a': [
+    'ReelSieve accepts Airbnb listing links only, the kind with /rooms/ and a number in the address.',
+    'Links from any Airbnb country site work, such as airbnb.com or airbnb.co.uk.',
+    'Links from other booking sites are not supported.']},
+  {'q': 'What is in each reel?', 'a': [
+    "A ReelSieve reel opens with the listing's name and town.",
+    'A rating card follows when the listing has reviews, then the rooms in walking order with captions.',
+    'It ends with a real five-star guest review and a closing card.']},
+  {'q': 'How long is each video?', 'a': [
+    'On the Free plan a reel runs for up to ' ~ P.free.max_seconds ~ ' seconds.',
+    'Paid plans allow up to ' ~ P.starter.max_seconds ~ ' seconds.',
+    'The exact length depends on how many usable photos the listing has.']},
+  {'q': 'How much does ReelSieve cost?', 'a': [
+    'ReelSieve is free for your first ' ~ P.free.videos ~ ' videos, with no card needed.',
+    'Starter costs ' ~ P.starter.price_label ~ ' for ' ~ P.starter.videos ~ ' videos and Commercial costs ' ~ P.commercial.price_label ~ ' for ' ~ P.commercial.videos ~ '.',
+    'Both are one-off payments in US dollars, and the credits never expire.']},
+  {'q': 'Where does the finished video go?', 'a': [
+    'ReelSieve saves the reel and a 720p copy to the Google Drive you connect.',
+    "It uses Google's drive.file permission, which lets it see only the files it creates.",
+    'The reel stays private until you share it, and ReelSieve keeps no copy.']},
+  {'q': 'Does ReelSieve message the host for me?', 'a': [
+    'No.',
+    'ReelSieve drafts a message with no links in it, because Airbnb filters links before a booking.',
+    'It also suggests a YouTube title the host can search for.',
+    'You send the message yourself from your own Airbnb account.']},
+  {'q': 'What is AI camera motion?', 'a': [
+    "AI camera motion is an option on ReelSieve's paid plans that generates a camera move through each room from the listing photo.",
+    'A photo check runs first and skips the paid step if the photos are too weak.',
+    'Without it, each photo gets a gentle depth-based move.']},
+  {'q': 'Who owns the videos?', 'a': [
+    'You keep full rights to the videos ReelSieve makes for you.',
+    "You are responsible for having the right to use the listing's photos, as the terms of use explain."]},
+  {'q': 'What happens if a render fails?', 'a': [
+    'If a render fails, ReelSieve puts the credit back in your account.',
+    'Making a new reel for a listing you have already done does not use another credit.']},
+  {'q': 'Is ReelSieve part of Airbnb?', 'a': [
+    'No.',
+    'ReelSieve is an independent product made by Braivex.',
+    'It is not endorsed by or associated with Airbnb, Inc.']},
+] -%}
+{%- macro lines(items, cls='lp-lines') -%}
+<p class="{{ cls }}">{% for s in items %}<span>{{ s }}</span>
+{% endfor %}</p>
+{%- endmacro -%}
+{%- macro link_form(id, with_sample=true) -%}
+<form class="lp-form" action="{{ '/app' if signed_in else '/signup' }}" method="get">
+  <label class="lp-sr" for="{{ id }}">Airbnb listing link (optional)</label>
+  <input class="lp-input" type="url" id="{{ id }}" name="url" inputmode="url" autocomplete="url" spellcheck="false" placeholder="Paste an Airbnb listing link">
+  <div class="lp-form-actions">
+    <button type="submit" class="lp-btn lp-btn-primary">{{ 'Make a reel' if signed_in else 'Start free' }}</button>
+    {% if with_sample %}<a class="lp-btn lp-btn-ghost" href="#sample">Watch the sample reel</a>{% endif %}
+  </div>
+</form>
+{%- endmacro -%}
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en-GB" data-theme="dark">
 <head>
   <meta charset="utf-8">
-  <title>ReelSieve — turn any property listing into a cinematic walkthrough video</title>
-  <meta name="description" content="Paste a listing link. Get a 60-second cinematic walkthrough video built from the listing's own photos and reviews. Free for your first two videos.">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Airbnb video tour maker from a listing link | ReelSieve</title>
+  <meta name="description" content="{{ description }}">
+  <link rel="canonical" href="{{ canonical }}">
+  <script>try{var t=localStorage.getItem("lr-theme");if(t==="light"||t==="dark")document.documentElement.setAttribute("data-theme",t)}catch(e){}</script>
   <link rel="icon" type="image/svg+xml" href="/static/brand/favicon.svg">
   <link rel="icon" type="image/x-icon" href="/static/brand/favicon.ico">
   <link rel="apple-touch-icon" sizes="180x180" href="/static/brand/icon-180.png">
-  <meta name="theme-color" content="#121212">
-  <meta property="og:title" content="ReelSieve — turn any property listing into a cinematic walkthrough video">
-  <meta property="og:description" content="Paste a listing link. Get a 60-second cinematic walkthrough video built from the listing's own photos and reviews. Free for your first two videos.">
+  <meta name="theme-color" content="#070606">
+  <meta name="color-scheme" content="dark light">
   <meta property="og:type" content="website">
-  <meta property="og:image" content="/static/brand/icon-512.png">
   <meta property="og:site_name" content="ReelSieve by Braivex">
+  <meta property="og:locale" content="en_GB">
+  <meta property="og:url" content="{{ canonical }}">
+  <meta property="og:title" content="ReelSieve: Airbnb walkthrough videos from a listing link">
+  <meta property="og:description" content="{{ description }}">
+  <meta property="og:image" content="{{ canonical }}static/sample/poster.jpg">
+  <meta property="og:image:width" content="1280">
+  <meta property="og:image:height" content="720">
+  <meta property="og:image:alt" content="Opening title card of a ReelSieve sample walkthrough reel">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="ReelSieve — turn any property listing into a cinematic walkthrough video">
-  <meta name="twitter:description" content="Paste a listing link. Get a 60-second cinematic walkthrough video built from the listing's own photos and reviews. Free for your first two videos.">
-  <meta name="twitter:image" content="/static/brand/icon-512.png">
+  <meta name="twitter:title" content="ReelSieve: Airbnb walkthrough videos from a listing link">
+  <meta name="twitter:description" content="{{ description }}">
+  <meta name="twitter:image" content="{{ canonical }}static/sample/poster.jpg">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Assistant:wght@400;600;700&family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css">
+  <link href="https://fonts.googleapis.com/css2?family=Assistant:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link rel="preload" as="image" href="{{ poster }}">
+  <link rel="stylesheet" href="/static/landing.css">
   <script type="application/ld+json">
-  {"@context":"https://schema.org","@type":"SoftwareApplication","name":"ReelSieve","applicationCategory":"MultimediaApplication","operatingSystem":"Web","description":"Paste a property listing link and get a cinematic 60-90 second walkthrough video built from the listing's own photos and guest reviews.","url":"https://reelsieve.com/","publisher":{"@type":"Organization","name":"Braivex","url":"https://braivex.com"},"offers":[{"@type":"Offer","name":"Free","price":"0","priceCurrency":"USD","description":"2 videos, up to 60 seconds, 1080p MP4"},{"@type":"Offer","name":"Starter","price":"100","priceCurrency":"USD","description":"3 videos with AI camera motion, up to 90 seconds, 1080p plus 9:16 cut"},{"@type":"Offer","name":"Commercial","price":"500","priceCurrency":"USD","description":"20 videos with AI camera motion, bulk queue, priority rendering"},{"@type":"Offer","name":"Enterprise","priceCurrency":"USD","description":"Unlimited volume, your brand throughout, API access. Custom pricing."}]}
+  {"@context": "https://schema.org", "@graph": [
+    {"@type": "Organization", "@id": "https://braivex.com/#organization", "name": "Braivex", "url": "https://braivex.com"},
+    {"@type": "SoftwareApplication", "@id": "{{ canonical }}#software", "name": "ReelSieve", "url": "{{ canonical }}",
+     "applicationCategory": "MultimediaApplication", "operatingSystem": "Web",
+     "description": "ReelSieve turns an Airbnb listing link into a walkthrough video built from the listing's own photos and real guest reviews, delivered to the customer's Google Drive.",
+     "publisher": {"@id": "https://braivex.com/#organization"},
+     "offers": [{% for p in plans if p.price_usd is not none %}
+       {"@type": "Offer", "name": {{ p.name|tojson }}, "price": {{ p.price_usd|tojson }}, "priceCurrency": "USD",
+        "description": {{ (p.videos ~ ' videos, up to ' ~ p.max_seconds ~ ' seconds each')|tojson }}}{{ ',' if not loop.last }}{% endfor %}]},
+    {"@type": "FAQPage", "@id": "{{ canonical }}#faq", "mainEntity": [{% for f in faqs %}
+      {"@type": "Question", "name": {{ f.q|tojson }}, "acceptedAnswer": {"@type": "Answer", "text": {{ f.a|join(' ')|tojson }}}}{{ ',' if not loop.last }}{% endfor %}]}
+  ]}
   </script>
 </head>
-<body class="lp-page">
+<body>
+<a class="lp-skip" href="#main">Skip to content</a>
 
 <header class="lp-header">
   <div class="lp-wrap lp-header-in">
-    <a class="brand" href="/">
-      <svg class="brand-mark" width="28" height="28" viewBox="0 0 100 100" role="img" aria-label="ReelSieve"><rect x="6" y="6" width="88" height="88" rx="24" fill="currentColor" fill-opacity=".08"/><g fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round"><path d="M29 50h42M50 29v42"/><path d="M22 36h56M22 64h56M36 22v56M64 22v56" stroke-opacity=".35"/></g><circle cx="64" cy="36" r="10" fill="var(--accent)"/></svg>
-      <span class="brand-word">Reel<span class="brand-accent">Sieve</span></span>
-      <span class="brand-suffix">by Braivex</span>
+    <a class="lp-brand" href="/" aria-label="ReelSieve by Braivex, home">
+      <svg class="lp-mark" width="30" height="30" viewBox="0 0 100 100" aria-hidden="true"><rect x="6" y="6" width="88" height="88" rx="24" fill="currentColor" fill-opacity=".08"/><g fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round"><path d="M29 50h42M50 29v42"/><path d="M22 36h56M22 64h56M36 22v56M64 22v56" stroke-opacity=".35"/></g><circle cx="64" cy="36" r="10" fill="#00f0ff"/></svg>
+      <span class="lp-word">ReelSieve</span>
+      <span class="lp-by">by Braivex</span>
     </a>
-    <nav class="lp-nav" aria-label="Primary">
-      <span class="lp-nav-links">
-        <a class="lp-nav-link" href="#how">How it works</a>
-        <a class="lp-nav-link" href="#pricing">Pricing</a>
-        <a class="lp-nav-link" href="#faq">FAQ</a>
-      </span>
-      {% if signed_in %}
-        {% if user %}<span class="lp-user" title="Signed in as {{ user }}">{{ user }}</span>{% endif %}
-        <a class="btn" href="/app">Open app</a>
-      {% else %}
-        <a class="lp-nav-link" href="/login">Sign in</a>
-        <a class="btn" href="/signup">Start free</a>
-      {% endif %}
+    <nav class="lp-nav" aria-label="Page sections">
+      <a href="#how">How it works</a>
+      <a href="#sample">Sample</a>
+      <a href="#pricing">Pricing</a>
+      <a href="#faq">FAQ</a>
     </nav>
+    <div class="lp-header-actions">
+      {% if signed_in %}
+      <a class="lp-btn lp-btn-primary lp-btn-sm" href="/app">Open the app</a>
+      {% else %}
+      <a class="lp-signin" href="/login">Sign in</a>
+      <a class="lp-btn lp-btn-primary lp-btn-sm" href="/signup">Start free</a>
+      {% endif %}
+      <button type="button" class="lp-theme" id="lp-theme" aria-label="Switch between light and dark theme" title="Switch theme">
+        <svg class="lp-sun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
+        <svg class="lp-moon" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+      </button>
+    </div>
   </div>
 </header>
 
-<main>
+<main id="main">
 
-  <!-- 2. hero -->
-  <section class="lp-hero">
+  <section class="lp-hero" aria-labelledby="hero-title">
     <div class="lp-wrap lp-hero-in">
-      <p class="lp-eyebrow">For hosts, short-let operators and agents</p>
-      <h1>Your listing photos are already good. They&rsquo;re just sitting still.</h1>
-      <p class="lp-hero-sub">Paste a listing link. ReelSieve turns its own photos and guest reviews into a 60-second cinematic walkthrough &mdash; route-ordered, captioned, scored. No filming, no crew, no shoot day.</p>
-      <form class="lp-form" action="/signup" method="get">
-        <label class="lp-sr" for="lp-url">Property listing URL</label>
-        <input type="text" id="lp-url" name="url" inputmode="url" autocomplete="url" spellcheck="false"
-               placeholder="https://www.airbnb.co.uk/rooms/…  ·  or Booking.com, VRBO, Rightmove, Zillow">
-        <button type="submit" class="btn btn-primary">Make my free reel</button>
-      </form>
-      <p class="lp-micro">2 free videos. No card needed.</p>
-      {% if stats and stats.reels_made %}<p class="lp-stats">{{ stats.reels_made }} reels made{% if stats.listings %} from {{ stats.listings }} listings{% endif %}.</p>{% endif %}
-      <ul class="lp-chips">
-        <li class="lp-chip">Works with any listing link</li>
-        <li class="lp-chip">60&ndash;90 seconds</li>
-        <li class="lp-chip">Ready in minutes</li>
-        <li class="lp-chip">Your photos, your listing</li>
+      <p class="lp-pill">Airbnb listing video maker</p>
+      <h1 id="hero-title">Turn an Airbnb listing into a walkthrough video.</h1>
+      {{ lines([
+        'ReelSieve is a web app from Braivex that makes walkthrough videos of Airbnb listings.',
+        "Paste a listing link and it builds a reel from the listing's own photos and real guest reviews.",
+        'The finished video goes straight to your Google Drive.'], 'lp-lines lp-hero-lines') }}
+      {{ link_form('lp-url') }}
+      {% if not signed_in %}
+      {{ lines(['Your first ' ~ P.free.videos ~ ' videos are free.', 'No card needed.'], 'lp-lines lp-micro') }}
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="lp-section lp-screening" id="sample" aria-labelledby="sample-title">
+    <div class="lp-wrap">
+      <div class="lp-screening-head">
+        <h2 id="sample-title">Watch a sample reel.</h2>
+        {{ lines(['This one uses the cinematic 16:9 style.', 'Pick a scene to jump to it.'] if bundled else ['This one uses the cinematic 16:9 style.']) }}
+      </div>
+      <div class="lp-screen">
+        <video id="lp-video" controls playsinline preload="none" poster="{{ poster }}" width="1280" height="720" aria-label="ReelSieve sample reel in the cinematic 16:9 style"{% if bundled %} aria-describedby="sample-note"{% endif %}>
+          <source src="{{ video }}" type="video/mp4">
+        </video>
+      </div>
+      {% if bundled %}
+      <ol class="lp-chapters" aria-label="Scenes in the sample reel">
+        {% for t, d, label in chapters %}
+        <li style="--d: {{ d }}"><button type="button" data-t="{{ t }}"{% if loop.first %} aria-current="true"{% endif %}><span class="lp-ch-time">{{ '0:%02d'|format(t|int) }}</span><span class="lp-ch-name">{{ label }}</span></button></li>
+        {% endfor %}
+      </ol>
+      <div class="lp-note" id="sample-note">
+        {{ lines([
+          'This sample was built from AI-generated pictures of a house that does not exist.',
+          'Its name, rating and review are placeholders.',
+          "A reel of a real listing uses that listing's own photos and guest reviews."]) }}
+      </div>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="lp-section lp-band" id="how" aria-labelledby="how-title">
+    <div class="lp-wrap">
+      <div class="lp-head">
+        <h2 id="how-title">Three steps from listing link to reel.</h2>
+        {{ lines(['You paste a link and choose a style.', 'ReelSieve does the editing.']) }}
+      </div>
+      <ol class="lp-grid lp-grid-3 lp-steps">
+        <li class="lp-cell">
+          <p class="lp-index">Step 1</p>
+          <h3>Paste an Airbnb link</h3>
+          {{ lines([
+            'Sign up free and connect your Google Drive once.',
+            "Then paste the listing's link, or find a listing by searching a town or city.",
+            'Choose cinematic 16:9 or tutorial-style 9:16.']) }}
+        </li>
+        <li class="lp-cell">
+          <p class="lp-index">Step 2</p>
+          <h3>ReelSieve builds the reel</h3>
+          {{ lines([
+            'It downloads every photo on the listing and scores each one for sharpness, exposure and colour.',
+            'The best frame of each room goes in, and the rooms play in walking order.',
+            "Captions come from the listing's own features."]) }}
+        </li>
+        <li class="lp-cell">
+          <p class="lp-index">Step 3</p>
+          <h3>The reel lands in your Drive</h3>
+          {{ lines([
+            'The finished reel and a 720p copy are saved to your Google Drive.',
+            'They stay private until you share them.',
+            'If the listing belongs to someone else, ReelSieve drafts a message for you to send the host.']) }}
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="lp-section" id="reel" aria-labelledby="reel-title">
+    <div class="lp-wrap">
+      <div class="lp-head">
+        <h2 id="reel-title">What goes into every reel.</h2>
+        {{ lines([
+          'Every reel follows the same order, so it plays like a walk through the property.',
+          'The rating, the facts in each caption and the review all come from the listing.']) }}
+      </div>
+      <ol class="lp-grid lp-grid-3 lp-parts">
+        <li class="lp-cell">
+          <p class="lp-index">1</p>
+          <h3>Intro</h3>
+          {{ lines(["The listing's name and town, with up to three highlights such as a hot tub or free parking."]) }}
+        </li>
+        <li class="lp-cell">
+          <p class="lp-index">2</p>
+          <h3>Rating card</h3>
+          {{ lines(["The listing's rating, review count and category scores.", 'It appears when the listing has reviews.']) }}
+        </li>
+        <li class="lp-cell">
+          <p class="lp-index">3</p>
+          <h3>Rooms in walking order</h3>
+          {{ lines(['Outside first, then the living room, kitchen, bedrooms, bathroom and outdoor space.', 'Up to three photos per room.']) }}
+        </li>
+        <li class="lp-cell">
+          <p class="lp-index">4</p>
+          <h3>Captions</h3>
+          {{ lines(['A short line on each scene with a fact from the listing, such as how many it sleeps or its private garden.']) }}
+        </li>
+        <li class="lp-cell">
+          <p class="lp-index">5</p>
+          <h3>Review card</h3>
+          {{ lines(["A real five-star guest review, trimmed to a sentence or two, with the guest's name and the month."]) }}
+        </li>
+        <li class="lp-cell">
+          <p class="lp-index">6</p>
+          <h3>Outro</h3>
+          {{ lines(['A closing card with a Book on Airbnb prompt and a Braivex.com credit.']) }}
+        </li>
+      </ol>
+      <ul class="lp-specs">
+        <li>
+          <h3>Two styles</h3>
+          {{ lines(['Cinematic 16:9 with the rating and review cards.', 'Tutorial-style 9:16 with full-screen photos and moving captions.']) }}
+        </li>
+        <li>
+          <h3>Depth-based motion</h3>
+          {{ lines(['Each photo gets a gentle camera move built from a depth map of the scene.']) }}
+        </li>
+        <li>
+          <h3>AI camera motion</h3>
+          {{ lines(['Paid plans can generate a camera move through each room instead.', 'A photo check runs first and skips the paid step when the photos are too weak.']) }}
+        </li>
+        <li>
+          <h3>A 720p copy</h3>
+          {{ lines(['Every reel also comes as a smaller file that is easier to send.']) }}
+        </li>
       </ul>
     </div>
   </section>
 
-  <!-- 3. sample -->
-  <section class="lp-section" aria-label="Sample reel">
+  <section class="lp-section lp-band" id="who" aria-labelledby="who-title">
     <div class="lp-wrap">
-      <div class="lp-frame">
-        {% if sample_video %}
-        <video controls playsinline preload="metadata"{% if sample_poster %} poster="{{ sample_poster }}"{% endif %} src="{{ sample_video }}"></video>
-        {% else %}
-        <div class="lp-frame-empty">
-          <strong>Sample reel</strong>
-          <span>A 16:9 walkthrough cut from listing photos &mdash; exterior, living, kitchen, bedrooms, bath, outdoor.</span>
-        </div>
-        {% endif %}
-      </div>
-      <p class="lp-caption">Built from one listing link — 10 photos, 50 seconds, no filming.</p>
-    </div>
-  </section>
-
-  <!-- 4. how it works -->
-  <section class="lp-section" id="how">
-    <div class="lp-wrap">
-      <div class="lp-section-head">
-        <h2>How it works</h2>
-        <p class="lp-lead">One link in, a finished film out. Four steps, none of them yours.</p>
-      </div>
-      <div class="lp-grid lp-grid-4">
-        <article class="lp-card">
-          <span class="lp-step-n" aria-hidden="true">1</span>
-          <h3>Paste the link</h3>
-          <p>We fetch every photo, the description, amenities and real guest reviews.</p>
-        </article>
-        <article class="lp-card">
-          <span class="lp-step-n" aria-hidden="true">2</span>
-          <h3>We pick the best frames</h3>
-          <p>Each photo is scored for sharpness, exposure, light consistency and depth &mdash; only the strongest make the cut.</p>
-        </article>
-        <article class="lp-card">
-          <span class="lp-step-n" aria-hidden="true">3</span>
-          <h3>We build the walkthrough</h3>
-          <p>Rooms in the order a guest would walk them, depth-based camera moves, captions from real facts, music.</p>
-        </article>
-        <article class="lp-card">
-          <span class="lp-step-n" aria-hidden="true">4</span>
-          <h3>You get the video</h3>
-          <p>1080p MP4, plus a 9:16 cut, ready for your listing, Instagram, YouTube or an email to an owner.</p>
-        </article>
-      </div>
-    </div>
-  </section>
-
-  <!-- 5. why it converts -->
-  <section class="lp-section">
-    <div class="lp-wrap">
-      <div class="lp-section-head">
-        <h2>Why it converts</h2>
+      <div class="lp-head">
+        <h2 id="who-title">Who ReelSieve is for.</h2>
       </div>
       <div class="lp-grid lp-grid-3">
-        <article class="lp-card lp-why-card">
-          <h3>Listings with video get more attention than photo-only listings</h3>
-          <p>Video is the format every platform pushes.</p>
+        <article class="lp-cell">
+          <h3>Hosts</h3>
+          {{ lines([
+            'Make a reel of your own listing from the photos you already have.',
+            'Post it on your social accounts or your own booking site.']) }}
         </article>
-        <article class="lp-card lp-why-card">
-          <h3>Built from facts, never invented</h3>
-          <p>Captions come from your own listing and reviews.</p>
+        <article class="lp-cell">
+          <h3>Co-hosts and property managers</h3>
+          {{ lines([
+            'Make a reel of a listing you would like to manage and send it to the host.',
+            'ReelSieve drafts the message and helps you find hosts who run several listings in a city.']) }}
         </article>
-        <article class="lp-card lp-why-card">
-          <h3>One link in, a finished film out</h3>
-          <p>No shoot day, no crew, no scheduling.</p>
+        <article class="lp-cell">
+          <h3>Agencies</h3>
+          {{ lines([
+            'Make reels for client listings and hand over the files from your Drive.',
+            'Commercial covers ' ~ P.commercial.videos ~ ' reels in one pack.',
+            'Enterprise has no video limit.']) }}
         </article>
       </div>
     </div>
   </section>
 
-  <!-- 6. pricing -->
-  <section class="lp-section" id="pricing">
-    <div class="lp-wrap">
-      <div class="lp-section-head">
-        <h2>Pricing</h2>
-        <p class="lp-lead">Start free. Pay once for more when the first one earns its place.</p>
+  <section class="lp-section" id="drive" aria-labelledby="drive-title">
+    <div class="lp-wrap lp-split">
+      <div class="lp-head">
+        <h2 id="drive-title">Your reels live in your Google Drive.</h2>
+        {{ lines([
+          'ReelSieve saves each finished reel to the Google Drive you connect.',
+          "It asks for Google's drive.file permission only, so it can see just the files it creates.",
+          'Every reel is private until you choose to make a share link.',
+          'ReelSieve keeps no copy after delivery.']) }}
+        <p class="lp-more"><a href="/privacy">Read what ReelSieve stores and for how long</a></p>
       </div>
-      <div class="lp-grid lp-plans">
-        {% if plans %}
-          {% for p in plans %}
-          <article class="lp-plan{% if p.highlight %} is-featured{% endif %}">
-            {% if p.highlight %}<span class="lp-pop">Most popular</span>{% endif %}
-            <h3 class="lp-plan-name">{{ p.name }}</h3>
-            <p class="lp-plan-price">{{ p.price_label }}</p>
-            {% set sub = p.period or '' %}
-            {% if p.videos and (p.videos|string) not in sub %}{% set sub = (sub ~ ' · ' ~ (p.videos|string) ~ ' videos') if sub else ((p.videos|string) ~ ' videos') %}{% endif %}
-            {% if sub %}<p class="lp-plan-period">{{ sub }}</p>{% endif %}
-            {% if p.features %}
-            <ul>{% for f in p.features %}<li>{{ f }}</li>{% endfor %}</ul>
-            {% endif %}
-            <a class="btn {% if p.highlight %}btn-primary{% else %}btn-secondary{% endif %}" href="{{ p.cta_href or '/signup' }}">{{ p.cta_label or 'Start free' }}</a>
-          </article>
-          {% endfor %}
-        {% else %}
-          <article class="lp-plan">
-            <h3 class="lp-plan-name">Free</h3>
-            <p class="lp-plan-price">$0</p>
-            <p class="lp-plan-period">2 videos</p>
-            <ul>
-              <li>2 videos total</li>
-              <li>Up to 60 seconds</li>
-              <li>1080p MP4 download</li>
-              <li>Route-ordered walkthrough</li>
-              <li>Real review captions</li>
-              <li>ReelSieve outro</li>
-            </ul>
-            <a class="btn btn-secondary" href="/signup">Start free</a>
-          </article>
-          <article class="lp-plan is-featured">
-            <span class="lp-pop">Most popular</span>
-            <h3 class="lp-plan-name">Starter</h3>
-            <p class="lp-plan-price">$100</p>
-            <p class="lp-plan-period">one-off &middot; 3 videos</p>
-            <ul>
-              <li>3 videos</li>
-              <li>AI camera motion (Higgsfield Seedance)</li>
-              <li>Up to 90 seconds</li>
-              <li>1080p + 9:16 vertical cut</li>
-              <li>Google Drive delivery</li>
-              <li>No ReelSieve outro</li>
-            </ul>
-            <a class="btn btn-primary" href="/signup?plan=starter">Choose Starter</a>
-          </article>
-          <article class="lp-plan">
-            <h3 class="lp-plan-name">Commercial</h3>
-            <p class="lp-plan-price">$500</p>
-            <p class="lp-plan-period">one-off &middot; 20 videos</p>
-            <ul>
-              <li>20 videos</li>
-              <li>AI camera motion</li>
-              <li>Up to 90 seconds</li>
-              <li>Bulk queue</li>
-              <li>Brand your own outro</li>
-              <li>Priority rendering</li>
-              <li>Email + Drive delivery</li>
-            </ul>
-            <a class="btn btn-secondary" href="/signup?plan=commercial">Choose Commercial</a>
-          </article>
-          <article class="lp-plan">
-            <h3 class="lp-plan-name">Enterprise</h3>
-            <p class="lp-plan-price">Let&rsquo;s talk</p>
-            <p class="lp-plan-period">unlimited &middot; your brand</p>
-            <ul>
-              <li>Unlimited volume</li>
-              <li>Your brand throughout</li>
-              <li>API access</li>
-              <li>Bulk import from a spreadsheet</li>
-              <li>Dedicated support</li>
-              <li>White-label option</li>
-            </ul>
-            <a class="btn btn-secondary" href="mailto:hello@braivex.com?subject=ReelSieve%20Enterprise">Talk to us</a>
-          </article>
-        {% endif %}
-      </div>
-      <p class="lp-fine">Prices in USD. One-off credit packs, not subscriptions &mdash; credits don&rsquo;t expire.</p>
+      <dl class="lp-panel lp-access">
+        <div><dt>Reels ReelSieve created</dt><dd class="lp-yes">Can open</dd></div>
+        <div><dt>Everything else in your Drive</dt><dd class="lp-no">Cannot see</dd></div>
+        <div><dt>Who can watch a new reel</dt><dd>Only you</dd></div>
+        <div><dt>Copies kept by ReelSieve</dt><dd>None</dd></div>
+      </dl>
     </div>
   </section>
 
-  <!-- 7. faq -->
-  <section class="lp-section" id="faq">
+  <section class="lp-section lp-band" id="outreach" aria-labelledby="outreach-title">
+    <div class="lp-wrap lp-split">
+      <div class="lp-head">
+        <h2 id="outreach-title">Get the reel in front of the host.</h2>
+        {{ lines([
+          'Airbnb filters links out of messages sent before a booking.',
+          'ReelSieve drafts a message with no links in it.',
+          'It also suggests a YouTube title, so the host can find the reel once you have uploaded it.',
+          'You send it from your own Airbnb account.',
+          'ReelSieve never sends messages for you.']) }}
+        <h3 class="lp-subhead">Outreach tools</h3>
+        <ul class="lp-list">
+          <li>Find co-hosts in a city, plus hosts who run several listings there.</li>
+          <li>Prepare LinkedIn messages for property managers and copy them one at a time.</li>
+          <li>Track who you have contacted and export the list as a CSV file.</li>
+        </ul>
+      </div>
+      <ol class="lp-panel lp-sequence" aria-label="Sending the host message">
+        <li><span class="lp-seq-n" aria-hidden="true">1</span><span>Copy the drafted message from the reel's page.</span></li>
+        <li><span class="lp-seq-n" aria-hidden="true">2</span><span>Open the host's contact form on Airbnb.</span></li>
+        <li><span class="lp-seq-n" aria-hidden="true">3</span><span>Paste the message and press Send.</span></li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="lp-section" id="pricing" aria-labelledby="pricing-title">
     <div class="lp-wrap">
-      <div class="lp-section-head">
-        <h2>Questions</h2>
+      <div class="lp-head">
+        <h2 id="pricing-title">Pay once for a pack of reels.</h2>
+        {{ lines([
+          'Start with ' ~ P.free.videos ~ ' free videos.',
+          'Paid packs are one-off payments, and the credits never expire.',
+          'Prices are in US dollars.']) }}
+      </div>
+      <div class="lp-plans">
+        {% for p in plans %}
+        <article class="lp-plan{% if p.highlight %} is-featured{% endif %}">
+          <h3>{{ p.name }}</h3>
+          <p class="lp-price">{{ p.price_label }}</p>
+          <p class="lp-terms">{% if p.price_usd is none %}Custom pricing{% elif p.price_usd == 0 %}No card needed{% else %}One-off payment{% endif %}</p>
+          <ul class="lp-ticks">
+            <li>{% if p.videos is none %}Unlimited videos{% else %}{{ p.videos }} videos{% endif %}</li>
+            <li>Up to {{ p.max_seconds }} seconds per reel</li>
+            <li>{{ 'AI camera motion' if p.ai_motion else 'Depth-based motion' }}</li>
+          </ul>
+          {%- if signed_in and p.key in ('starter', 'commercial') %}{% set href = '/upgrade?plan=' ~ p.key %}{% elif signed_in and p.key == 'free' %}{% set href = '/app' %}{% else %}{% set href = p.cta_href or '/signup' %}{% endif %}
+          <a class="lp-btn {{ 'lp-btn-primary' if p.highlight else 'lp-btn-ghost' }}" href="{{ href }}">{{ ('Open the app' if signed_in and p.key == 'free' else p.cta_label) or 'Start free' }}</a>
+        </article>
+        {% endfor %}
+      </div>
+      <div class="lp-plan-notes">
+        {{ lines([
+          'Every plan includes both reel styles, the 720p copy and delivery to your Google Drive.',
+          'Host message drafts and the outreach tools come with every plan too.',
+          'If a render fails, the credit goes back to your account.',
+          'Making a new reel for a listing you have already done is free.']) }}
+      </div>
+    </div>
+  </section>
+
+  <section class="lp-section lp-band" id="faq" aria-labelledby="faq-title">
+    <div class="lp-wrap lp-faq-wrap">
+      <div class="lp-head">
+        <h2 id="faq-title">Questions before you start.</h2>
       </div>
       <div class="lp-faq">
-        <details>
-          <summary>Which sites work?</summary>
-          <div class="lp-faq-body">Airbnb natively; most listing sites work via their public page &mdash; Booking.com, VRBO, Rightmove, Zillow, agent sites. If a site blocks us you can upload photos instead.</div>
+        {% for f in faqs %}
+        <details class="lp-qa">
+          <summary>{{ f.q }}</summary>
+          {{ lines(f.a, 'lp-lines lp-answer') }}
         </details>
-        <details>
-          <summary>Do I own the video?</summary>
-          <div class="lp-faq-body">Yes. You keep full rights to videos made from photos you own or are licensed to use.</div>
-        </details>
-        <details>
-          <summary>Is this allowed?</summary>
-          <div class="lp-faq-body">Use photos you own or have permission to use, and follow the listing platform&rsquo;s terms. ReelSieve is an independent third party and is not endorsed by or associated with Airbnb, Inc. or its affiliates.</div>
-        </details>
-        <details>
-          <summary>How long does it take?</summary>
-          <div class="lp-faq-body">Minutes for the standard walkthrough; AI camera motion adds a few minutes per shot.</div>
-        </details>
-        <details>
-          <summary>What&rsquo;s &ldquo;AI camera motion&rdquo;?</summary>
-          <div class="lp-faq-body">On paid plans each room becomes a real generated camera move &mdash; dolly, orbit, crane &mdash; instead of a pan over a still.</div>
-        </details>
-        <details>
-          <summary>Can I edit it?</summary>
-          <div class="lp-faq-body">Yes &mdash; you get the MP4, and Enterprise gets the source clips.</div>
-        </details>
+        {% endfor %}
       </div>
     </div>
   </section>
 
-  <!-- 8. final cta -->
-  <section class="lp-section">
-    <div class="lp-wrap">
-      <div class="lp-cta">
-        <h2>Make your first reel in the next five minutes.</h2>
-        <form class="lp-form" action="/signup" method="get">
-          <label class="lp-sr" for="lp-url-cta">Property listing URL</label>
-          <input type="text" id="lp-url-cta" name="url" inputmode="url" autocomplete="url" spellcheck="false"
-                 placeholder="https://www.airbnb.co.uk/rooms/…  ·  or Booking.com, VRBO, Rightmove, Zillow">
-          <button type="submit" class="btn btn-primary">Make my free reel</button>
-        </form>
-        <p class="lp-micro">2 free videos. No card needed.</p>
-      </div>
+  <section class="lp-section lp-cta" aria-labelledby="cta-title">
+    <div class="lp-wrap lp-cta-in">
+      <h2 id="cta-title">See your listing as a walkthrough reel.</h2>
+      {% if signed_in %}
+      {{ lines(['Paste the link and pick a style.']) }}
+      {% else %}
+      {{ lines(['Your first ' ~ P.free.videos ~ ' videos are free.', 'No card needed.']) }}
+      {% endif %}
+      {{ link_form('lp-url-end', false) }}
     </div>
   </section>
 
 </main>
 
-<!-- 9. footer -->
 <footer class="lp-footer">
   <div class="lp-wrap">
     <div class="lp-footer-grid">
-      <div>
-        <a class="brand" href="/">
-          <svg class="brand-mark" width="28" height="28" viewBox="0 0 100 100" role="img" aria-label="ReelSieve"><rect x="6" y="6" width="88" height="88" rx="24" fill="currentColor" fill-opacity=".08"/><g fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round"><path d="M29 50h42M50 29v42"/><path d="M22 36h56M22 64h56M36 22v56M64 22v56" stroke-opacity=".35"/></g><circle cx="64" cy="36" r="10" fill="var(--accent)"/></svg>
-          <span class="brand-word">Reel<span class="brand-accent">Sieve</span></span>
-          <span class="brand-suffix">by Braivex</span>
+      <div class="lp-footer-brand">
+        <a class="lp-brand" href="/" aria-label="ReelSieve by Braivex, home">
+          <svg class="lp-mark" width="30" height="30" viewBox="0 0 100 100" aria-hidden="true"><rect x="6" y="6" width="88" height="88" rx="24" fill="currentColor" fill-opacity=".08"/><g fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round"><path d="M29 50h42M50 29v42"/><path d="M22 36h56M22 64h56M36 22v56M64 22v56" stroke-opacity=".35"/></g><circle cx="64" cy="36" r="10" fill="#00f0ff"/></svg>
+          <span class="lp-word">ReelSieve</span>
         </a>
-        <p class="lp-footer-note">ReelSieve is a Braivex product.</p>
-        <p class="lp-footer-note">ReelSieve is an independent third party and is not endorsed by or associated with Airbnb, Inc. or its affiliates.</p>
+        {{ lines([
+          'ReelSieve is a Braivex product.',
+          'ReelSieve is independent and is not endorsed by or associated with Airbnb, Inc.'], 'lp-lines lp-footer-note') }}
       </div>
-      <div>
-        <h2>More from Braivex</h2>
-        <div class="lp-products">
-          {% if products %}
-            {% for pr in products %}
-            <a class="lp-product" href="{{ pr.url }}" target="_blank" rel="noopener">
-              <b>{{ pr.name }}</b><span>{{ pr.tagline }}</span>
-            </a>
-            {% endfor %}
-          {% else %}
-            <a class="lp-product" href="https://loculens.braivex.com" target="_blank" rel="noopener"><b>Loculens</b><span>Local SEO and review intelligence</span></a>
-            <a class="lp-product" href="https://hiresieve.braivex.com" target="_blank" rel="noopener"><b>HireSieve</b><span>Sift the CVs that actually fit</span></a>
-            <a class="lp-product" href="https://braivex.com" target="_blank" rel="noopener"><b>BriefSieve</b><span>Turn long briefs into decisions</span></a>
-            <a class="lp-product" href="https://housieve.braivex.com" target="_blank" rel="noopener"><b>HouSieve</b><span>Property data, sifted</span></a>
-            <a class="lp-product" href="https://braivex.com" target="_blank" rel="noopener"><b>Braivex</b><span>The studio behind them</span></a>
-          {% endif %}
-        </div>
-      </div>
+      <nav aria-label="ReelSieve">
+        <p class="lp-footer-title">ReelSieve</p>
+        <ul>
+          <li><a href="#how">How it works</a></li>
+          <li><a href="#sample">Sample reel</a></li>
+          <li><a href="#pricing">Pricing</a></li>
+          <li><a href="#faq">FAQ</a></li>
+          <li><a href="/login">Sign in</a></li>
+          <li><a href="/signup">Start free</a></li>
+        </ul>
+      </nav>
+      {% if products %}
+      <nav aria-label="More from Braivex">
+        <p class="lp-footer-title">More from Braivex</p>
+        <ul>
+          {% for pr in products %}
+          <li><a href="{{ pr.url }}" rel="noopener">{{ pr.name }}</a> <span class="lp-tagline">{{ pr.tagline }}</span></li>
+          {% endfor %}
+        </ul>
+      </nav>
+      {% endif %}
+      <nav aria-label="Legal">
+        <p class="lp-footer-title">Legal</p>
+        <ul>
+          <li><a href="/privacy">Privacy</a></li>
+          <li><a href="/terms">Terms</a></li>
+        </ul>
+      </nav>
     </div>
-    <div class="lp-bottom">
-      &copy; 2026 Braivex &middot; <a href="https://braivex.com" target="_blank" rel="noopener">braivex.com</a> &middot; <a href="/privacy">Privacy</a> &middot; <a href="/terms">Terms</a>
-    </div>
+    <p class="lp-copy">&copy; 2026 <a href="https://braivex.com" rel="noopener">Braivex</a></p>
   </div>
 </footer>
 
-<script src="/static/app.js" defer></script>
+<script>
+(function () {
+  var root = document.documentElement, toggle = document.getElementById("lp-theme");
+  if (toggle) toggle.addEventListener("click", function () {
+    var next = root.getAttribute("data-theme") === "light" ? "dark" : "light";
+    root.setAttribute("data-theme", next);
+    try { localStorage.setItem("lr-theme", next); } catch (e) {}
+  });
+  var video = document.getElementById("lp-video"), marks = document.querySelectorAll("[data-t]");
+  if (!video || !marks.length) return;
+  function at(b) { return parseFloat(b.getAttribute("data-t")); }
+  marks.forEach(function (b) {
+    b.addEventListener("click", function () {
+      var t = at(b);
+      if (video.readyState > 0) video.currentTime = t;
+      else video.addEventListener("loadedmetadata", function () { video.currentTime = t; }, { once: true });
+      var p = video.play();
+      if (p && p.catch) p.catch(function () {});
+    });
+  });
+  video.addEventListener("timeupdate", function () {
+    var now = video.currentTime + 0.3, current = marks[0];
+    marks.forEach(function (b) { if (at(b) <= now) current = b; });
+    marks.forEach(function (b) { if (b === current) b.setAttribute("aria-current", "true"); else b.removeAttribute("aria-current"); });
+  });
+})();
+</script>
 </body>
 </html>
