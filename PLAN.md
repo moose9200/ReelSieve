@@ -34,6 +34,15 @@ with every current feature still working (189 tests stay green, all live routes 
 - [x] G16 Test fixtures hold real-looking reviewer names (tests/fixtures/*.json). Evidence: 65c60fc; test_fixtures_hold_no_real_reviewer_names. Git history still holds the old values (decide whether to rewrite).
 - [ ] G17 Privacy notice incomplete/inaccurate (legal.html) - owner: main session, after legal research
 
+## Phase 2 - lawful growth (owner decisions taken 27 Sep 2026 12:05 BST, no evasion)
+Decisions: keep every feature; remove legal blockers lawfully; no proxies/auto-messaging/fake consent.
+- [ ] B2B prospects from the Companies House bulk register (company data only; PECR reg 22 does not cover corporate subscribers; reg 23 identity + opt-out) - feature/b2b-companies
+- [ ] "Your own photos" reels via the customer's own Drive + ownership confirmation for listing links (reduces Airbnb Terms/copyright exposure) - feature/own-photos
+- [ ] Referral programme: link only, no cookie, no messaging by us, +1 video each on first delivered reel, guardrails - feature/referrals
+- [ ] Daily invoice backup to an S3 bucket in ap-south-1 (Income-tax Rules 2026 r.46(8)); off until env set - feature/india-invoice-backup
+- [ ] Each branch reviewed (security/privacy, legal, correctness) and confirmed findings fixed; merged; privacy notice updated; tests green; deployed; live checks
+Owner-only (payment/identity): ICO registration (GBP 52), UK representative, Stripe keys, Higgsfield top-up/DPA, AWS bucket for the backup.
+
 ## Facts (Verified - source)
 - Controller: "Hemant Kumar Sain, Sole Proprietor trading as Braivex. Registered office: Yog Nagar, Street No 08, Alwar, Rajasthan 301001, India. GSTIN 08HUOPS4021L2ZY" - https://braivex.com/ footer, fetched 26 Sep 2026.
 - Hosting: Railway, region sfo (US West) for web, worker, Postgres - railway service list / status, this session.
