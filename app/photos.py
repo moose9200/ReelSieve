@@ -14,7 +14,7 @@ MIN_PHOTOS, MAX_PHOTOS = 8, 40   # 8: the intro and closing shots plus the 6 wal
 MAX_BYTES = 15 * 1024 * 1024      # each upload, as sent
 MAX_TOTAL = 250 * 1024 * 1024     # all uploads of one reel, as sent
 MAX_EDGE = 2560                   # listing photos arrive 1920 wide; this keeps headroom for camera moves
-MAX_PIXELS = 60_000_000           # refuse decompression bombs before decoding
+MAX_PIXELS = 26_000_000           # refuse decompression bombs before decoding; a 1080p reel needs far fewer (MAX_EDGE)
 MAX_QUOTES = 3
 ROOMS = ('exterior', 'living', 'kitchen', 'bedroom', 'bathroom', 'garden', 'spa', 'view', 'other')
 
@@ -59,7 +59,7 @@ def clean(data, name=''):
     try:
         im = Image.open(io.BytesIO(data), formats=[fmt])
         if im.width * im.height > MAX_PIXELS:
-            raise PhotoError(f'{_name(name)} has too many pixels. Use a photo under 60 megapixels.')
+            raise PhotoError(f'{_name(name)} has too many pixels. Use a photo under {MAX_PIXELS // 1_000_000} megapixels.')
         try:
             im = ImageOps.exif_transpose(im)
         except Exception:  # malformed EXIF (Pillow raises TypeError, struct.error…): keep it unrotated; EXIF goes below anyway

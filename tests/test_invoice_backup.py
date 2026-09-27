@@ -473,6 +473,6 @@ def test_settings_warns_when_backups_stop(web, db):
 def test_privacy_notice_names_the_india_backup_its_recipients_and_its_retention(db):
     text = TestClient(server.app).get('/privacy').text
     for required in ['Amazon Web Services', 'Mumbai', 'Hyderabad', 'Our accountant',
-                     'backup copies in India are deleted 90 days after each copy is made',
+                     'backup copies in India are deleted within 90 days of being made',
                      'For the India backup, AWS']:
         assert required in text, required

@@ -148,9 +148,10 @@ def run_child(cmd, job, on_line):
 
 def render_command(job, workdir):
     p = job['params']
-    spec = {'ai_motion': bool(p.get('ai_motion')), 'renderer': p.get('style', 'v2'),
+    own = p.get('source') == 'photos'  # the customer's own photos, fetched into scratch by process(): no link at all
+    spec = {'ai_motion': bool(p.get('ai_motion')) and not own, 'renderer': p.get('style', 'v2'),  # never Drive data to Higgsfield
             'max_seconds': p.get('max_seconds'), 'ai_resolution': p.get('ai_resolution', '1080p')}
-    if p.get('source') == 'photos':  # the customer's own photos, fetched into scratch by process(): no link at all
+    if own:
         spec.update(photos=str(Path(workdir) / 'inputs'), facts={k: p.get(k) for k in PHOTO_FACTS})
     else:
         spec['url'] = job['url']
@@ -181,16 +182,7 @@ def _fetch_inputs(job, workdir):
 
 def _drop_inputs(job):
     """The customer asked for their uploaded photos to be deleted from their Drive once the reel is over."""
-    p = job['params'] or {}
-    folder = (p.get('photos') or {}).get('folder')
-    if not folder or not p.get('delete_inputs') or (job.get('meta') or {}).get('inputs') == 'deleted':
-        return
-    try:
-        gdrive.delete_inputs(job['owner_email'], folder, job['drive_generation'], p['photos'].get('ids') or ())
-        state = 'deleted'
-    except Exception:  # clean-up runs in the sweeper: whatever goes wrong must never stop jobs being claimed
-        state = 'delete_failed'  # e.g. Drive disconnected: the photos stay in the customer's own Drive
-    jobs.set_meta(job['owner_email'], job['id'], inputs=state)
+    jobs.drop_inputs(job)  # current connection, never raises; a failure is retried hourly by app.retention
 
 
 def _progress(job, line):

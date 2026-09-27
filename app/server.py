@@ -108,6 +108,7 @@ def at_once(user, group):
 async def lifespan(_app):
     validate_config()
     database.initialize()
+    store._suppression_key()  # freeze the do-not-contact key before anything can rotate SESSION_SECRET
     yield
 
 
@@ -590,9 +591,18 @@ def landing(request: Request):
         'sample_poster': os.getenv('SAMPLE_POSTER_URL') or None, 'limits': photos})
 
 
+def _notice_facts():
+    """What the privacy notice says about payments and the India backup, read from the configuration it describes."""
+    from urllib.parse import urlsplit
+    links = sorted({urlsplit(billing.checkout_link(p)).hostname for p in ('starter', 'commercial') if billing.checkout_link(p)})
+    backup = invoices.config() or {}
+    return {'payments': {'stripe': billing.stripe_enabled(), 'links': links},
+            'backup_aws': not backup.get('endpoint') or '.amazonaws.com' in backup['endpoint']}  # AWS unless a non-AWS endpoint is set
+
+
 @app.get('/privacy', response_class=HTMLResponse)
 def privacy(request: Request):
-    return tpl.TemplateResponse(request, 'legal.html', {'kind': 'privacy'})
+    return tpl.TemplateResponse(request, 'legal.html', {'kind': 'privacy', **_notice_facts()})
 
 
 @app.get('/terms', response_class=HTMLResponse)
@@ -614,8 +624,8 @@ def privacy_request_page(request: Request):
 @app.post('/privacy/request')
 async def privacy_request_post(request: Request):
     f = {k: (v or '').strip() for k, v in (await _form(request)).items() if k != 'csrf'}
-    ip = _ip(request)
-    if auth.too_many(ip, 'privacy'):
+    net = store.net_of(_ip(request))  # per /24 or /64: a new IPv6 address each time is still one network
+    if auth.too_many(net, 'privacy'):
         return _request_page(request, 429, f=f, error='Too many requests from this network. Try again in 10 minutes, or email hello@braivex.com.')
     profile = linkedin.airbnb_profile(f.get('airbnb_profile', ''))
     company = companies.number(f.get('company_number'))
@@ -633,15 +643,17 @@ async def privacy_request_post(request: Request):
              if f.get('listing_url') and not listing else None)
     if error:
         return _request_page(request, 400, f=f, error=error)
-    auth.record_fail(ip, 'privacy')  # counts submissions, not failures
+    auth.record_fail(net, 'privacy')  # counts submissions, not failures
     details = f.get('details') or 'Remove my listing from ReelSieve.'
     ref, received = store.add_privacy_request(f['type'], auth.norm(f['email']), f.get('name', '')[:200] or None, details[:4000],
                                               profile.rsplit('/', 1)[-1] if profile else None, company_number=company,
                                               listing_id=listing)
+    # An objection to direct marketing is honoured at once, for every user. Nothing proves who sent it, so each entry
+    # carries the request reference: Settings shows it next to the request and an admin can undo an abusive one.
     if f['type'] == 'objection' and profile:
-        store.suppress({'airbnb_profile': profile})  # stop outreach to them at once, for every user
+        store.suppress({'airbnb_profile': profile}, ref=ref)
     if f['type'] == 'objection' and company:
-        store.suppress({'company_number': company})  # the company leaves every user's results at once
+        store.suppress({'company_number': company}, ref=ref)
     if removal:
         # Anyone can send this form and nothing proves the listing is theirs, so the block is at once but provisional:
         # it lapses at the reply deadline unless an admin confirms it, and a few per address and per day block at once
@@ -662,6 +674,18 @@ async def privacy_request_handled(request: Request):
         raise HTTPException(404, 'No open request with that reference')
     store.admin_event('privacy_request_handled', request.state.user, None, ref=ref)
     return {'ok': True}
+
+
+@app.post('/api/privacy-requests/unsuppress')
+async def privacy_request_unsuppress(request: Request):
+    """Admin: a privacy request turned out abusive, so the do-not-contact entries it made are removed (logged)."""
+    _require_admin(request)
+    ref = str((await request.json()).get('ref') or '').strip()
+    n = store.undo_request_suppressions(ref) if ref else 0
+    if not n:
+        raise HTTPException(404, 'No do-not-contact entries came from that request')
+    store.admin_event('request_unsuppress', request.state.user, None, ref=ref, rows=n)
+    return {'ok': True, 'removed': n}
 
 
 @app.post('/api/blocked-listings')
@@ -904,6 +928,12 @@ def job_view(j, receipts=None):
              .replace('{listing_title}', listing.get('title') or 'your listing').replace('{city}', listing.get('city') or '')
              .replace('{search_phrase}', phrase).replace('{reel_link}', link or '(reel link not shared yet)'))
     lid = listing_id_of(j['url'])
+    # A host who objected (their Airbnb profile, or their name on this listing) is never offered as someone to contact.
+    hid = str(listing.get('host_id') or '')
+    quiet = not own and bool(hid or host) and not store.unsuppressed(
+        [{'airbnb_profile': f'/users/show/{hid}' if hid.isdigit() else '', 'name': host, 'listing_url': j['url']}])
+    if quiet:
+        msg = final = ''
     return {
         'id': j['id'], 'status': j['status'], 'progress': j['progress'], 'step': j['step'], 'log': j['log'] or [],
         'error': j['error'], 'listing': listing, 'style': p.get('style', 'v2'), 'duration': m.get('duration'),
@@ -917,8 +947,7 @@ def job_view(j, receipts=None):
         'poster': img_src(listing['photo'] + ('?im_w=1200' if '?' not in listing['photo'] else '')) if listing.get('photo') else None,
         'host_status': m.get('host_status'), 'host_error': m.get('host_error'),
         'message': msg, 'message_final': final, 'search_phrase': phrase,
-        'youtube_title': phrase.replace(' ReelSieve', ' — by ReelSieve'),
-        'contact_url': hostmsg.contact_url(lid) if lid else None,
+        'contact_url': hostmsg.contact_url(lid) if lid and not quiet else None, 'host_suppressed': quiet,
         'source': 'photos' if own else 'listing', 'key': lid or j['url'],
         'delete_inputs': bool(p.get('delete_inputs')), 'inputs': m.get('inputs')}
 
@@ -964,27 +993,55 @@ TOO_BIG = 'Your photos add up to more than 250 MB. Choose fewer or smaller photo
 PHOTO_SLOT_WAIT = 20         # seconds a request waits for a free upload slot before it is told to try again
 PHOTO_MIN_RATE = 64 * 1024   # bytes a second an upload must average (after the grace period) to keep its slot
 PHOTO_READ_GRACE = 30        # seconds before that rate counts: connection set-up and a slow first chunk
-# ponytail: each upload is held in memory (up to ~250 MB); two at a time bounds the web process. Raise with its memory.
+PHOTO_DEADLINE = float(os.getenv('PHOTO_UPLOAD_DEADLINE', '600'))  # seconds one upload may take in all, however it trickles
+PHOTO_PER_NETWORK = int(os.getenv('PHOTO_UPLOADS_PER_NETWORK', '1'))  # uploads at once from one /24 or /64
+# ponytail: each upload is held in memory once (up to ~250 MB); two at a time bounds the web process. Raise with its memory.
 _photo_slots = asyncio.Semaphore(int(os.getenv('PHOTO_UPLOAD_SLOTS', '2')))
 _uploading = set()  # owners with an upload in progress in this (single) web process: one at a time each
+_uploading_nets = {}  # network -> uploads in progress from it
+
+
+class _Photo:
+    """One photo part, kept as the bytes arrive: MultiPartParser.parse writes each chunk here instead of to a spooled
+    file, so the body is held once and nothing is copied out again. Past photos.MAX_BYTES it is refused at once."""
+    def __init__(self, filename):
+        self.filename, self.data = filename, bytearray()
+
+    async def write(self, chunk):
+        self.data += chunk
+        if len(self.data) > photos.MAX_BYTES:
+            raise MultiPartException('A photo is larger than 15 MB')
+
+    async def seek(self, _offset):  # parse() rewinds each finished file; there is nothing to rewind
+        pass
 
 
 class _PhotoForm(MultiPartParser):
-    spool_max_size = PHOTO_BODY_MAX  # every part stays in memory (the stream is capped): nothing is written to disk
+    """The photo upload's parser: fields stay small (max_part_size), photo parts go straight into _Photo buffers, so no
+    part is spooled and nothing is written to disk."""
+
+    def on_headers_finished(self):
+        super().on_headers_finished()
+        part = self._current_part
+        if part.file is not None:
+            self._files_to_close_on_error.pop().close()  # the empty spooled file the base class made is never used
+            part.file = _Photo(part.file.filename)
 
 
 async def _capped(stream, limit):
-    """The body, refused past `limit` bytes or once it falls behind PHOTO_MIN_RATE: a stalled or trickling client
-    cannot hold an upload slot (uvicorn itself has no body-read timeout)."""
+    """The body, refused past `limit` bytes, once it falls behind PHOTO_MIN_RATE, or at PHOTO_DEADLINE however it
+    trickles: a stalled or slow client cannot hold an upload slot (uvicorn itself has no body-read timeout)."""
     got, start, chunks = 0, time.monotonic(), stream.__aiter__()
     while True:
+        due = min(start + PHOTO_READ_GRACE + got / PHOTO_MIN_RATE, start + PHOTO_DEADLINE)
         try:
-            async with asyncio.timeout(max(0.01, start + PHOTO_READ_GRACE + got / PHOTO_MIN_RATE - time.monotonic())):
+            async with asyncio.timeout(max(0.01, due - time.monotonic())):
                 chunk = await chunks.__anext__()
         except StopAsyncIteration:
             return
         except TimeoutError:
-            raise HTTPException(408, 'The upload was too slow and has stopped. Check your connection and try again.')
+            raise HTTPException(408, 'The upload was too slow and has stopped. Check your connection, or choose fewer or '
+                                     'smaller photos, and try again.')
         got += len(chunk)
         if got > limit:
             raise HTTPException(413, TOO_BIG)
@@ -997,11 +1054,21 @@ async def create_photo_job(request: Request):
     length = request.headers.get('content-length', '')
     if length.isdigit() and int(length) > PHOTO_BODY_MAX:
         raise HTTPException(413, TOO_BIG)
-    user = request.state.user
+    user, ip = request.state.user, _ip(request)  # signed in: the Gate refused anyone else before this runs
+    net = store.net_of(ip)
     if user in _uploading:
         raise HTTPException(429, 'You are already uploading photos for a reel. Wait for that upload to finish.')
     _uploading.add(user)
+    counted = False
     try:
+        # the cheap refusals (Drive, credit) before this upload takes a slot or a byte of its body is read
+        try:
+            await run_in_threadpool(jobs.precheck_photos, user, request.headers.get('idempotency-key'), ip)
+        except jobs.AdmissionError as e:
+            raise HTTPException(e.status, str(e))
+        if _uploading_nets.get(net, 0) >= PHOTO_PER_NETWORK:
+            raise HTTPException(429, 'Someone on your network is already uploading photos. Try again when that upload has finished.')
+        _uploading_nets[net], counted = _uploading_nets.get(net, 0) + 1, True
         try:
             async with asyncio.timeout(PHOTO_SLOT_WAIT):
                 await _photo_slots.acquire()
@@ -1015,23 +1082,24 @@ async def create_photo_job(request: Request):
             except MultiPartException:
                 raise HTTPException(400, f'Choose {photos.MIN_PHOTOS} to {photos.MAX_PHOTOS} photos, each under 15 MB, '
                                          'and try again')
+            files = [(f.filename or '', f.data) for f in form.getlist('photos') if isinstance(f, _Photo)]  # no copy
+            fields = {k: form.get(k) for k in ('title', 'location', 'highlights', 'style', 'ai_resolution')}
+            fields.update(delete_inputs=form.get('delete_inputs') != 'false',  # ai_motion: never on own photos (admit_photos)
+                          quotes_real=form.get('quotes_real') == 'true', rooms=form.getlist('room'),
+                          quotes=[{'text': t, 'stars': s} for t, s in zip(form.getlist('quote_text'), form.getlist('quote_stars'))])
+            del form
             try:
-                files = [(f.filename or '', await f.read()) for f in form.getlist('photos') if not isinstance(f, str)]
-                fields = {k: form.get(k) for k in ('title', 'location', 'highlights', 'style', 'ai_resolution')}
-                fields.update(ai_motion=form.get('ai_motion') == 'true', delete_inputs=form.get('delete_inputs') != 'false',
-                              quotes_real=form.get('quotes_real') == 'true', rooms=form.getlist('room'),
-                              quotes=[{'text': t, 'stars': s} for t, s in zip(form.getlist('quote_text'), form.getlist('quote_stars'))])
-            finally:
-                await form.close()  # the parser's copy goes now: only `files` is held while the photos are processed
-            try:
-                j = await run_in_threadpool(jobs.admit_photos, user, fields, files,
-                                            request.headers.get('idempotency-key'), _ip(request))
+                j = await run_in_threadpool(jobs.admit_photos, user, fields, files, request.headers.get('idempotency-key'), ip)
             except jobs.AdmissionError as e:
                 raise HTTPException(e.status, str(e))
         finally:
             _photo_slots.release()
     finally:
         _uploading.discard(user)
+        if counted:
+            _uploading_nets[net] -= 1
+            if not _uploading_nets[net]:
+                del _uploading_nets[net]
     return {'id': j['id'], 'account': plans.account_view(user)}
 
 
@@ -1312,12 +1380,13 @@ def gdrive_status(request: Request):
 
 @app.post('/api/gdrive/disconnect')
 def gdrive_disconnect(request: Request):
-    warning = None
+    """Photos the customer asked us to delete go first, while the grant still reaches them (as deactivate and erase)."""
+    warnings = [admin.drop_photo_inputs(database.user_id(request.state.user))]
     try:
         gdrive.disconnect(request.state.user)
     except RuntimeError as e:
-        warning = str(e)
-    return {**gdrive.status(request.state.user), 'warning': warning}
+        warnings.append(str(e))
+    return {**gdrive.status(request.state.user), 'warning': ' '.join(w for w in warnings if w) or None}
 
 
 # ---------------- outreach (drafted here, sent by the customer) ----------------
@@ -1477,7 +1546,7 @@ EVENT_LABELS = {'plan': 'Plan or credits changed', 'password_reset': 'Password r
                 'erase': 'Account erased', 'order_settle': 'Order marked paid', 'order_cancel': 'Order cancelled',
                 'order_link': 'Pay link set', 'privacy_request_handled': 'Privacy request handled',
                 'invoice_export': 'Invoice CSV downloaded',
-                'unsuppress': 'Do-not-contact marks undone',
+                'unsuppress': 'Do-not-contact marks undone', 'request_unsuppress': 'Do-not-contact from a privacy request undone',
                 'listing_block': 'Listing blocked', 'listing_unblock': 'Listing unblocked', 'listing_confirm': 'Listing removal confirmed',
                 'airbnb_resume': 'Airbnb fetching resumed'}
 
@@ -1502,6 +1571,7 @@ def settings(request: Request, saved: int = 0, flash: str = ''):
         'settings': settings_view(), 'gdrive': gdrive.status(request.state.user), 'saved': bool(saved), 'flash': flash[:400],
         'events': store.admin_events(50), 'event_labels': EVENT_LABELS,
         'requests': store.open_privacy_requests(), 'request_types': store.PRIVACY_REQUEST_TYPES, 'now': time.time(),
+        'form_marks': store.request_suppressions(),
         'backup': invoices.status(),
         'referral_totals': referrals.totals(), 'referral_limit': referrals.MONTHLY_LIMIT,
         'companies': companies.status(),

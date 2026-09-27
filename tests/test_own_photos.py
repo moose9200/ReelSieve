@@ -440,7 +440,7 @@ def test_new_reel_page_offers_both_ways_with_listing_link_first(drive, owners):
     assert 'accept="image/jpeg,image/png,image/webp"' in page and 'multiple' in page
     assert re.search(r'id="delete_inputs"[^>]*checked', page)
     assert 'name="quote_text"' in page and page.count('name="quote_text"') == 3 and 'name="quote_name"' not in page
-    assert 'your photos are sent to Higgsfield' in page
+    assert 'AI camera motion is only for listing-link reels' in page and 'your photos are sent to Higgsfield' not in page
     photos_page = alice.get('/app?mode=photos').text
     assert 'hidden' not in tag(photos_page, 'photos-form') and 'hidden' in tag(photos_page, 'reel-form')
     js = alice.get('/static/app.js').text

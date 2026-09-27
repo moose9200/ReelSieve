@@ -19,24 +19,14 @@ PHOTOS_LEFT = ('Some uploaded photos could not be deleted from Google Drive. The
                'the ReelSieve folder there.')
 
 
-def _drop_photo_inputs(owner):
+def drop_photo_inputs(owner):
     """Photos the customer asked us to delete from their Drive go while the Drive grant still works: once it is revoked
     (and, on erasure, the job rows are gone) the clean-up sweeper can no longer reach them. Returns a warning or None."""
     with database.connect() as c:
-        rows = c.execute("SELECT id,params FROM jobs WHERE owner_id=%s AND params->>'source'='photos' "
+        rows = c.execute("SELECT id,owner_id,params,meta FROM jobs WHERE owner_id=%s AND params->>'source'='photos' "
                          "AND params->>'delete_inputs'='true' AND COALESCE(meta->>'inputs','')<>'deleted'", (owner,)).fetchall()
-    left = False
-    for job in rows:
-        p = job['params'].get('photos') or {}
-        try:
-            # generation None: whichever connection is current; with drive.file only the app's own files are reachable
-            gdrive.delete_inputs(None, p['folder'], None, p.get('ids') or (), owner_id=owner)
-        except Exception:  # best effort: the account change must go ahead; the caller reports where the photos are
-            left = True
-            continue
-        with database.connect() as c:
-            c.execute("UPDATE jobs SET meta=meta || '{\"inputs\": \"deleted\"}'::jsonb WHERE id=%s", (job['id'],))
-    return PHOTOS_LEFT if left else None
+    # best effort: the account change goes ahead; the caller reports where any photos are left
+    return None if all([jobs.drop_inputs(job) for job in rows]) else PHOTOS_LEFT
 
 
 def _warnings(*items):
@@ -49,7 +39,7 @@ def deactivate(email, by=None):
     store.admin_event('deactivate', by, email)
     owner = database.user_id(email)
     jobs.cancel_owner(owner)
-    left = _drop_photo_inputs(owner)
+    left = drop_photo_inputs(owner)
     try:
         gdrive.disconnect_owner(owner)
     except RuntimeError as e:
@@ -69,7 +59,7 @@ def erase(email, by=None, via=None):
     via = via or ('console' if by is None else 'self' if auth.norm(by) == auth.norm(email) else 'admin')
     owner = auth.begin_erase(email, by)
     jobs.cancel_owner(owner)
-    warning = _drop_photo_inputs(owner)
+    warning = drop_photo_inputs(owner)
     try:
         gdrive.disconnect_owner(owner)
     except RuntimeError as e:
@@ -94,8 +84,10 @@ def erase(email, by=None, via=None):
                   'scope=NULL,folder_id=NULL,connected_at=NULL,updated=%s WHERE owner_id=%s', (now, owner))
         c.execute('UPDATE usage SET listing_key=NULL,fp_hash=NULL WHERE owner_id=%s', (owner,))  # ip_hash: 90-day abuse window
         c.execute('UPDATE accounts SET ip_hash=NULL,fp_hash=NULL,note=NULL,referral_code=NULL,b2b_sender=NULL WHERE owner_id=%s', (owner,))
-        # the objections they recorded stay honoured; only the link to this account goes
-        c.execute('UPDATE outreach_suppressions SET owner_id=NULL WHERE owner_id=%s', (owner,))
+        # the objections they recorded stay honoured; the account link becomes a keyed hash of the email (never the
+        # email), so unsuppress <email> can still undo misuse until retention clears it 90 days after the mark
+        c.execute('UPDATE outreach_suppressions SET owner_id=NULL,owner_hash=%s WHERE owner_id=%s',
+                  (store.suppression_owner_hash(address), owner))
         c.execute("DELETE FROM orders WHERE owner_id=%s AND status IN ('pending','cancelled')", (owner,))
         # Paid, or reported paid and awaiting confirmation: the tax record needs the payer's email if the money clears.
         c.execute("UPDATE orders SET note=NULL,meta=NULL,pay_link=NULL,billing_email=COALESCE(billing_email,%s) WHERE owner_id=%s",
@@ -107,12 +99,16 @@ def erase(email, by=None, via=None):
 
 
 def unsuppress(email):
-    """Undo the "Do not contact" marks one account made, e.g. someone hiding companies from every other customer.
-    Objections through the privacy form have no account and are never touched; marks older than 90 days have lost
-    their account link (app/retention.py) and stay."""
+    """Undo the "Do not contact" marks one account made, e.g. someone hiding companies from every other customer, also
+    after that account was erased (by the keyed hash erasure leaves). Objections through the privacy form have no
+    account and are never touched here (Settings undoes those per request); marks older than 90 days have lost their
+    account link (app/retention.py) and stay. The event names an erased account by nothing at all."""
+    email = auth.norm(email)
     with database.connect() as c:
-        n = c.execute('DELETE FROM outreach_suppressions WHERE owner_id=%s', (database.user_id(auth.norm(email), c),)).rowcount
-        store.admin_event('unsuppress', None, auth.norm(email), conn=c, rows=n)
+        row = c.execute('SELECT id FROM users WHERE email=%s', (email,)).fetchone()
+        n = c.execute('DELETE FROM outreach_suppressions WHERE owner_id=%s OR owner_hash=%s',
+                      (row['id'] if row else None, store.suppression_owner_hash(email))).rowcount
+        store.admin_event('unsuppress', None, email if row else None, conn=c, rows=n)
     return n
 
 

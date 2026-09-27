@@ -26,6 +26,9 @@
       <button type="button" class="btn btn-secondary btn-sm" id="cancel-btn">Cancel this reel</button>
       <span class="form-status" id="cancel-status" role="status" aria-live="polite">{% if job.cancel_requested %}Stopping…{% endif %}</span>
     </div>
+    {% if job.source == 'photos' %}
+    <p class="hint" id="inputs-state">{% if job.inputs == 'deleted' %}Your uploaded photos were deleted from your Google Drive, as you asked.{% elif job.inputs == 'delete_failed' %}We could not delete your uploaded photos from Google Drive yet. We will keep trying for 7 days; if you disconnected Google Drive, connect it again.{% elif job.inputs == 'left' %}We could not delete your uploaded photos from Google Drive. They are in the Inputs folder inside your ReelSieve folder; delete them there.{% elif job.delete_inputs %}Your uploaded photos will be deleted from your Google Drive once the reel is finished.{% else %}Your uploaded photos are in the Inputs folder inside your ReelSieve folder in Google Drive.{% endif %}</p>
+    {% endif %}
   </div>
 
   <div class="card video-card{% if job.status != 'done' %} hidden{% endif %}" id="video-card">
@@ -33,9 +36,6 @@
       <video id="video" controls playsinline preload="metadata"{% if job.stream_url %} src="{{ job.stream_url }}"{% endif %}{% if job.poster %} poster="{{ job.poster }}"{% endif %}></video>
     </div>
     <p class="hint">Stored in your Google Drive only — ReelSieve keeps no copy.</p>
-    {% if job.source == 'photos' %}
-    <p class="hint" id="inputs-state">{% if job.inputs == 'deleted' %}Your uploaded photos were deleted from your Google Drive, as you asked.{% elif job.inputs == 'delete_failed' %}We could not delete your uploaded photos from Google Drive. They are in the Inputs folder inside your ReelSieve folder; delete them there if you like.{% elif job.delete_inputs %}Your uploaded photos will be deleted from your Google Drive once the reel is finished.{% else %}Your uploaded photos are in the Inputs folder inside your ReelSieve folder in Google Drive.{% endif %}</p>
-    {% endif %}
     <div class="video-actions">
       <a class="btn btn-primary{% if not job.download_url %} hidden{% endif %}" id="download-btn" href="{{ job.download_url or '#' }}">Download reel</a>
       <span class="email-line">
@@ -43,7 +43,7 @@
         <span class="pill pill-email pill-{{ 'done' if job.drive_link else 'skipped' }}" id="drive-pill">{{ ('Delivered · ' ~ ('shared by link' if job.shared else 'private')) if job.drive_link else '—' }}</span>
         <a id="drive-link" class="{% if not job.drive_link %}hidden{% endif %}" href="{{ job.drive_link or '#' }}" target="_blank" rel="noopener">Open in Drive ↗</a>
       </span>
-      {% if job.source != 'photos' %}
+      {% if job.source != 'photos' and not job.host_suppressed %}
       <span class="email-line">
         <span class="eyebrow inline">Host message</span>
         <span class="pill pill-email" id="host-pill" data-status="{{ job.host_status or '' }}">{{ job.host_status or "—" }}</span>
@@ -69,14 +69,10 @@
     </div>
   </div>
 
-  {% if job.source != 'photos' %}
+  {% if job.source != 'photos' and not job.host_suppressed %}
   <div class="card host-card{% if job.status != 'done' %} hidden{% endif %}" id="host-card">
     <div class="section-head"><h2>Send to the host on Airbnb</h2></div>
-    <div class="field">
-      <label for="yt-title">YouTube title to use (so the host can find it by searching)</label>
-      <div class="copy-row"><input type="text" id="yt-title" readonly value="{{ job.youtube_title or '' }}"><button type="button" class="btn btn-secondary" id="copy-yt-btn">Copy</button></div>
-      <p class="hint">Upload the reel to YouTube with this exact title (unlisted is fine). The message below tells the host to search for it — no link needed.</p>
-    </div>
+    <div class="field"><p class="hint" id="share-step">Share the reel with the host privately, for example as an unlisted link, and only after they reply. Do not publish a reel of someone else's listing without the host's permission.</p></div>
     <div class="field">
       <label for="host-message">Message</label>
       <textarea id="host-message" rows="5">{{ job.message_final or job.message or '' }}</textarea>

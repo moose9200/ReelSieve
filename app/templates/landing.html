@@ -43,19 +43,19 @@
     'Both are one-off payments in US dollars, and the credits never expire.']},
   {'q': 'Where does the finished video go?', 'a': [
     'ReelSieve saves the reel and a 720p copy to the Google Drive you connect.',
-    "It uses Google's drive.file permission, which lets it see only the files it creates.",
+    "It uses Google's drive.file permission, which lets it see only the files it creates, plus your Google account's email address and ID to show which account is connected.",
     'The reel stays private until you share it, and ReelSieve keeps no copy.']},
   {'q': 'Does ReelSieve message the host for me?', 'a': [
     'No.',
     'ReelSieve drafts a message with no links in it, because Airbnb filters links before a booking.',
-    'It also suggests a YouTube title the host can search for.',
+    'It offers to send the reel to the host privately if they reply.',
     'You send the message yourself from your own Airbnb account.']},
   {'q': 'What is AI camera motion?', 'a': [
     "AI camera motion is an option on ReelSieve's paid plans that generates a camera move through each room from the listing photo.",
     'A photo check runs first and skips the paid step if the photos are too weak.',
     'Without it, each photo gets a gentle depth-based move.']},
   {'q': 'Who owns the videos?', 'a': [
-    'You keep full rights to the videos ReelSieve makes for you.',
+    "You own what ReelSieve adds to your videos; the listing's photos and reviews stay their owners'.",
     "You are responsible for having the right to use the listing's photos, as the terms of use explain."]},
   {'q': 'What happens if a render fails?', 'a': [
     'If a render fails, ReelSieve puts the credit back in your account.',
@@ -332,7 +332,7 @@
         <h2 id="drive-title">Your reels live in your Google Drive.</h2>
         {{ lines([
           'ReelSieve saves each finished reel to the Google Drive you connect.',
-          "It asks for Google's drive.file permission only, so it can see just the files it creates.",
+          "It asks for Google's drive.file permission, so it can see just the files it creates, plus your Google account's email address and ID to show which account is connected.",
           'Every reel is private until you choose to make a share link.',
           'ReelSieve keeps no copy after delivery.']) }}
         <p class="lp-more"><a href="/privacy">Read what ReelSieve stores and for how long</a></p>
@@ -353,7 +353,7 @@
         {{ lines([
           'Airbnb filters links out of messages sent before a booking.',
           'ReelSieve drafts a message with no links in it.',
-          'It also suggests a YouTube title, so the host can find the reel once you have uploaded it.',
+          'It offers to send the reel to the host privately once they reply.',
           'You send it from your own Airbnb account.',
           'ReelSieve never sends messages for you.']) }}
         <h3 class="lp-subhead">Outreach tools</h3>

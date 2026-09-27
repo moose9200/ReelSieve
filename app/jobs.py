@@ -94,7 +94,9 @@ def admit_photos(user, fields, files, idempotency_key=None, ip=None):
         raise AdmissionError(str(e)) from None
     # The photo set stands in for the listing: remaking a reel from the same photos is free, like remaking a listing.
     url = 'photos:' + hashlib.sha256(''.join(sorted(hashlib.sha256(d).hexdigest() for _, d in files)).encode()).hexdigest()[:32]
-    requested = {**_style(fields), 'source': 'photos', 'send_to_host': False, **facts, 'rooms': rooms,
+    # ai_motion off whatever the client sends: these photos come back from the customer's Drive, and Google's Limited Use
+    # rules forbid passing Drive data to a provider that trains AI models on it (Higgsfield does).
+    requested = {**_style(fields), 'ai_motion': False, 'source': 'photos', 'send_to_host': False, **facts, 'rooms': rooms,
                  'delete_inputs': fields.get('delete_inputs', True) is not False}
     key = str(idempotency_key or '')[:120] or secrets.token_hex(16)
     with database.connect() as c:
@@ -129,6 +131,24 @@ def admit_photos(user, fields, files, idempotency_key=None, ip=None):
     if job['id'] != job_id:  # the same request was admitted meanwhile: keep its photos, drop this copy
         _forget_inputs(user, folder, ids, generation)
     return job
+
+
+def precheck_photos(user, idempotency_key=None, ip=None):
+    """admit_photos' cheap refusals, run before an upload takes a slot or its body is read: Drive, then credit.
+    A retried request (a key already used) is left to admit_photos, and so is an account that has made photo reels
+    before and is out of credit: the same photos again would be a free remake, known only once they are read."""
+    key = str(idempotency_key or '')[:120]
+    with database.connect() as c:
+        owner = database.user_id(user, c)
+        if key and c.execute('SELECT 1 FROM jobs WHERE owner_id=%s AND idempotency_key=%s', (owner, key)).fetchone():
+            return
+        if gdrive.usable_generation(c, owner) is None:
+            raise AdmissionError(DRIVE_FIRST, 412)
+        made = c.execute("SELECT 1 FROM usage WHERE owner_id=%s AND kind='video' AND refunded_at IS NULL "
+                         "AND listing_key LIKE 'photos:%%' LIMIT 1", (owner,)).fetchone()
+    ok, reason, meta = plans.can_generate(user, 'photos:', ip)  # a photo set nobody has made yet
+    if not ok and not (made and meta.get('upgrade')):
+        raise AdmissionError(reason, 402)
 
 
 def _forget_inputs(user, folder, ids, generation):
@@ -333,10 +353,29 @@ def live_leases():
                                            (time.time(),)).fetchall()}
 
 
+def drop_inputs(job):
+    """Delete a photo reel's uploaded photos from the owner's Drive when they asked for it, through whichever Drive
+    connection is current (drive.file reaches the app's own files after a reconnect too), also for an account being
+    deactivated or erased. Records 'deleted', or 'delete_failed' for the hourly retry (app/retention.py). True when
+    nothing is left to delete. Never raises: clean-up must never stop jobs being claimed or an account change."""
+    p = job['params'] or {}
+    folder = (p.get('photos') or {}).get('folder')
+    if not folder or not p.get('delete_inputs') or (job.get('meta') or {}).get('inputs') == 'deleted':
+        return True
+    try:
+        gdrive.delete_inputs(None, folder, None, p['photos'].get('ids') or (), owner_id=job['owner_id'])
+        state = 'deleted'
+    except Exception:  # e.g. Drive disconnected or Google down: the photos stay in the customer's own Drive for now
+        state = 'delete_failed'
+    with database.connect() as c:
+        c.execute('UPDATE jobs SET meta=meta || %s,updated=%s WHERE id=%s', (Jsonb({'inputs': state}), time.time(), job['id']))
+    return state == 'deleted'
+
+
 def pending_cleanup(limit=50):
     """Finished jobs whose scratch (and, for photo reels, Drive inputs) no worker has cleaned up yet."""
     with database.connect() as c:
-        return c.execute("SELECT j.id,j.params,j.meta,j.drive_generation,u.email AS owner_email FROM jobs j "
+        return c.execute("SELECT j.id,j.owner_id,j.params,j.meta,j.drive_generation,u.email AS owner_email FROM jobs j "
                          "JOIN users u ON u.id=j.owner_id WHERE j.status IN ('done','failed','cancelled') "
                          'AND j.cleanup_at IS NULL ORDER BY j.finished_at LIMIT %s', (limit,)).fetchall()
 

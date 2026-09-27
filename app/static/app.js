@@ -383,9 +383,8 @@
       Array.prototype.forEach.call(quotes, function (q) { fd.append("quote_text", q.value); });
       Array.prototype.forEach.call(stars, function (s) { fd.append("quote_stars", s.value); });
       fd.append("quotes_real", String(!!(real && real.checked)));
-      var ai = document.getElementById("p-ai_motion"), res = document.getElementById("ai_resolution");
-      fd.append("ai_motion", String(!!(ai && ai.checked && !ai.disabled)));
-      fd.append("ai_resolution", res ? res.value : "1080p");
+      var res = document.getElementById("ai_resolution");
+      fd.append("ai_resolution", res ? res.value : "1080p");  // no ai_motion: own-photo reels never get it (server enforces)
       fd.append("delete_inputs", String(document.getElementById("delete_inputs").checked));
       if (!pKey) pKey = newKey();
       pbtn.disabled = true; prog.classList.remove("hidden"); setProgress(0);
@@ -458,7 +457,6 @@
         hostPill.textContent = hostText(job);
       }
       if (hostMsg && !msgTouched && (job.message_final || job.message)) hostMsg.value = job.message_final || job.message;
-      var yt = el("yt-title"); if (yt && job.youtube_title) yt.value = job.youtube_title;
       if (contactLink && job.contact_url) contactLink.href = job.contact_url;
       if (hostStatus && job.host_error && !hostStatus.textContent) hostStatus.textContent = job.host_error;
     }
@@ -495,12 +493,13 @@
       if (st === "done") {
         renderDelivery(job);
         videoCard.classList.remove("hidden");
-        if (hostCard) hostCard.classList.remove("hidden");
-        renderHost(job);
+        if (hostCard && job.host_suppressed) { hostCard.parentNode.removeChild(hostCard); hostCard = null; }  // they objected
+        if (hostCard) { hostCard.classList.remove("hidden"); renderHost(job); }
       }
       var inp = el("inputs-state");
       if (inp && job.inputs === "deleted") inp.textContent = "Your uploaded photos were deleted from your Google Drive, as you asked.";
-      if (inp && job.inputs === "delete_failed") inp.textContent = "We could not delete your uploaded photos from Google Drive. They are in the Inputs folder inside your ReelSieve folder; delete them there if you like.";
+      if (inp && job.inputs === "delete_failed") inp.textContent = "We could not delete your uploaded photos from Google Drive yet. We will keep trying for 7 days; if you disconnected Google Drive, connect it again.";
+      if (inp && job.inputs === "left") inp.textContent = "We could not delete your uploaded photos from Google Drive. They are in the Inputs folder inside your ReelSieve folder; delete them there.";
       // a photo reel's Drive clean-up lands just after it finishes: keep polling briefly until it is reported
       var terminal = st === "done" || st === "failed" || st === "cancelled";
       var cleaning = terminal && job.source === "photos" && job.delete_inputs && !job.inputs && extraPolls++ < 15;
@@ -537,8 +536,6 @@
     if (el("share-no")) el("share-no").addEventListener("click", function () { el("share-confirm").classList.add("hidden"); shareBtn.focus(); });
     if (el("unshare-btn")) el("unshare-btn").addEventListener("click", function () { share(false); });
 
-    var ytBtn = el("copy-yt-btn");
-    if (ytBtn) ytBtn.addEventListener("click", function () { var f = el("yt-title"); if (!f || !f.value) return; var done = function () { ytBtn.textContent = "Copied"; setTimeout(function () { ytBtn.textContent = "Copy"; }, 1500); }; if (navigator.clipboard) navigator.clipboard.writeText(f.value).then(done, done); else { f.select(); document.execCommand("copy"); done(); } });
     var copyBtn = el("copy-link-btn");
     if (copyBtn) copyBtn.addEventListener("click", function () {
       if (!reelLink || !reelLink.value) return;
@@ -1063,6 +1060,17 @@
       b.disabled = true; out.className = "form-status";
       postJSON("/api/privacy-requests/handled", { ref: ref })
         .then(function () { var li = b.closest("li"); if (li) li.parentNode.removeChild(li); out.textContent = ref + " marked handled."; })
+        .catch(function (e) { out.textContent = e.message; out.classList.add("is-error"); b.disabled = false; });
+    });
+  });
+
+  Array.prototype.forEach.call(document.querySelectorAll(".req-unsuppress"), function (b) {
+    b.addEventListener("click", function () {
+      var out = document.getElementById("req-status"), ref = b.getAttribute("data-ref");
+      if (!confirm("Undo the do-not-contact entries from " + ref + "? Do this only if the request was not genuine.")) return;
+      b.disabled = true; out.className = "form-status";
+      postJSON("/api/privacy-requests/unsuppress", { ref: ref })
+        .then(function () { window.location.reload(); })
         .catch(function (e) { out.textContent = e.message; out.classList.add("is-error"); b.disabled = false; });
     });
   });

@@ -5,6 +5,7 @@ Network signals are pseudonymised (keyed HMACs of the /24 or /64 network, never 
 videos, where the free-tier guard counts them, and per sign-up/sign-in for the invite self-invite check
 (signin_networks), and cleared after SIGNAL_DAYS (privacy page).
 """
+import os
 import time
 import hmac
 import hashlib
@@ -201,10 +202,31 @@ def outreach_delete(rid, user):
         c.execute('DELETE FROM outreach WHERE id=%s AND owner_id=%s', (rid, database.user_id(user, c)))
 
 
+_suppression_keys = {}  # (database, schema) -> the frozen key, read once per process
+SUPPRESSION_KEY_META = 'outreach_suppression_key'
+
+
 def _suppression_key():
-    # ponytail: derived from SESSION_SECRET like the signal key, so rotating that secret stops old objections
-    # matching. Re-key outreach_suppressions (or pin this key) before any rotation.
-    from app import auth;return hmac.new(auth.secret().encode(),b'reelsieve:outreach-suppression:v1',hashlib.sha256).digest()
+    """The do-not-contact HMAC key. Made once, exactly as it always was (from SESSION_SECRET under its own label), then
+    stored encrypted in app_meta (TOKEN_ENCRYPTION_KEY, like Drive tokens) and always read from there, so rotating
+    SESSION_SECRET never voids an objection. The web process freezes it at start. Rotate TOKEN_ENCRYPTION_KEY only with
+    the old key in TOKEN_ENCRYPTION_OLD_KEYS: a key that cannot be read stops the app rather than start a new list."""
+    where = (os.getenv('DATABASE_URL'), database.schema_name())
+    if where not in _suppression_keys:
+        from cryptography.fernet import InvalidToken
+        from app import auth, gdrive
+        fernet = gdrive._fernet()
+        made = hmac.new(auth.secret().encode(), b'reelsieve:outreach-suppression:v1', hashlib.sha256).digest()
+        with database.connect() as c:
+            c.execute('INSERT INTO app_meta(key,value) VALUES(%s,%s) ON CONFLICT (key) DO NOTHING',
+                      (SUPPRESSION_KEY_META, Jsonb({'enc': fernet.encrypt(made).decode()})))
+            stored = c.execute('SELECT value FROM app_meta WHERE key=%s', (SUPPRESSION_KEY_META,)).fetchone()['value']
+        try:
+            _suppression_keys[where] = fernet.decrypt(stored['enc'].encode())
+        except InvalidToken:
+            raise RuntimeError('The stored do-not-contact key cannot be decrypted: put the previous TOKEN_ENCRYPTION_KEY '
+                               'in TOKEN_ENCRYPTION_OLD_KEYS') from None
+    return _suppression_keys[where]
 
 
 def suppression_keys(item):
@@ -230,19 +252,39 @@ def suppression_keys(item):
 DAILY_SUPPRESSIONS = 30  # keys one account may add in 24 hours (a host can take two); cohost sends are capped at 5 a day
 
 
-def suppress(item, user=None):
+def suppress(item, user=None, ref=None):
     """Do not contact this prospect again, for any user. Stores hashes only.
     user: the account marking it, recorded so misuse can be traced and undone (app/admin.py unsuppress), and limited to
-    DAILY_SUPPRESSIONS a day; returns False, storing nothing, past that. None: an objection through the privacy form."""
+    DAILY_SUPPRESSIONS a day; returns False, storing nothing, past that. None: an objection through the privacy form,
+    honoured at once and tagged with its request reference `ref` so an admin can undo an abusive one."""
     with database.connect() as c:
         owner = database.user_id(user, c) if user else None
         if owner and c.execute('SELECT count(*) AS n FROM outreach_suppressions WHERE owner_id=%s AND ts>%s',
                                (owner, time.time() - 86400)).fetchone()['n'] >= DAILY_SUPPRESSIONS:
             return False
         for key in suppression_keys(item):
-            c.execute('INSERT INTO outreach_suppressions(key,ts,owner_id) VALUES(%s,%s,%s) ON CONFLICT (key) DO NOTHING',
-                      (key, time.time(), owner))
+            c.execute('INSERT INTO outreach_suppressions(key,ts,owner_id,request_ref) VALUES(%s,%s,%s,%s) '
+                      'ON CONFLICT (key) DO NOTHING', (key, time.time(), owner, ref))
     return True
+
+
+def suppression_owner_hash(email):
+    """What erasure leaves on the marks an account made instead of its email (app/admin.py): a keyed hash."""
+    return hmac.new(_suppression_key(), ('owner:' + (email or '').strip().lower()).encode(), hashlib.sha256).hexdigest()
+
+
+def request_suppressions(limit=100):
+    """{request ref: {'n', 'ts'}}: do-not-contact entries made through the privacy form, newest first (Settings)."""
+    with database.connect() as c:
+        rows = c.execute('SELECT request_ref,count(*) AS n,max(ts) AS ts FROM outreach_suppressions WHERE request_ref IS NOT NULL '
+                         'GROUP BY request_ref ORDER BY max(ts) DESC LIMIT %s', (limit,)).fetchall()
+    return {r['request_ref']: {'n': r['n'], 'ts': r['ts']} for r in rows}
+
+
+def undo_request_suppressions(ref):
+    """An admin found a privacy request abusive: its do-not-contact entries go. Returns how many."""
+    with database.connect() as c:
+        return c.execute('DELETE FROM outreach_suppressions WHERE request_ref=%s', (ref,)).rowcount
 
 
 def set_b2b_sender(user, name, business, email):
