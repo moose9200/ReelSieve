@@ -102,5 +102,5 @@ Target: every finding below has a failing-first test (or a pinned notice fact) a
 - [x] N5 Disconnect deletes pending Inputs first; _drop_inputs uses the current connection; failed deletes retried hourly for 7 days, then shown on the job page. Evidence: 3 tests red on 3105f8e, green after
 - [x] S2 photo upload: Drive + credit checks before a slot or the body; 10-minute hard deadline; one slot per network; configurable. Evidence: 4 tests red on 3105f8e (412/402 only after a slot; no deadline; no network limit), green after
 - [x] S4 upload parts parsed straight into the files list; MAX_PIXELS about 26 MP; 60 MP refused. Evidence: 2 tests red on 3105f8e (8 spooled writes; MAX_PIXELS 60M), green after
-- [ ] N8 job page and default host message: no YouTube; share privately after the host replies
+- [x] N8 job page and default host message: no YouTube; share privately after the host replies. Evidence: 2 tests red on 3105f8e, green after
 - [ ] N3-N20 notice and copy fixes, pinned in tests/test_privacy_basics.py

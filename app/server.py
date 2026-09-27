@@ -938,7 +938,6 @@ def job_view(j, receipts=None):
         'poster': img_src(listing['photo'] + ('?im_w=1200' if '?' not in listing['photo'] else '')) if listing.get('photo') else None,
         'host_status': m.get('host_status'), 'host_error': m.get('host_error'),
         'message': msg, 'message_final': final, 'search_phrase': phrase,
-        'youtube_title': phrase.replace(' ReelSieve', ' — by ReelSieve'),
         'contact_url': hostmsg.contact_url(lid) if lid and not quiet else None, 'host_suppressed': quiet,
         'source': 'photos' if own else 'listing', 'key': lid or j['url'],
         'delete_inputs': bool(p.get('delete_inputs')), 'inputs': m.get('inputs')}

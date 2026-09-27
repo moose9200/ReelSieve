@@ -395,3 +395,24 @@ def test_a_60_megapixel_photo_is_refused_and_the_limit_fits_a_1080p_reel():
     Image.new('L', (10000, 6000)).save(buf, 'PNG')
     with pytest.raises(photos.PhotoError, match='too many pixels. Use a photo under 26 megapixels'):
         photos.clean(buf.getvalue(), 'huge.png')
+
+
+# ---------------- N8: no invitation to publish someone else's listing ----------------
+
+def test_the_default_host_message_offers_to_send_the_reel_on_reply_and_never_mentions_youtube():
+    from app import hostmsg
+    msg = hostmsg.DEFAULT_MESSAGE
+    assert 'YouTube' not in msg and '{search_phrase}' not in msg and 'http' not in msg
+    assert "reply and I'll send it to you privately" in msg and '{listing_title}' in msg
+
+
+def test_the_reel_page_says_share_privately_after_the_host_replies_not_upload_to_youtube(owners, google, db):
+    jid = _hosted_reel(owners, google)
+    alice = client_for(owners['alice'])
+    page = alice.get(f'/jobs/{jid}').text
+    card = page.split('id="host-card"', 1)[1].split('</section>', 1)[0]
+    assert 'YouTube' not in page and 'yt-title' not in page
+    assert 'Share the reel with the host privately, for example as an unlisted link, and only after they reply' in card
+    assert 'youtube_title' not in alice.get(f'/api/jobs/{jid}').json()
+    assert 'YouTube' not in client_for().get('/').text  # the landing page no longer suggests it either
+    assert 'yt-title' not in alice.get('/static/app.js').text

@@ -457,7 +457,6 @@
         hostPill.textContent = hostText(job);
       }
       if (hostMsg && !msgTouched && (job.message_final || job.message)) hostMsg.value = job.message_final || job.message;
-      var yt = el("yt-title"); if (yt && job.youtube_title) yt.value = job.youtube_title;
       if (contactLink && job.contact_url) contactLink.href = job.contact_url;
       if (hostStatus && job.host_error && !hostStatus.textContent) hostStatus.textContent = job.host_error;
     }
@@ -537,8 +536,6 @@
     if (el("share-no")) el("share-no").addEventListener("click", function () { el("share-confirm").classList.add("hidden"); shareBtn.focus(); });
     if (el("unshare-btn")) el("unshare-btn").addEventListener("click", function () { share(false); });
 
-    var ytBtn = el("copy-yt-btn");
-    if (ytBtn) ytBtn.addEventListener("click", function () { var f = el("yt-title"); if (!f || !f.value) return; var done = function () { ytBtn.textContent = "Copied"; setTimeout(function () { ytBtn.textContent = "Copy"; }, 1500); }; if (navigator.clipboard) navigator.clipboard.writeText(f.value).then(done, done); else { f.select(); document.execCommand("copy"); done(); } });
     var copyBtn = el("copy-link-btn");
     if (copyBtn) copyBtn.addEventListener("click", function () {
       if (!reelLink || !reelLink.value) return;
