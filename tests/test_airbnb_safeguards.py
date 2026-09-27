@@ -432,3 +432,15 @@ def test_co_host_discovery_does_not_fetch_a_blocked_listing(airbnb_net, db, monk
     res = cohost.discover('Poole')
     assert [c for c in airbnb_net.calls if '/rooms/' in c] == ['www.airbnb.co.uk/rooms/1', 'www.airbnb.co.uk/rooms/3']
     assert '2' not in [i['id'] for i in res['items']]
+
+
+# ---------------- 6. privacy notice ----------------
+
+def test_privacy_notice_says_how_we_fetch_and_how_hosts_stop_reels(web):
+    page = web['anon'].get('/privacy').text
+    listing = page.split('<h2>Listing content and your videos</h2>', 1)[1].split('<h2>', 1)[0]
+    hosts = page.split('<h2>If you are an Airbnb host or guest</h2>', 1)[1].split('<h2>', 1)[0]
+    for phrase in ('logged out', 'limited rate', 'blocks us', 'Remove my listing from ReelSieve'):
+        assert phrase in listing, phrase
+    assert 'Remove my listing from ReelSieve' in hosts and 'href="/privacy/request"' in hosts
+    assert "Videos show the text, star rating and month of a guest review, but not the reviewer's name." in listing
