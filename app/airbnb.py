@@ -42,13 +42,24 @@ def kind(url):
     return 'image' if host == 'muscache.com' or host.endswith('.muscache.com') else None
 
 
-def interval(k):
-    """Seconds between two requests of this kind across every process: AIRBNB_PAGE_RPS (1), AIRBNB_IMAGE_RPS (10)."""
-    return 1 / float(os.getenv('AIRBNB_PAGE_RPS', '1') if k == 'page' else os.getenv('AIRBNB_IMAGE_RPS', '10'))
+# Requests per second in each shared budget: listing and search pages, photos, and the scripts and data calls the
+# headless reviews page makes (about 190 of them; a person's browser loads the same in about 3 s).
+RATES = {'page': 'AIRBNB_PAGE_RPS', 'image': 'AIRBNB_IMAGE_RPS', 'browser': 'AIRBNB_BROWSER_RPS'}
+DEFAULTS = {'AIRBNB_FETCH_ENABLED': '1', 'AIRBNB_BLOCK_COOLDOWN_MIN': '30', 'AIRBNB_PAGE_RPS': '1', 'AIRBNB_IMAGE_RPS': '10',
+            'AIRBNB_BROWSER_RPS': '20'}
+
+
+def setting(k):
+    return (os.getenv(k) or '').strip() or DEFAULTS[k]
+
+
+def interval(bucket):
+    """Seconds between two requests of this budget across every process."""
+    return 1 / float(setting(RATES[bucket]))
 
 
 def cooldown():
-    return float(os.getenv('AIRBNB_BLOCK_COOLDOWN_MIN', '30')) * 60
+    return float(setting('AIRBNB_BLOCK_COOLDOWN_MIN')) * 60
 
 
 def last_block(conn=None):
@@ -64,17 +75,19 @@ def _refuse_if_paused(c):
         raise Unavailable(BLOCKED)
 
 
-def gate(url):
-    """Before every request: kill switch (pages), cool-down, then wait for this request's slot in the shared budget."""
+def gate(url, bucket=None):
+    """Before every request: kill switch (pages), cool-down, then wait for this request's slot in the shared budget.
+    bucket: the budget the slot comes from; by default the host's kind ('page' or 'image')."""
     k = kind(url)
     if not k:
         return
     if k == 'page' and not enabled():
         raise Unavailable(DISABLED)
-    step = interval(k)
+    bucket = bucket or k
+    step = interval(bucket)
     with database.connect() as c:
         _refuse_if_paused(c)
-        wait = c.execute(RESERVE, (step, k, step)).fetchone()['wait']
+        wait = c.execute(RESERVE, (step, bucket, step)).fetchone()['wait']
     if wait > 0:
         time.sleep(wait)
         with database.connect() as c:  # a block may have happened while this request waited its turn

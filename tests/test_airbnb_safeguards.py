@@ -60,10 +60,43 @@ def no_browser(monkeypatch):
     monkeypatch.setitem(sys.modules, 'playwright.sync_api', types.SimpleNamespace(sync_playwright=launch))
 
 
-def fake_browser(monkeypatch, status=200, content='<html><body>Reviews</body></html>', text=''):
-    """Headless Chromium stand-in: records where it navigates, answers with the given status and page."""
-    visits = []
-    page = types.SimpleNamespace(goto=lambda url, **k: (visits.append(url), types.SimpleNamespace(status=status))[1],
+class _Visits(list):
+    def __init__(self):
+        super().__init__()
+        self.routed = []
+
+
+class _Route:
+    def __init__(self, url, resource_type, navigation):
+        self.request = types.SimpleNamespace(url=url, resource_type=resource_type, method='GET',
+                                             is_navigation_request=lambda: navigation)
+        self.outcome = None
+
+    def abort(self):
+        self.outcome = 'abort'
+
+    def continue_(self):
+        self.outcome = 'continue'
+
+
+def fake_browser(monkeypatch, status=200, content='<html><body>Reviews</body></html>', text='', subrequests=()):
+    """Headless Chromium stand-in: records where it navigates, answers with the given status and page. Like the real page
+    it then loads subrequests, (url, resource type, status) each, through the page's route handler and response listeners.
+    Returns the navigations; .routed holds (url, resource type, 'continue' or 'abort') for every request."""
+    visits, handlers = _Visits(), {'response': []}
+
+    def goto(url, **k):
+        visits.append(url)
+        for u, rtype, st in [(url, 'document', status), *subrequests]:
+            route = _Route(u, rtype, rtype == 'document')
+            handlers['route'](route) if 'route' in handlers else route.continue_()
+            visits.routed.append((u, rtype, route.outcome))
+            if route.outcome == 'continue':
+                for h in handlers['response']:
+                    h(types.SimpleNamespace(url=u, status=st))
+        return types.SimpleNamespace(status=status)
+    page =types.SimpleNamespace(goto=goto, route=lambda pattern, h: handlers.__setitem__('route', h),
+                                 on=lambda event, h: handlers[event].append(h),
                                  wait_for_selector=lambda *a, **k: None, wait_for_timeout=lambda *a: None,
                                  inner_text=lambda sel: text, content=lambda: content)
     browser = types.SimpleNamespace(new_page=lambda **k: page, close=lambda: None)
@@ -252,7 +285,7 @@ def test_the_web_and_both_workers_share_one_page_budget(db, monkeypatch):
 def test_every_airbnb_request_passes_the_gate_in_its_own_budget(web, airbnb_net, db, monkeypatch, tmp_path):
     kinds = []
     real = airbnb.gate
-    monkeypatch.setattr(airbnb, 'gate', lambda url: (kinds.append(airbnb.kind(url)), real(url))[1])
+    monkeypatch.setattr(airbnb, 'gate', lambda url, bucket=None: (kinds.append(airbnb.kind(url)), real(url, bucket))[1])
     airbnb_net.pages.update({'/s/': '<html></html>', '/host/': '<html>co-host <a href="/users/show/55">Ann</a></html>'})
     assert web['alice'].get('/api/search', params={'location': 'Poole'}).status_code == 200
     assert web['alice'].get('/api/outreach/cohosts', params={'city': 'Poole'}).status_code == 200
@@ -275,7 +308,7 @@ def test_photos_download_in_parallel_within_the_image_budget(airbnb_net, db, mon
 def test_non_airbnb_fetches_are_not_limited(airbnb_net, db):
     with pytest.raises(AssertionError, match='Unexpected synthetic'):
         fetch.get('https://example.org/other')  # went straight to the (fake) network
-    assert budgets(db) == {'page': 0, 'image': 0}
+    assert budgets(db) == {'page': 0, 'image': 0, 'browser': 0}
 
 
 # ---------------- 3. kill switch ----------------
@@ -338,6 +371,59 @@ def test_reviews_still_come_from_the_reviews_page_through_the_limiter(db, monkey
     visits = fake_browser(monkeypatch, text=text)
     assert pipeline.scrape_reviews(ROOM) == [{'stars': 5, 'date': 'August 2026', 'text': 'Spotless flat with a lovely view of the harbour.'}]
     assert visits == [ROOM + '/reviews'] and budgets(db)['page'] > 0
+
+
+REVIEW_TEXT = '\n'.join(['Namey', 'Leeds, UK', 'Rating, 5 stars', '·', 'August 2026', 'Spotless flat with a lovely view of the harbour.', ''])
+DATA_CALL = 'https://www.airbnb.co.uk/api/v3/StaysPdpReviewsQuery/abc?operationName=StaysPdpReviewsQuery'
+# What the live reviews page loads (27 Sep 2026: 144 muscache scripts, 45 images, 6 media, 1 font, ~38 airbnb.co.uk
+# data and tracking calls, a few third-party scripts), one of each.
+PAGE_LOADS = [('https://a0.muscache.com/airbnb/static/packages/web/common/a.js', 'script', 200),
+              ('https://a0.muscache.com/airbnb/static/packages/web/common/b.css', 'stylesheet', 200),
+              (DATA_CALL, 'fetch', 200),
+              ('https://www.airbnb.co.uk/tracking/jitney/logging/messages', 'xhr', 204),
+              ('https://www.airbnb.co.uk/gtg/gtm-46mk/gtm.js', 'script', 200),
+              ('https://a0.muscache.com/im/pictures/hosting/a.jpeg', 'image', 200),
+              ('https://a0.muscache.com/v/a.mp4', 'media', 206),
+              ('https://a0.muscache.com/airbnb/static/fonts/c.woff2', 'font', 200),
+              ('https://www.googletagmanager.com/gtag/js', 'script', 200)]
+
+
+def test_every_airbnb_request_of_the_reviews_browser_takes_a_slot_and_pictures_are_not_loaded(db, monkeypatch):
+    gated = []
+    real = airbnb.gate
+    monkeypatch.setattr(airbnb, 'gate', lambda url, bucket=None: (gated.append((url, bucket)), real(url, bucket))[1])
+    visits = fake_browser(monkeypatch, text=REVIEW_TEXT, subrequests=PAGE_LOADS)
+    assert [r['text'] for r in pipeline.scrape_reviews(ROOM)] == ['Spotless flat with a lovely view of the harbour.']
+    outcome = {u: o for u, _, o in visits.routed}
+    assert [u for u, _, o in visits.routed if o == 'abort'] == [u for u, t, _ in PAGE_LOADS if t in ('image', 'media', 'font')]
+    airbnb_loads = [u for u, t, _ in PAGE_LOADS if t not in ('image', 'media', 'font') and airbnb.kind(u)]
+    # the page itself takes a page slot (once, before Chromium starts); each script, style and data call a browser slot
+    assert [(u, b) for u, b in gated if airbnb.kind(u)] == [(ROOM + '/reviews', None)] + [(u, 'browser') for u in airbnb_loads]
+    assert all(outcome[u] == 'continue' for u in airbnb_loads) and budgets(db)['browser'] > 0
+
+
+@pytest.mark.parametrize('status', [429, 403])
+def test_a_block_on_the_reviews_data_call_stops_the_job(db, monkeypatch, status):
+    fake_browser(monkeypatch, text=REVIEW_TEXT, subrequests=[PAGE_LOADS[0], (DATA_CALL, 'fetch', status)])
+    with pytest.raises(airbnb.Unavailable, match='not serving'):
+        pipeline.scrape_reviews(ROOM)
+    [row] = blocks(db)
+    assert (row['status'], row['host']) == (status, 'www.airbnb.co.uk')
+
+
+def test_a_pause_during_the_reviews_page_stops_its_requests_and_the_job(db, monkeypatch):
+    real = airbnb.gate
+
+    def gate(url, bucket=None):
+        if url == DATA_CALL:  # another process recorded a block while the page was loading
+            with db.connect() as c:
+                c.execute("INSERT INTO airbnb_blocks(ts,status,host,reason) VALUES(%s,429,'www.airbnb.co.uk','status')", (time.time(),))
+        return real(url, bucket)
+    monkeypatch.setattr(airbnb, 'gate', gate)
+    visits = fake_browser(monkeypatch, text=REVIEW_TEXT, subrequests=PAGE_LOADS[:4])
+    with pytest.raises(airbnb.Unavailable, match='not serving'):
+        pipeline.scrape_reviews(ROOM)
+    assert [o for _, _, o in visits.routed] == ['continue', 'continue', 'continue', 'abort', 'abort']  # from the data call on
 
 
 @pytest.mark.parametrize('status,content', [(403, '<html></html>'), (200, CHALLENGE)])

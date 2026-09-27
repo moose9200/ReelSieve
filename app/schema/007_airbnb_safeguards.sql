@@ -1,8 +1,9 @@
 -- Airbnb fetch safeguards (app/airbnb.py) and listing takedowns. Runs at every start: every statement is safe to re-run.
 
--- One request budget per kind, shared by the web and every worker: each request reserves the next free slot.
+-- One request budget per kind (pages, photos, the reviews browser's scripts and data calls), shared by the web and
+-- every worker: each request reserves the next free slot.
 CREATE TABLE IF NOT EXISTS airbnb_rate (bucket TEXT PRIMARY KEY, next_at DOUBLE PRECISION NOT NULL DEFAULT 0);
-INSERT INTO airbnb_rate(bucket) VALUES ('page'), ('image') ON CONFLICT (bucket) DO NOTHING;
+INSERT INTO airbnb_rate(bucket) VALUES ('page'), ('image'), ('browser') ON CONFLICT (bucket) DO NOTHING;
 
 -- The last time Airbnb refused us; every process pauses Airbnb fetching for AIRBNB_BLOCK_COOLDOWN_MIN after it.
 -- Host and status only: never a listing, a search or a person.
