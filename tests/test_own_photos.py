@@ -203,3 +203,107 @@ def test_inputs_stay_with_the_google_account_the_job_was_admitted_on(drive, tmp_
         gdrive.upload_inputs('alice@example.test', 'abc123def456', [b'x'], generation() + 1)
     with pytest.raises(RuntimeError, match='reconnected'):
         gdrive.download_inputs('alice@example.test', ['some-id'], tmp_path, generation() + 1)
+
+
+# ---------------- admission: photos go to Drive first, the job keeps ids and typed facts ----------------
+
+FIELDS = {'title': 'Harbour Cottage', 'location': 'Whitby, UK', 'highlights': 'Hot tub, Sea view',
+          'quotes': [{'text': 'Spotless cottage with a lovely view of the harbour.', 'stars': 5}],
+          'rooms': ['exterior', 'living', 'kitchen', 'bedroom', 'bathroom', 'auto'], 'style': 'tutorial'}
+
+
+def photo_job(user='alice@example.test', files=None, key=None, **fields):
+    return jobs.admit_photos(user, {**FIELDS, **fields}, files or batch(6), key)
+
+
+def job_folders(google):
+    return [f for f in google.folders.values() if 'job' in f['appProperties']]
+
+
+def test_photo_admission_uploads_to_the_owners_drive_and_the_job_keeps_ids_only(drive, db):
+    job = photo_job()
+    p = job['params']
+    assert p['source'] == 'photos' and job['url'].startswith('photos:') and job['status'] == 'queued'
+    assert drive.folders[p['photos']['folder']]['name'] == job['id']
+    assert len(p['photos']['ids']) == 6 and all(drive.metas[i]['parents'] == [p['photos']['folder']] for i in p['photos']['ids'])
+    assert (p['title'], p['location'], p['highlights']) == ('Harbour Cottage', 'Whitby, UK', ['Hot tub', 'Sea view'])
+    assert p['quotes'] == [{'text': 'Spotless cottage with a lovely view of the harbour.', 'stars': 5}]
+    assert p['rooms'] == ['exterior', 'living', 'kitchen', 'bedroom', 'bathroom', 'other'] and p['style'] == 'v3'
+    assert p['delete_inputs'] is True and 'attested' not in p
+    stored = str(dict(job))
+    assert 'room-0.jpg' not in stored and 'SecretCam' not in stored and len(stored) < 4000  # ids and facts, never photo bytes
+    assert not any(b'SecretCam' in b or b'Exif' in b for b in drive.blobs.values())  # Drive only ever gets clean photos
+    assert [(u['kind'], u['credits']) for u in usage(db)] == [('video', 1)]
+
+
+def test_a_photo_reel_costs_one_video_exactly_like_a_link_reel(drive, db):
+    from app import plans, store
+    store.set_plan('alice@example.test', 'starter', 3)
+    credits = lambda: plans.account_view('alice@example.test')['remaining']  # noqa: E731
+    jobs.admit('alice@example.test', URL, {'attested': True})
+    assert credits() == 2
+    job = photo_job(key='p1')
+    assert credits() == 1 and [(u['kind'], u['credits'], u['debited']) for u in usage(db)] == [('video', 1, True)] * 2
+    # the same request again (a retried submit) is the same reel: no second charge, no second upload
+    assert photo_job(key='p1')['id'] == job['id'] and credits() == 1 and len(job_folders(drive)) == 1
+    with pytest.raises(jobs.AdmissionError) as err:
+        photo_job(key='p1', title='Another Cottage')
+    assert err.value.status == 409 and len(job_folders(drive)) == 1
+    assert jobs.cancel('alice@example.test', job['id'])['status'] == 'cancelled' and credits() == 2
+    photo_job(key='p2', files=batch(7))
+    photo_job(key='p3', files=batch(8))
+    assert credits() == 0
+    with pytest.raises(jobs.AdmissionError) as err:
+        photo_job(key='p4', files=batch(9))
+    assert err.value.status == 402 and len(job_folders(drive)) == 3  # refused before anything was uploaded
+
+
+def test_photo_reel_needs_drive_and_valid_photos_before_any_charge_or_upload(drive, db):
+    with pytest.raises(jobs.AdmissionError) as err:
+        photo_job('bob@example.test')
+    assert err.value.status == 412
+    for files, msg in [(batch(5), '6 to 40'), (batch(5) + [('notes.jpg', b'plain text')], 'not a JPEG')]:
+        with pytest.raises(jobs.AdmissionError, match=msg) as err:
+            photo_job(files=files)
+        assert err.value.status == 400
+    with pytest.raises(jobs.AdmissionError, match='property title'):
+        photo_job(title='')
+    assert usage(db) == [] and not drive.folders.get('folder-inputs-x') and not drive.blobs
+
+
+def test_a_failed_drive_upload_charges_nothing(drive, db):
+    drive.fail_upload_after = 2
+    with pytest.raises(jobs.AdmissionError, match='Google Drive') as err:
+        photo_job()
+    assert err.value.status == 502 and usage(db) == [] and not job_folders(drive) and not drive.blobs
+    with db.connect() as c:
+        assert c.execute('SELECT count(*) AS n FROM jobs').fetchone()['n'] == 0
+
+
+def multipart(n=6, **over):
+    data = {'title': FIELDS['title'], 'location': FIELDS['location'], 'highlights': FIELDS['highlights'],
+            'style': 'cinematic', 'quote_text': [FIELDS['quotes'][0]['text'], ''], 'quote_stars': ['5', '5'],
+            'room': ['auto'] * n, 'delete_inputs': 'false', **over}
+    return data, [('photos', (f'shot-{i}.png', image('PNG'), 'image/png')) for i in range(n)]
+
+
+def test_photo_route_admits_a_multipart_upload(drive, db, owners):
+    alice = client_for(owners['alice'])
+    data, files = multipart()
+    assert alice.post('/api/jobs/photos', data=data, files=files).status_code == 403  # CSRF like every mutation
+    r = alice.post('/api/jobs/photos', data=data, files=files, headers={**csrf(owners['alice']), 'Idempotency-Key': 'r1'})
+    assert r.status_code == 200, r.text
+    job = jobs.get('alice@example.test', r.json()['id'])
+    assert job['params']['delete_inputs'] is False and len(job['params']['photos']['ids']) == 6
+    assert job['params']['quotes'] == FIELDS['quotes'] and job['params']['style'] == 'v2'
+    data, files = multipart(5)
+    r = alice.post('/api/jobs/photos', data=data, files=files, headers=csrf(owners['alice']))
+    assert r.status_code == 400 and '6 to 40 photos' in r.json()['detail']
+
+
+def test_photo_route_stops_reading_past_the_size_limit(drive, db, owners, monkeypatch):
+    from app import server
+    monkeypatch.setattr(server, 'PHOTO_BODY_MAX', 2000)
+    data, files = multipart()
+    r = client_for(owners['alice']).post('/api/jobs/photos', data=data, files=files, headers=csrf(owners['alice']))
+    assert r.status_code == 413 and '250 MB' in r.json()['detail'] and usage(db) == [] and not drive.blobs

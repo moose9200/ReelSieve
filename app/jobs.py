@@ -15,7 +15,7 @@ import uuid
 
 from psycopg.types.json import Jsonb
 
-from app import database, gdrive, plans, store
+from app import database, gdrive, photos, plans, store
 
 ACTIVE = ('queued', 'running', 'uploading')
 TERMINAL = ('done', 'failed', 'cancelled')
@@ -73,8 +73,68 @@ def admit(user, url, requested, idempotency_key=None, ip=None):
     return _admit(user, url, requested, idempotency_key, ip, {'attested_at': time.time()})
 
 
-def _admit(user, url, requested, idempotency_key, ip, extra=None, job_id=None):
-    """Drive check, credit reservation and the job row in ONE transaction; `extra` is kept but not hashed."""
+REUSED = 'That request key was already used for a different reel'
+DRIVE_FIRST = 'Connect your Google Drive in Account first — finished reels are delivered there'
+
+
+def admit_photos(user, fields, files, idempotency_key=None, ip=None):
+    """A reel from the customer's own photos, [(file name, bytes)]; nothing is fetched from Airbnb.
+
+    The photos are checked and cleaned here, saved in the customer's own Drive (<app folder>/Inputs/<job id>),
+    and only then is the job admitted exactly like a link reel: same credit, idempotency, refunds and
+    cancellation. The job keeps the Drive file ids and the typed facts, never the photos or their file names.
+    Checks that can refuse run before the upload; anything that still refuses afterwards deletes it again."""
+    try:
+        photos.check_batch(files)
+        facts = photos.details(fields)
+        chosen = list(fields.get('rooms') or [])
+        rooms = [photos.room_of(chosen[i] if i < len(chosen) else 'auto', name) for i, (name, _) in enumerate(files)]
+        cleaned = [photos.clean(data, name) for name, data in files]
+    except photos.PhotoError as e:
+        raise AdmissionError(str(e)) from None
+    # The photo set stands in for the listing: remaking a reel from the same photos is free, like remaking a listing.
+    url = 'photos:' + hashlib.sha256(''.join(sorted(hashlib.sha256(d).hexdigest() for _, d in files)).encode()).hexdigest()[:32]
+    requested = {**_style(fields), 'source': 'photos', 'send_to_host': False, **facts, 'rooms': rooms,
+                 'delete_inputs': fields.get('delete_inputs', True) is not False}
+    key = str(idempotency_key or '')[:120] or secrets.token_hex(16)
+    with database.connect() as c:
+        owner = database.user_id(user, c)
+        seen = c.execute('SELECT id,request_hash FROM jobs WHERE owner_id=%s AND idempotency_key=%s', (owner, key)).fetchone()
+        generation = gdrive.usable_generation(c, owner)
+    if seen:
+        if seen['request_hash'] != _request_hash(url, requested):
+            raise AdmissionError(REUSED, 409)
+        return get(user, seen['id'])
+    if generation is None:
+        raise AdmissionError(DRIVE_FIRST, 412)
+    ok, reason, _ = plans.can_generate(user, url, ip)
+    if not ok:
+        raise AdmissionError(reason, 402)
+    job_id = uuid.uuid4().hex[:16]
+    try:
+        folder, ids = gdrive.upload_inputs(user, job_id, cleaned, generation)
+    except RuntimeError as e:
+        raise AdmissionError(f'Your photos could not be saved to your Google Drive: {e}', 502) from None
+    try:
+        job = _admit(user, url, requested, key, ip, {'photos': {'folder': folder, 'ids': ids}}, job_id, pin=generation)
+    except Exception:
+        _forget_inputs(user, folder, generation)
+        raise
+    if job['id'] != job_id:  # the same request was admitted meanwhile: keep its photos, drop this copy
+        _forget_inputs(user, folder, generation)
+    return job
+
+
+def _forget_inputs(user, folder, generation):
+    try:
+        gdrive.delete_inputs(user, folder, generation)
+    except RuntimeError:
+        pass  # ponytail: the folder stays in the customer's own Drive; they can delete it there
+
+
+def _admit(user, url, requested, idempotency_key, ip, extra=None, job_id=None, pin=None):
+    """Drive check, credit reservation and the job row in ONE transaction; `extra` is kept but not hashed.
+    `pin`: the Drive connection generation the job's inputs were saved under."""
     key = str(idempotency_key or '')[:120] or secrets.token_hex(16)
     digest = _request_hash(url, requested)
     job_id = job_id or uuid.uuid4().hex[:16]
@@ -86,11 +146,13 @@ def _admit(user, url, requested, idempotency_key, ip, extra=None, job_id=None):
                              (owner, key)).fetchone()
         if existing:
             if existing['request_hash'] != digest:
-                raise AdmissionError('That request key was already used for a different reel', 409)
+                raise AdmissionError(REUSED, 409)
             return get(user, existing['id'])
         generation = gdrive.usable_generation(c, owner)
         if generation is None:
-            raise AdmissionError('Connect your Google Drive in Account first — finished reels are delivered there', 412)
+            raise AdmissionError(DRIVE_FIRST, 412)
+        if pin is not None and generation != pin:
+            raise AdmissionError('Google Drive was reconnected while your photos were uploading — try again', 409)
         try:
             plans.reserve(user, url, job_id, ip, conn=c)
         except ValueError as e:

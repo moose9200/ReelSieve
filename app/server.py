@@ -5,6 +5,7 @@ Web process only: identity, jobs, billing and Drive credentials live in PostgreS
 in app.worker. Nothing here writes customer data to local disk.
 Run: .venv/bin/uvicorn app.server:app --port 8787   (DATABASE_URL, SESSION_SECRET, TOKEN_ENCRYPTION_KEY)
 """
+import asyncio
 from contextlib import asynccontextmanager
 import hashlib
 import json
@@ -22,9 +23,11 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, PlainTe
                                Response, StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
+from starlette.formparsers import MultiPartException, MultiPartParser
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app import admin, auth, billing, cohost, database, fetch, gdrive, hostmsg, jobs, linkedin, plans, retention, store
+from app import admin, auth, billing, cohost, database, fetch, gdrive, hostmsg, jobs, linkedin, photos, plans, retention, store
 from app import search as listing_search
 
 HERE = Path(__file__).resolve().parent
@@ -805,6 +808,52 @@ async def create_job(request: Request):
                        _ip(request))
     except jobs.AdmissionError as e:
         raise HTTPException(e.status, str(e))
+    return {'id': j['id'], 'account': plans.account_view(request.state.user)}
+
+
+PHOTO_BODY_MAX = photos.MAX_TOTAL + 1024 * 1024  # the photos plus the typed fields and multipart framing
+# ponytail: each upload is held in memory (up to ~250 MB); two at a time bounds the web process. Raise with its memory.
+_photo_slots = asyncio.Semaphore(int(os.getenv('PHOTO_UPLOAD_SLOTS', '2')))
+
+
+class _PhotoForm(MultiPartParser):
+    spool_max_size = photos.MAX_BYTES + 1  # every photo stays in memory: the web process writes nothing to disk
+
+
+async def _capped(stream, limit):
+    got = 0
+    async for chunk in stream:
+        got += len(chunk)
+        if got > limit:
+            raise HTTPException(413, 'Your photos add up to more than 250 MB. Choose fewer or smaller photos.')
+        yield chunk
+
+
+@app.post('/api/jobs/photos')
+async def create_photo_job(request: Request):
+    """'Your own photos': one multipart request with 6-40 photos and the typed facts (app.jobs.admit_photos)."""
+    if request.scope.get('_form') is not None:  # already read by the CSRF gate: not sent by the page's script
+        raise HTTPException(400, 'Reload the page and try again')
+    if int(request.headers.get('content-length') or 0) > PHOTO_BODY_MAX:
+        raise HTTPException(413, 'Your photos add up to more than 250 MB. Choose fewer or smaller photos.')
+    async with _photo_slots:
+        try:
+            form = await _PhotoForm(request.headers, _capped(request.stream(), PHOTO_BODY_MAX), max_files=photos.MAX_PHOTOS + 1,
+                                    max_fields=40, max_part_size=64 * 1024).parse()
+        except MultiPartException:
+            raise HTTPException(400, 'Choose 6 to 40 photos, each under 15 MB, and try again')
+        try:
+            files = [(f.filename or '', await f.read()) for f in form.getlist('photos') if not isinstance(f, str)]
+            fields = {k: form.get(k) for k in ('title', 'location', 'highlights', 'style', 'ai_resolution')}
+            fields.update(ai_motion=form.get('ai_motion') == 'true', delete_inputs=form.get('delete_inputs') != 'false',
+                          rooms=form.getlist('room'),
+                          quotes=[{'text': t, 'stars': s} for t, s in zip(form.getlist('quote_text'), form.getlist('quote_stars'))])
+            j = await run_in_threadpool(jobs.admit_photos, request.state.user, fields, files,
+                                        request.headers.get('idempotency-key'), _ip(request))
+        except jobs.AdmissionError as e:
+            raise HTTPException(e.status, str(e))
+        finally:
+            await form.close()
     return {'id': j['id'], 'account': plans.account_view(request.state.user)}
 
 
