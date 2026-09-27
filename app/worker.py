@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 
-from app import gdrive, jobs, retention, store
+from app import gdrive, jobs, photos, retention, store
 
 LEASE = int(os.getenv('WORKER_LEASE_SECONDS', '90'))
 BEAT = max(1.0, LEASE / 6)
@@ -101,8 +101,10 @@ def _pump(stream, lines):
 
 def run_child(cmd, job, on_line):
     """Run one render child; heartbeat while it runs; stop it (and its group) when told to."""
+    # OpenCV decodes up to 2^30 pixels by default; nothing a reel uses is near the upload limit (defence in depth).
+    env = {**os.environ, 'OPENCV_IO_MAX_IMAGE_PIXELS': str(photos.MAX_PIXELS)}
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-                            start_new_session=True, text=True)
+                            start_new_session=True, text=True, env=env)
     lines = queue.Queue()
     threading.Thread(target=_pump, args=(proc.stdout, lines), daemon=True).start()
     result, error, next_beat, eof_at = None, None, 0.0, None
@@ -184,7 +186,7 @@ def _drop_inputs(job):
     if not folder or not p.get('delete_inputs') or (job.get('meta') or {}).get('inputs') == 'deleted':
         return
     try:
-        gdrive.delete_inputs(job['owner_email'], folder, job['drive_generation'])
+        gdrive.delete_inputs(job['owner_email'], folder, job['drive_generation'], p['photos'].get('ids') or ())
         state = 'deleted'
     except Exception:  # clean-up runs in the sweeper: whatever goes wrong must never stop jobs being claimed
         state = 'delete_failed'  # e.g. Drive disconnected: the photos stay in the customer's own Drive

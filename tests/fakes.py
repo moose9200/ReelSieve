@@ -1,5 +1,6 @@
 """Synthetic Google OAuth/Drive endpoints behind HTTPX MockTransport. Only the network boundary is fake."""
 import json
+import re
 import threading
 from urllib.parse import parse_qs, urlparse
 
@@ -69,10 +70,19 @@ class Google:
         if path == '/drive/v3/files' and req.method == 'GET':
             q = req.url.params['q']
             self.folder_queries.append(q)
-            found = [{'id': fid} for fid, f in self.folders.items()
-                     if "key='kind' and value='inputs'" in q and f['appProperties'].get('kind') == 'inputs'
-                     and 'job' not in f['appProperties'] and f"'{f['parents'][0]}' in parents" in q]
-            return httpx.Response(200, json={'files': found})
+            # Drive's search semantics for what the app sends: every `appProperties has {key, value}` pair and the
+            # parent must match; the order is unspecified, so sub-folders are listed first (the worst case).
+            pairs = re.findall(r"appProperties has \{ key='([^']*)' and value='([^']*)' \}", q)
+            parent = re.search(r"'([^']+)' in parents", q)
+            found = [{'id': fid, 'appProperties': f['appProperties']} for fid, f in self.folders.items()
+                     if not f.get('trashed') and all(f['appProperties'].get(k) == v for k, v in pairs)
+                     and (not parent or parent.group(1) in f['parents'])]
+            found.sort(key=lambda f: 'kind' not in f['appProperties'])
+            size, start = int(req.url.params.get('pageSize', 100)), int(req.url.params.get('pageToken') or 0)
+            page = {'files': found[start:start + size]}
+            if start + size < len(found):
+                page['nextPageToken'] = str(start + size)
+            return httpx.Response(200, json=page)
         if path == '/drive/v3/files' and req.method == 'POST':
             meta = json.loads(req.content)
             props = meta['appProperties']
@@ -117,6 +127,14 @@ class Google:
             return httpx.Response(308, headers={'Range': 'bytes=0-' + str(size + 1 if self.bad_range else len(s['data']) - 1)})
         if path.startswith('/drive/v3/files/'):
             fid = path.rsplit('/', 1)[-1]
+            if req.method == 'PATCH':  # files.update: only moving to the bin is used
+                if json.loads(req.content) != {'trashed': True}:
+                    raise AssertionError('Unexpected synthetic Drive update')
+                target = self.folders.get(fid) or self.metas.get(fid)
+                if target is None:
+                    return httpx.Response(404, json={})
+                target['trashed'] = True
+                return httpx.Response(200, json={'id': fid})
             if req.method == 'DELETE':  # permanent; a folder takes its contents with it
                 if fid not in self.folders and fid not in self.files:
                     return httpx.Response(404, json={})

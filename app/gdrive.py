@@ -24,7 +24,7 @@ from urllib.parse import urlencode
 from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 import httpx
 
-from app import auth, database
+from app import auth, database, photos
 
 SCOPES = 'https://www.googleapis.com/auth/drive.file openid email'
 DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.file'
@@ -87,8 +87,10 @@ def _row(c, user):
                      'WHERE u.email=%s AND u.active', (auth.norm(user),)).fetchone()
 
 
-def _active_row(c, user):
-    row = _row(c, user)
+def _active_row(c, user, owner_id=None):
+    """owner_id: by durable owner, also while an account is being deactivated or erased (sign-in already ended)."""
+    row = (c.execute(f'SELECT {_COLS} FROM users u LEFT JOIN drive_connections d ON d.owner_id=u.id WHERE u.id=%s',
+                     (owner_id,)).fetchone() if owner_id else _row(c, user))
     if not row:
         raise RuntimeError(NOT_CONNECTED)
     return row
@@ -241,10 +243,10 @@ def exchange(code, state, redirect_uri, user, session_token):
     return status(user)
 
 
-def _access(user):
+def _access(user, owner_id=None):
     """(access token, connection row). Refreshes outside any transaction; the write-back is fenced."""
     with database.connect() as c:
-        row = _active_row(c, user)
+        row = _active_row(c, user, owner_id)
     tok = _decrypt(row)
     if not tok or not tok.get('refresh_token'):
         raise RuntimeError(RECONNECT if row['status'] == 'reconnect_required' else NOT_CONNECTED)
@@ -277,9 +279,9 @@ def _access(user):
     return tok['access_token'], row
 
 
-def _pinned(user, generation):
+def _pinned(user, generation, owner_id=None):
     """_access, refused when the connection is no longer the one a job was admitted on (None: any)."""
-    token, conn = _access(user)
+    token, conn = _access(user, owner_id)
     if generation is not None and conn['generation'] != generation:
         raise RuntimeError('Google Drive was reconnected or disconnected after this reel started — start it again')
     return token, conn
@@ -336,11 +338,16 @@ def _folder(owner_id, token, generation):
     headers = {'Authorization': 'Bearer ' + token}
     q = (f"appProperties has {{ key='owner' and value='{owner_id}' }} and mimeType = '{FOLDER_MIME}' "
          'and trashed = false')
-    found = _json(_require(_call('folder lookup', 'GET', API + '/files', headers=headers,
-                                 params={'q': q, 'fields': 'files(id)', 'spaces': 'drive', 'pageSize': 1}),
-                           'folder lookup')).get('files') or []
+    params, fid = {'q': q, 'fields': 'nextPageToken,files(id,appProperties)', 'spaces': 'drive', 'pageSize': 100}, None
+    while not fid:
+        page = _json(_require(_call('folder lookup', 'GET', API + '/files', headers=headers, params=params), 'folder lookup'))
+        # The Inputs folders carry the owner label too (with kind=inputs): the app folder is the one without a kind.
+        fid = next((f['id'] for f in page.get('files') or [] if 'kind' not in (f.get('appProperties') or {})), None)
+        if not page.get('nextPageToken'):
+            break
+        params['pageToken'] = page['nextPageToken']
     # ponytail: two first-ever uploads racing can each create a folder; add a creation lock if seen in practice.
-    fid = found[0]['id'] if found else _json(_require(_call(
+    fid = fid or _json(_require(_call(
         'folder creation', 'POST', API + '/files', headers=headers, params={'fields': 'id'},
         json={'name': folder_name(), 'mimeType': FOLDER_MIME, 'appProperties': {'owner': owner_id}}),
         'folder creation')).get('id')
@@ -353,8 +360,10 @@ def _folder(owner_id, token, generation):
 
 
 def safe_name(listing_url, suffix='.mp4'):
-    """File name = the listing URL (Drive allows '/' and ':'), trimmed of tracking params."""
-    u = re.sub(r'[?#].*$', '', listing_url.strip())
+    """File name = the listing URL (Drive allows '/' and ':'), trimmed of tracking params; an own-photo reel's title as typed."""
+    u = listing_url.strip()
+    if re.match(r'https?://', u, re.I):
+        u = re.sub(r'[?#].*$', '', u)
     u = re.sub(r'[\x00-\x1f]', '', u)
     return (u[:180] or 'reel') + suffix
 
@@ -568,8 +577,14 @@ def upload_inputs(user, job_id, images, generation, chunk=8 * 1024 * 1024):
         raise
 
 
+CHANGED = 'A photo in Google Drive changed after upload — start the reel again'
+
+
 def download_inputs(user, file_ids, dest, generation, keep_going=None):
-    """Fetch a reel's photos from the owner's Drive into disposable scratch as p01.jpg, p02.jpg, …"""
+    """Fetch a reel's photos from the owner's Drive into disposable scratch as p01.jpg, p02.jpg, …
+
+    The customer owns these files and can replace one under the same id ('Upload new version'), so every download
+    goes through the same check and re-encode as the upload (photos.clean) before any decoder on this machine sees it."""
     token, _ = _pinned(user, generation)
     headers, dest, paths = {'Authorization': 'Bearer ' + token}, Path(dest), []
     dest.mkdir(parents=True, exist_ok=True)
@@ -578,29 +593,38 @@ def download_inputs(user, file_ids, dest, generation, keep_going=None):
             for i, fid in enumerate(file_ids):
                 if keep_going and not keep_going():
                     raise RuntimeError('Stopped before the photos were fetched')
-                out = dest / f'p{i + 1:02d}.jpg'
                 with h.stream('GET', f'{API}/files/{_check_id(fid)}', params={'alt': 'media'}, headers=headers) as r:
                     if r.status_code == 404:
                         raise RuntimeError('A photo was removed from your Google Drive before the reel was made — start it again')
                     _require(r, 'photo download')
-                    got = 0
-                    with out.open('wb') as f:
-                        for part in r.iter_bytes():
-                            got += len(part)
-                            if got > INPUT_MAX:
-                                raise RuntimeError('A photo in Google Drive changed after upload — start the reel again')
-                            f.write(part)
+                    data = bytearray()
+                    for part in r.iter_bytes():
+                        data += part
+                        if len(data) > INPUT_MAX:
+                            raise RuntimeError(CHANGED)
+                try:
+                    jpeg = photos.clean(bytes(data))
+                except photos.PhotoError:
+                    raise RuntimeError(CHANGED) from None
+                out = dest / f'p{i + 1:02d}.jpg'
+                out.write_bytes(jpeg)
                 paths.append(out)
     except httpx.HTTPError:
         raise RuntimeError('Google Drive did not respond while fetching your photos — try again shortly') from None
     return paths
 
 
-def delete_inputs(user, folder_id, generation):
-    """Permanently delete a reel's photo folder and the photos in it from the owner's Drive. Gone already is fine."""
-    token, _ = _pinned(user, generation)
-    _require(_call('photo clean-up', 'DELETE', f'{API}/files/{_check_id(folder_id)}',
-                   headers={'Authorization': 'Bearer ' + token}), 'photo clean-up', ok=(200, 204, 404))
+def delete_inputs(user, folder_id, generation, file_ids=(), owner_id=None):
+    """Permanently delete the photos we uploaded for a reel (by their stored ids) from the owner's Drive, then move
+    their folder to the Drive bin rather than deleting it: deleting a folder also deletes everything in it, and the
+    customer may have put files of their own there. Gone already is fine. owner_id: see _active_row."""
+    token, _ = _pinned(user, generation, owner_id)
+    headers = {'Authorization': 'Bearer ' + token}
+    for fid in file_ids:
+        _require(_call('photo clean-up', 'DELETE', f'{API}/files/{_check_id(fid)}', headers=headers),
+                 'photo clean-up', ok=(200, 204, 404))
+    _require(_call('photo clean-up', 'PATCH', f'{API}/files/{_check_id(folder_id)}', headers=headers,
+                   params={'fields': 'id'}, json={'trashed': True}), 'photo clean-up', ok=(200, 404))
 
 
 def set_sharing(user, job_id, public, variant='primary'):
