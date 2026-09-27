@@ -6,6 +6,8 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
+from app import airbnb
+
 MAX_BYTES = 25 * 1024 * 1024
 
 
@@ -24,9 +26,10 @@ def check(url):
     return url
 
 
-def get(url, headers=None, timeout=45, max_bytes=MAX_BYTES, redirects=5, hosts=None):
+def get(url, headers=None, timeout=45, max_bytes=MAX_BYTES, redirects=5, hosts=None, record_blocks=True):
     """(final_url, body bytes). Raises ValueError for unsafe targets, oversize bodies or HTTP errors.
-    hosts: when given, every hop (redirects included) must be https to one of these exact host names."""
+    hosts: when given, every hop (redirects included) must be https to one of these exact host names.
+    record_blocks=False: an Airbnb refusal is a plain HTTP error, not a block for everyone (URLs a user chose)."""
     # ponytail: DNS is checked before each connection; a rebinding resolver could still swap the
     # address in between. Pin the resolved IP in a custom transport if that threat becomes real.
     with httpx.Client(headers=headers, timeout=timeout, follow_redirects=False) as client:
@@ -34,7 +37,9 @@ def get(url, headers=None, timeout=45, max_bytes=MAX_BYTES, redirects=5, hosts=N
             if hosts is not None and (urlsplit(url).scheme != 'https' or urlsplit(url).hostname not in hosts):
                 raise ValueError('That host is not allowed')
             check(url)
+            airbnb.gate(url)  # Airbnb hosts only: kill switch, cool-down, shared rate limit
             with client.stream('GET', url) as r:
+                airbnb.check(url, r.status_code, record=record_blocks)  # a block raises airbnb.Unavailable (not ValueError): callers must not swallow it
                 if r.is_redirect:
                     url = urljoin(url, r.headers.get('location', ''))
                     continue
@@ -45,5 +50,6 @@ def get(url, headers=None, timeout=45, max_bytes=MAX_BYTES, redirects=5, hosts=N
                     body += chunk
                     if len(body) > max_bytes:
                         raise ValueError('That page is too large to read')
+                airbnb.check(url, r.status_code, bytes(body), r.headers.get('content-type', ''), record=record_blocks)
                 return url, bytes(body)
     raise ValueError('Too many redirects')

@@ -68,3 +68,18 @@ def google(monkeypatch):
     original = httpx.Client
     monkeypatch.setattr(httpx, 'Client', lambda **kw: original(transport=httpx.MockTransport(fake.handle), **kw))
     return fake
+
+
+@pytest.fixture
+def airbnb_net(db, monkeypatch):
+    """Synthetic Airbnb pages and photo CDN (never the real site); DNS answers a public address. Pages are paced at
+    50/s here so tests stay quick; the 1/s and 10/s defaults and the cross-process sharing have their own tests."""
+    import socket
+    from fakes import Airbnb
+    monkeypatch.setenv('AIRBNB_PAGE_RPS', '50')
+    fake = Airbnb()
+    original = httpx.Client
+    monkeypatch.setattr(httpx, 'Client', lambda **kw: original(transport=httpx.MockTransport(fake.handle), **kw))
+    monkeypatch.setattr(socket, 'getaddrinfo',
+                        lambda host, port, *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('93.184.216.34', port))])
+    return fake

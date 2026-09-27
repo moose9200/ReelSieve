@@ -10,6 +10,7 @@
     <ul class="steps">
       <li>Reference <strong>{{ ack.ref }}</strong></li>
       <li>Received {{ ack.received|when }}</li>
+      {% if ack.listing %}<li>{% if ack.listing_blocked %}Listing {{ ack.listing }} is removed from ReelSieve now, while we check your request: nobody can make a reel of it here, and it no longer appears in Find a listing, co-host or Outreach results.{% else %}We will remove listing {{ ack.listing }} from ReelSieve once we have checked your request.{% endif %}</li>{% endif %}
       <li>We reply to the email you gave by {{ ack.due|day }} at the latest (one month from receipt). If we need to confirm who you are, or need more time, we will tell you before then.</li>
     </ul>
     <p class="hint">You can also complain to the UK Information Commissioner's Office at <a href="https://ico.org.uk/make-a-complaint/" target="_blank" rel="noopener">ico.org.uk</a>.</p>
@@ -17,7 +18,7 @@
     {% else %}
     <p class="eyebrow">Privacy request</p>
     <h1 class="login-title">Ask about your data, or complain</h1>
-    <p class="sub">For a copy of your data, a correction, deletion, to stop outreach messages, or a complaint. You don't need an account. We reply within one month.</p>
+    <p class="sub">For a copy of your data, a correction, deletion, to stop outreach messages, to stop reels of your listing, or a complaint. You don't need an account. We reply within one month.</p>
     <form method="post" action="/privacy/request" novalidate>
       <input type="hidden" name="csrf" value="{{ csrf_for(request) }}">
       <div class="field"><label for="pr-type">What is it about?</label>
@@ -33,6 +34,8 @@
         <p class="hint">Airbnb hosts: with an objection to outreach, we stop every ReelSieve user from finding or queueing you, straight away.</p></div>
       <div class="field"><label for="pr-company">Company number (optional)</label><input type="text" id="pr-company" name="company_number" value="{{ f.company_number or '' }}" placeholder="01234567" maxlength="12" autocomplete="off" spellcheck="false">
         <p class="hint">UK companies on the Companies House register: with an objection to outreach, we stop every ReelSieve user from finding or queueing your company, straight away.</p></div>
+      <div class="field"><label for="pr-listing">Your Airbnb listing link (for "Remove my listing from ReelSieve")</label><input type="url" id="pr-listing" name="listing_url" value="{{ f.listing_url or '' }}" placeholder="https://www.airbnb.co.uk/rooms/…" autocomplete="off" spellcheck="false">
+        <p class="hint">We normally remove the listing straight away, while we check your request: no ReelSieve user can make a reel of it, and it stops appearing in Find a listing, co-host and Outreach results.</p></div>
       {% if error %}<p class="hint hint-warn" role="alert">{{ error }}</p>{% endif %}
       <div class="actions"><button type="submit" class="btn btn-primary btn-wide">Send request</button></div>
     </form>

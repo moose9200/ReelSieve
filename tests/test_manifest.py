@@ -55,10 +55,10 @@ def test_manifest_carries_the_review_but_no_reviewer_name():
     assert 'Namey' not in json.dumps(m)
     assert m['reviews']['items']==[{'stars':5,'date':'August 2026','text':NAMED[0]['text']}]
     assert m['overlays']['review']==NAMED[0]['text'] and m['overlays']['review_by']=='Guest review, August 2026'
-def test_scraped_reviews_drop_reviewer_names(monkeypatch):
+def test_scraped_reviews_drop_reviewer_names(monkeypatch,db):   # db: the reviews page goes through the shared rate limit
     import types
     text='\n'.join(['Namey','Leeds, UK','Rating, 5 stars','·','August 2026',NAMED[0]['text'],'','Other','Paris','Rating, 4 stars','·','July 2026','Nice and clean flat near the station.',''])
-    page=types.SimpleNamespace(goto=lambda *a,**k:None,wait_for_selector=lambda *a,**k:None,wait_for_timeout=lambda *a:None,inner_text=lambda sel:text)
+    page=types.SimpleNamespace(goto=lambda *a,**k:None,route=lambda *a:None,on=lambda *a:None,wait_for_selector=lambda *a,**k:None,wait_for_timeout=lambda *a:None,inner_text=lambda sel:text,content=lambda:'<html></html>')
     browser=types.SimpleNamespace(new_page=lambda **k:page,close=lambda:None)
     class PW:
         chromium=types.SimpleNamespace(launch=lambda **k:browser)

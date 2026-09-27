@@ -18,6 +18,7 @@
 {% endif %}
 <section class="card form-card search-card{% if photos_mode %} hidden{% endif %}" id="search-card">
   <p class="eyebrow">Find a listing</p>
+  {% if not airbnb_enabled() %}<p class="hint hint-warn" role="status">{{ airbnb_disabled }}</p>{% endif %}
   <form id="search-form" novalidate>
     <div class="grid-search">
       <div class="field ac-wrap"><label for="s-location">Location</label><input type="text" id="s-location" name="location" placeholder="Start typing a town or city…" autocomplete="off" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="s-suggest"><ul class="ac-list hidden" id="s-suggest" role="listbox"></ul></div>
@@ -41,7 +42,7 @@
       <div class="field"><label for="s-adults">Guests</label><input type="number" id="s-adults" name="adults" min="1" max="16" value="2"></div>
     </div>
     <div class="actions">
-      <button type="submit" class="btn btn-primary" id="search-btn">Search Airbnb</button>
+      <button type="submit" class="btn btn-primary" id="search-btn"{% if not airbnb_enabled() %} disabled{% endif %}>Search Airbnb</button>
       <span class="form-status" id="search-status" role="status" aria-live="polite"></span>
     </div>
   </form>

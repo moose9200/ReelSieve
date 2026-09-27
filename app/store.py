@@ -155,8 +155,19 @@ def add_outreach(user, channel, name, url, city, message, meta=None, status='que
                          (now, now, database.user_id(user, c), channel, name, url, city, message, status, json.dumps(meta or {}))).fetchone()['id']
 
 
+def _outreach_listings(row):
+    """The listings an outreach row names: its link, and the listing link kept in meta (never the row's own id)."""
+    try:
+        meta = json.loads(row.get('meta') or '{}')
+    except (TypeError, ValueError):
+        meta = {}
+    return listing_ids({'url': row.get('url'), 'listing_url': meta.get('listing_url') if isinstance(meta, dict) else None})
+
+
 def outreach_rows(user=None, limit=500):
-    return _owned_rows('outreach', user, limit)
+    """What the Outreach page and export show: a listing taken down from ReelSieve leaves them at once (the row itself
+    stays until outreach retention, and in the user's own data export)."""
+    return without_blocked_listings(_owned_rows('outreach', user, limit), _outreach_listings)
 
 
 def outreach_get(rid, user=None):
@@ -253,6 +264,71 @@ def unsuppressed(items):
     return [it for it, k in keyed if not k & hit]
 
 
+# ---------------- listing takedowns: no reels of these listings, and not in co-host or Outreach results ----------------
+
+def listing_ids(item):
+    """Every Airbnb listing an item names: a numeric id, a listing link or a contact-host link."""
+    import re
+    pid = str(item.get('id') or '')
+    found = set(re.findall(r'/(?:rooms(?:/plus)?|contact_host)/(\d{1,20})', f"{item.get('listing_url') or ''} {item.get('url') or ''}"))
+    return found | ({pid} if re.fullmatch(r'\d{1,20}', pid) else set())
+
+
+ACTIVE_BLOCK = '(expires_at IS NULL OR expires_at>%s)'  # confirmed, or waiting for an admin's check and not lapsed
+
+
+def blocked_ids(ids, conn=None):
+    ids = sorted({str(i) for i in ids if i})
+    if not ids:
+        return set()
+    with database.transaction(conn) as c:
+        return {r['listing_id'] for r in c.execute(f'SELECT listing_id FROM blocked_listings WHERE listing_id=ANY(%s) AND {ACTIVE_BLOCK}',
+                                                   (ids, time.time())).fetchall()}
+
+
+def without_blocked_listings(items, key=listing_ids):
+    keyed = [(it, key(it)) for it in items]
+    hit = blocked_ids(set().union(*(k for _, k in keyed))) if keyed else set()
+    return [it for it, k in keyed if not k & hit]
+
+
+def block_listing(listing_id, reason, conn=None, expires_at=None):
+    """True when newly blocked; blocking twice keeps the first reason. expires_at: a provisional block (a public request
+    nobody has checked yet) that lapses then unless confirmed. A confirmed block replaces a provisional one, and any
+    block replaces a lapsed one."""
+    now = time.time()
+    with database.transaction(conn) as c:
+        return bool(c.execute('INSERT INTO blocked_listings(listing_id,reason,ts,expires_at) VALUES(%s,%s,%s,%s) '
+                              'ON CONFLICT (listing_id) DO UPDATE SET reason=EXCLUDED.reason,ts=EXCLUDED.ts,expires_at=EXCLUDED.expires_at '
+                              'WHERE blocked_listings.expires_at IS NOT NULL AND (EXCLUDED.expires_at IS NULL OR blocked_listings.expires_at<=%s) '
+                              'RETURNING listing_id', (listing_id, reason[:300], now, expires_at, now)).fetchone())
+
+
+def confirm_listing_block(listing_id):
+    """An admin checked a provisional block: it stays until removed."""
+    with database.connect() as c:
+        return bool(c.execute('UPDATE blocked_listings SET expires_at=NULL WHERE listing_id=%s AND expires_at IS NOT NULL '
+                              'RETURNING listing_id', (listing_id,)).fetchone())
+
+
+def unblock_listing(listing_id):
+    with database.connect() as c:
+        return bool(c.execute('DELETE FROM blocked_listings WHERE listing_id=%s RETURNING listing_id', (listing_id,)).fetchone())
+
+
+def blocked_listings():
+    with database.connect() as c:
+        return c.execute(f'SELECT * FROM blocked_listings WHERE {ACTIVE_BLOCK} ORDER BY ts DESC', (time.time(),)).fetchall()
+
+
+def recent_removals(email, since):
+    """(this email's, everyone's) 'Remove my listing' requests since ts."""
+    with database.connect() as c:
+        row = c.execute("SELECT count(*) FILTER (WHERE email=%s) AS mine, count(*) AS total FROM privacy_requests "
+                        "WHERE type='listing_removal' AND ts>%s", (email, since)).fetchone()
+    return row['mine'], row['total']
+
+
 def outreach_stats(user=None):
     with database.connect() as c:
         q = 'SELECT status,count(*) AS n FROM outreach'
@@ -344,7 +420,7 @@ def export(user):
                               "CASE WHEN rewarded_at IS NOT NULL THEN 'rewarded' WHEN reward_reason IS NULL THEN 'pending' "
                               "ELSE 'not_rewarded' END AS status,CASE WHEN referee_id=%(o)s THEN google_hash END AS google_account_hash "
                               'FROM referrals WHERE referrer_id=%(o)s OR referee_id=%(o)s ORDER BY ts'),
-            'privacy_requests': rows('SELECT ref,ts,type,name,details,airbnb_profile_id,company_number,status,due_at,handled_at '
+            'privacy_requests': rows('SELECT ref,ts,type,name,details,airbnb_profile_id,company_number,listing_id,status,due_at,handled_at '
                                      'FROM privacy_requests WHERE lower(email)=(SELECT email FROM users WHERE id=%(o)s) ORDER BY ts'),
             # when you marked someone "Do not contact"; the keyed hash identifies them, not you, so it stays out
             'outreach_suppressions': rows('SELECT ts FROM outreach_suppressions WHERE owner_id=%(o)s ORDER BY ts'),
@@ -352,7 +428,8 @@ def export(user):
 
 
 PRIVACY_REQUEST_TYPES = {'access': 'Access', 'erasure': 'Erasure', 'rectification': 'Rectification',
-                         'objection': 'Objection to outreach', 'complaint': 'Complaint', 'other': 'Other'}
+                         'objection': 'Objection to outreach', 'listing_removal': 'Remove my listing from ReelSieve',
+                         'complaint': 'Complaint', 'other': 'Other'}
 
 
 def one_month_after(ts):
@@ -364,16 +441,16 @@ def one_month_after(ts):
     return d.replace(year=y, month=m, day=min(d.day, calendar.monthrange(y, m)[1])).timestamp()
 
 
-def add_privacy_request(kind, email, name, details, airbnb_profile_id=None, company_number=None):
+def add_privacy_request(kind, email, name, details, airbnb_profile_id=None, company_number=None, listing_id=None):
     """Store a request and return (ref, received ts). The on-screen reference is the acknowledgement."""
     import secrets
     now = time.time()
     for _ in range(6):
         ref = 'PR-' + time.strftime('%y%m%d', time.gmtime(now)) + '-' + secrets.token_hex(3).upper()
         with database.connect() as c:
-            if c.execute('INSERT INTO privacy_requests(ref,ts,type,email,name,details,airbnb_profile_id,company_number,due_at) '
-                         'VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (ref) DO NOTHING RETURNING ref',
-                         (ref, now, kind, email, name, details, airbnb_profile_id, company_number, one_month_after(now))).fetchone():
+            if c.execute('INSERT INTO privacy_requests(ref,ts,type,email,name,details,airbnb_profile_id,company_number,listing_id,due_at) '
+                         'VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (ref) DO NOTHING RETURNING ref',
+                         (ref, now, kind, email, name, details, airbnb_profile_id, company_number, listing_id, one_month_after(now))).fetchone():
                 return ref, now
     raise RuntimeError('Could not allocate a request reference')
 

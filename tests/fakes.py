@@ -157,3 +157,40 @@ def connect(owners, google, name='alice'):
     url = gdrive.auth_url('https://app.test/callback', user, owners[name])
     state = parse_qs(urlparse(url).query)['state'][0]
     return gdrive.exchange('synthetic-code', state, 'https://app.test/callback', user, owners[name])
+
+
+JPEG = b'\xff\xd8\xff\xe0' + b'0' * 64
+# A normal listing page. Like the real one (fetched 27 Sep 2026) its config mentions "datadome" and "recaptcha";
+# neither may be read as a challenge page.
+LISTING = ('<html><title>Sea view flat - Flats for Rent in Poole - Airbnb</title>'
+           '<script type="application/json">{"datadome_integration":{"enabled":true},"disable_google_recaptcha":true,'
+           '"city":"Poole","visibleReviewCount":"12","pdpContext":{"hostId":"987654321"},"listingsCount":4,'
+           '"accessibilityLabel":"Living room","baseUrl":"https://a0.muscache.com/im/pictures/hosting/a.jpeg",'
+           '"accessibilityLabel":"Kitchen","baseUrl":"https://a0.muscache.com/im/pictures/hosting/b.jpeg"}</script>'
+           'Hosted by Leo</html>')
+CHALLENGE = ('<html><head><title>airbnb.co.uk</title></head><body><script>var dd={"rt":"c","cid":"x"}</script>'
+             '<script src="https://ct.captcha-delivery.com/c.js"></script></body></html>')
+
+
+class Airbnb:
+    """Synthetic Airbnb pages and photo CDN behind HTTPX MockTransport.
+    status / pages: path prefix -> status code / HTML body. down: hosts that fail with a network error."""
+    def __init__(self):
+        self.calls, self.status, self.pages, self.down = [], {}, {}, set()
+
+    def handle(self, req):
+        host, path = req.url.host, req.url.path
+        self.calls.append(host + path)
+        if host in self.down:
+            raise httpx.ConnectError('synthetic network error', request=req)
+        for prefix, code in self.status.items():
+            if path.startswith(prefix):
+                return httpx.Response(code, text='<html>Denied</html>', headers={'content-type': 'text/html'})
+        for prefix, body in self.pages.items():
+            if path.startswith(prefix):
+                return httpx.Response(200, text=body, headers={'content-type': 'text/html; charset=utf-8'})
+        if host.endswith('muscache.com'):
+            return httpx.Response(200, content=JPEG, headers={'content-type': 'image/jpeg'})
+        if host.startswith('www.airbnb.') and path.startswith('/rooms/'):
+            return httpx.Response(200, text=LISTING, headers={'content-type': 'text/html; charset=utf-8'})
+        raise AssertionError('Unexpected synthetic Airbnb request: ' + host + path)

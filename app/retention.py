@@ -58,6 +58,7 @@ def run(now=None):
             ('invoice_backups', 'DELETE FROM invoice_backups WHERE ts<%s', now - INVOICE_BACKUP_RUN_YEARS * YEAR),
             ('suppression_owner', 'UPDATE outreach_suppressions SET owner_id=NULL WHERE owner_id IS NOT NULL AND ts<%s',
              now - SUPPRESSION_OWNER_DAYS * DAY),
+            ('lapsed_listing_blocks', 'DELETE FROM blocked_listings WHERE expires_at<%s', now),
         ]}
         due = [r['email'] for r in c.execute('SELECT email FROM users WHERE NOT active AND erased_at IS NULL AND deactivated_at<%s',
                                              (now - DEACTIVATED_DAYS * DAY,)).fetchall()]

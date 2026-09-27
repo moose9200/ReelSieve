@@ -6,12 +6,13 @@ in app.worker. Nothing here writes customer data to local disk.
 Run: .venv/bin/uvicorn app.server:app --port 8787   (DATABASE_URL, SESSION_SECRET, TOKEN_ENCRYPTION_KEY)
 """
 import asyncio
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 import hashlib
 import json
 import os
 import re
 import secrets
+import threading
 import time
 from pathlib import Path
 from urllib.parse import quote
@@ -28,7 +29,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.formparsers import MultiPartException, MultiPartParser
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app import admin, auth, billing, cohost, companies, database, fetch, gdrive, hostmsg, invoices, jobs, linkedin, photos, plans, referrals, retention, store
+from app import admin, airbnb, auth, billing, cohost, companies, database, fetch, gdrive, hostmsg, invoices, jobs, linkedin, photos, plans, referrals, retention, store
 from app import search as listing_search
 
 HERE = Path(__file__).resolve().parent
@@ -60,7 +61,20 @@ SETTINGS = [('HF_KEY', True, 'Higgsfield API key — enables AI camera motion (b
             ('INVOICE_BACKUP_ENDPOINT', False, 'Worker service, optional: https:// S3 endpoint. An AWS one must name the region (https://s3.ap-south-1.amazonaws.com); any other needs INVOICE_BACKUP_ENDPOINT_IN_INDIA'),
             ('INVOICE_BACKUP_ENDPOINT_IN_INDIA', False, 'Worker service: set to 1 to confirm a non-AWS INVOICE_BACKUP_ENDPOINT keeps files on servers in India; the app cannot check this'),
             ('BILLING_NOTE', False, 'Line shown to customers who choose invoice'),
-            ('DEFAULT_MESSAGE', False, 'Default host message template')]
+            ('DEFAULT_MESSAGE', False, 'Default host message template'),
+            ('AIRBNB_FETCH_ENABLED', False, 'Airbnb fetching: 1 on, 0 off. Off stops every request to Airbnb and its photo '
+                                            'CDN: new listing-link reels, reels in progress, Find a listing, co-host search and listing photos'),
+            ('AIRBNB_BLOCK_COOLDOWN_MIN', False, 'Minutes all Airbnb fetching pauses after Airbnb blocks a request'),
+            ('AIRBNB_PAGE_RPS', False, 'Airbnb page requests per second, one budget for the web and every worker'),
+            ('AIRBNB_IMAGE_RPS', False, 'Airbnb photo requests per second, one budget for the web and every worker'),
+            ('AIRBNB_BROWSER_RPS', False, 'Script and data requests per second of the headless reviews page, one budget for every worker')]
+SETTING_DEFAULTS = airbnb.DEFAULTS
+# Airbnb lookups one account may have running at once: searches and co-host lookups, and photos through /img.
+# A person's browser runs one search at a time and loads a screen of thumbnails; a script running more is refused.
+AT_ONCE = {'lookup': 2, 'img': 24}
+_running, _running_lock = {}, threading.Lock()
+# "Remove my listing" requests from the public form that block at once, per email address and in total, in 24 hours.
+REMOVALS_PER_EMAIL, REMOVALS_PER_DAY = 3, 20
 
 
 def validate_config():
@@ -69,6 +83,25 @@ def validate_config():
     if missing:
         raise RuntimeError('Missing required configuration: ' + ', '.join(missing))
     gdrive._fernet()
+    airbnb.validate()
+
+
+@contextmanager
+def at_once(user, group):
+    """Refuse (429) when this account already has AT_ONCE[group] Airbnb lookups of this group running.
+    ponytail: counted per web process; with several web replicas each allows its own AT_ONCE."""
+    key = (user, group)
+    with _running_lock:
+        if _running.get(key, 0) >= AT_ONCE[group]:
+            raise HTTPException(429, 'You already have Airbnb lookups running. Wait for them to finish.')
+        _running[key] = _running.get(key, 0) + 1
+    try:
+        yield
+    finally:
+        with _running_lock:
+            _running[key] -= 1
+            if not _running[key]:
+                del _running[key]
 
 
 @asynccontextmanager
@@ -97,6 +130,8 @@ def site_url():
 
 
 tpl.env.globals['site_url'] = site_url
+tpl.env.globals['airbnb_enabled'] = airbnb.enabled
+tpl.env.globals['airbnb_disabled'] = airbnb.DISABLED
 tpl.env.filters['day'] = lambda ts: time.strftime('%d %b %Y', time.gmtime(ts or 0))
 tpl.env.filters['when'] = lambda ts: time.strftime('%d %b %Y %H:%M UTC', time.gmtime(ts or 0))
 
@@ -140,6 +175,7 @@ class Gate(BaseHTTPMiddleware):
     """Sign-in gate plus one CSRF policy for every state-changing request (webhook excepted: it is HMAC-signed)."""
 
     async def dispatch(self, request, call_next):
+        airbnb.max_wait.set(airbnb.WEB_MAX_WAIT)  # this request's task only: a web request never queues long for Airbnb
         path = request.url.path
         nonce = request.cookies.get(CSRF_COOKIE, '')
         fresh = '' if nonce else secrets.token_urlsafe(24)
@@ -583,23 +619,39 @@ async def privacy_request_post(request: Request):
         return _request_page(request, 429, f=f, error='Too many requests from this network. Try again in 10 minutes, or email hello@braivex.com.')
     profile = linkedin.airbnb_profile(f.get('airbnb_profile', ''))
     company = companies.number(f.get('company_number'))
+    removal = f.get('type') == 'listing_removal'
+    listing = jobs.listing_id(f.get('listing_url', ''))
     error = ('Choose what the request is about' if f.get('type') not in store.PRIVACY_REQUEST_TYPES else
              'Enter a valid email address so we can reply' if not auth.EMAIL.match(f.get('email', '')) else
-             'Tell us what you would like us to do' if not f.get('details') else
+             'Paste the link to your Airbnb listing (airbnb.co.uk/rooms/<number>)' if removal and not listing else
+             'Tell us what you would like us to do' if not f.get('details') and not removal else
              'Paste the link to your Airbnb profile (airbnb.co.uk/users/show/<number>), or leave it empty'
              if f.get('airbnb_profile') and not profile else
              'Enter the 8-character company number from Companies House (for example 01234567 or SC123456), or leave it empty'
-             if f.get('company_number') and not company else None)
+             if f.get('company_number') and not company else
+             'Paste the link to your Airbnb listing (airbnb.co.uk/rooms/<number>), or leave it empty'
+             if f.get('listing_url') and not listing else None)
     if error:
         return _request_page(request, 400, f=f, error=error)
     auth.record_fail(ip, 'privacy')  # counts submissions, not failures
-    ref, received = store.add_privacy_request(f['type'], auth.norm(f['email']), f.get('name', '')[:200] or None, f['details'][:4000],
-                                              profile.rsplit('/', 1)[-1] if profile else None, company)
+    details = f.get('details') or 'Remove my listing from ReelSieve.'
+    ref, received = store.add_privacy_request(f['type'], auth.norm(f['email']), f.get('name', '')[:200] or None, details[:4000],
+                                              profile.rsplit('/', 1)[-1] if profile else None, company_number=company,
+                                              listing_id=listing)
     if f['type'] == 'objection' and profile:
         store.suppress({'airbnb_profile': profile})  # stop outreach to them at once, for every user
     if f['type'] == 'objection' and company:
         store.suppress({'company_number': company})  # the company leaves every user's results at once
-    return _request_page(request, ack={'ref': ref, 'received': received, 'due': store.one_month_after(received)})
+    if removal:
+        # Anyone can send this form and nothing proves the listing is theirs, so the block is at once but provisional:
+        # it lapses at the reply deadline unless an admin confirms it, and a few per address and per day block at once
+        # (the rest wait for the admin's check).
+        mine, total = store.recent_removals(auth.norm(f['email']), received - 86400)
+        if mine <= REMOVALS_PER_EMAIL and total <= REMOVALS_PER_DAY:
+            store.block_listing(listing, 'Removal request ' + ref, expires_at=store.one_month_after(received))
+    return _request_page(request, ack={'ref': ref, 'received': received, 'due': store.one_month_after(received),
+                                       'listing': listing if removal else None,
+                                       'listing_blocked': bool(removal and store.blocked_ids([listing]))})
 
 
 @app.post('/api/privacy-requests/handled')
@@ -609,6 +661,50 @@ async def privacy_request_handled(request: Request):
     if not store.handle_privacy_request(ref):
         raise HTTPException(404, 'No open request with that reference')
     store.admin_event('privacy_request_handled', request.state.user, None, ref=ref)
+    return {'ok': True}
+
+
+@app.post('/api/blocked-listings')
+async def blocked_listing_add(request: Request):
+    """Admin: no reels of this listing, and not in co-host or Outreach results. Takes a /rooms/<id> link or the number."""
+    _require_admin(request)
+    b = await request.json()
+    raw = str(b.get('listing') or '').strip()
+    lid = raw if re.fullmatch(r'\d{1,20}', raw) else jobs.listing_id(raw)
+    if not lid:
+        raise HTTPException(400, 'Paste an Airbnb listing link (airbnb.…/rooms/<number>) or its number')
+    store.block_listing(lid, str(b.get('reason') or '').strip()[:300] or 'Added by an admin')
+    store.admin_event('listing_block', request.state.user, None, listing=lid)
+    return {'ok': True, 'listing_id': lid}
+
+
+@app.post('/api/blocked-listings/remove')
+async def blocked_listing_remove(request: Request):
+    _require_admin(request)
+    lid = str((await request.json()).get('listing_id') or '').strip()
+    if not store.unblock_listing(lid):
+        raise HTTPException(404, 'That listing is not blocked')
+    store.admin_event('listing_unblock', request.state.user, None, listing=lid)
+    return {'ok': True}
+
+
+@app.post('/api/blocked-listings/confirm')
+async def blocked_listing_confirm(request: Request):
+    """Admin: a public removal request checked and upheld, so its block no longer lapses."""
+    _require_admin(request)
+    lid = str((await request.json()).get('listing_id') or '').strip()
+    if not store.confirm_listing_block(lid):
+        raise HTTPException(404, 'No provisional block for that listing')
+    store.admin_event('listing_confirm', request.state.user, None, listing=lid)
+    return {'ok': True}
+
+
+@app.post('/api/airbnb/resume')
+def airbnb_resume(request: Request):
+    """Admin: after checking why Airbnb refused us, start Airbnb fetching again (a hard stop never ends on its own)."""
+    _require_admin(request)
+    airbnb.resume()
+    store.admin_event('airbnb_resume', request.state.user, None)
     return {'ok': True}
 
 
@@ -1065,12 +1161,15 @@ def _image_type(body):
 
 
 @app.get('/img')
-def image_proxy(u: str = ''):
+def image_proxy(request: Request, u: str = ''):
     """Signed-in only (the Gate). https to IMG_HOSTS only, every redirect re-checked (app.fetch), size-capped."""
     try:
-        # WebP, not AVIF: the CDN answers AVIF when asked, which Safari before 16 cannot show.
-        _, body = fetch.get(u, headers={'User-Agent': listing_search.UA['User-Agent'], 'Accept': 'image/webp,image/jpeg,image/png'},
-                            timeout=20, max_bytes=IMG_MAX, hosts=IMG_HOSTS)
+        with at_once(request.state.user, 'img'):
+            # WebP, not AVIF: the CDN answers AVIF when asked, which Safari before 16 cannot show.
+            _, body = fetch.get(u, headers={'User-Agent': listing_search.UA['User-Agent'], 'Accept': 'image/webp,image/jpeg,image/png'},
+                                timeout=20, max_bytes=IMG_MAX, hosts=IMG_HOSTS, record_blocks=False)  # the user chose u
+    except airbnb.Unavailable as e:
+        raise HTTPException(503, str(e))
     except ValueError:
         raise HTTPException(400, 'Not an allowed image')
     except httpx.HTTPError:
@@ -1124,23 +1223,43 @@ def api_places(q: str = ''):
     return res
 
 
+def _airbnb_on():
+    """Kill switch: features that read Airbnb refuse with the same notice the page shows."""
+    if not airbnb.enabled():
+        raise HTTPException(503, airbnb.DISABLED)
+
+
+def _unblocked(res):
+    """A listing taken down from ReelSieve never shows in Find a listing (so neither do its photos)."""
+    items = store.without_blocked_listings(res.get('items') or [])
+    return {**res, 'items': items, **({'count': len(items)} if 'count' in res else {})}
+
+
 @app.get('/api/search')
-def api_search(location: str, checkin: str = '', checkout: str = '', adults: int = 2, offset: int = 0, pages: int = 3):
+def api_search(request: Request, location: str, checkin: str = '', checkout: str = '', adults: int = 2, offset: int = 0, pages: int = 3):
     """In-app listing picker: public Airbnb search results (no login)."""
+    _airbnb_on()
     if not location.strip():
         raise HTTPException(400, 'Enter a location')
-    try:
-        return listing_search.search(location[:120], checkin or None, checkout or None, adults, offset, min(max(pages, 1), 5))
-    except Exception:
-        raise HTTPException(502, 'Search failed — try again')
+    with at_once(request.state.user, 'lookup'):
+        try:
+            return _unblocked(listing_search.search(location[:120], checkin or None, checkout or None, adults, offset, min(max(pages, 1), 5)))
+        except airbnb.Unavailable as e:
+            raise HTTPException(503, str(e))
+        except Exception:
+            raise HTTPException(502, 'Search failed — try again')
 
 
 @app.get('/api/search/more')
-def api_search_more(location: str, page: int, checkin: str = '', checkout: str = '', adults: int = 2):
-    try:
-        return listing_search.search_page(location[:120], checkin or None, checkout or None, adults, page)
-    except Exception:
-        raise HTTPException(502, 'Load more failed — try again')
+def api_search_more(request: Request, location: str, page: int, checkin: str = '', checkout: str = '', adults: int = 2):
+    _airbnb_on()
+    with at_once(request.state.user, 'lookup'):
+        try:
+            return _unblocked(listing_search.search_page(location[:120], checkin or None, checkout or None, adults, page))
+        except airbnb.Unavailable as e:
+            raise HTTPException(503, str(e))
+        except Exception:
+            raise HTTPException(502, 'Load more failed — try again')
 
 
 # ---------------- Google Drive ----------------
@@ -1216,26 +1335,39 @@ def outreach_page(request: Request):
         'b2b_sender': (store.get_account(u) or {}).get('b2b_sender') or {}})
 
 
+def outreach_allowed(items):
+    """People who objected never reappear, nor do listings taken down from ReelSieve."""
+    return store.unsuppressed(store.without_blocked_listings(items))
+
+
 @app.get('/api/outreach/cohosts')
-def api_cohosts(city: str = ''):
+def api_cohosts(request: Request, city: str = ''):
+    _airbnb_on()
     if not city.strip():
         raise HTTPException(400, 'Enter a city')
-    try:
-        res = cohost.discover(city.strip()[:120])
-    except Exception:
-        raise HTTPException(502, 'Lookup failed — try again')
-    return {**res, 'items': store.unsuppressed(res.get('items') or [])}  # people who objected never reappear
+    with at_once(request.state.user, 'lookup'):
+        try:
+            res = cohost.discover(city.strip()[:120])
+        except airbnb.Unavailable as e:
+            raise HTTPException(503, str(e))
+        except Exception:
+            raise HTTPException(502, 'Lookup failed — try again')
+    return {**res, 'items': outreach_allowed(res.get('items') or [])}
 
 
 @app.get('/api/outreach/linkedin')
-def api_linkedin(city: str = '', role: str = 'property manager'):
+def api_linkedin(request: Request, city: str = '', role: str = 'property manager'):
+    _airbnb_on()
     if not city.strip():
         raise HTTPException(400, 'Enter a city')
-    try:
-        res = linkedin.build(city.strip()[:120], (role.strip() or 'property manager')[:80])
-    except Exception:
-        raise HTTPException(502, 'Lookup failed — try again')
-    return {**res, 'items': store.unsuppressed(res.get('items') or [])}
+    with at_once(request.state.user, 'lookup'):
+        try:
+            res = linkedin.build(city.strip()[:120], (role.strip() or 'property manager')[:80])
+        except airbnb.Unavailable as e:
+            raise HTTPException(503, str(e))
+        except Exception:
+            raise HTTPException(502, 'Lookup failed — try again')
+    return {**res, 'items': outreach_allowed(res.get('items') or [])}
 
 
 @app.post('/api/outreach/queue')
@@ -1247,7 +1379,7 @@ async def api_queue(request: Request):
                               meta={**{k: it.get(k) for k in ('id', 'listing_title', 'company') if k in it},
                                     'listing_url': str(it.get('listing_url') or '')[:300],
                                     'airbnb_profile': linkedin.airbnb_profile(it.get('airbnb_profile'))})
-           for it in store.unsuppressed([it for it in (b.get('items') or [])[:25] if isinstance(it, dict)])]
+           for it in outreach_allowed([it for it in (b.get('items') or [])[:25] if isinstance(it, dict)])]
     return {'ok': True, 'ids': ids, 'rows': store.outreach_rows(u), 'stats': store.outreach_stats(u)}
 
 
@@ -1345,13 +1477,21 @@ EVENT_LABELS = {'plan': 'Plan or credits changed', 'password_reset': 'Password r
                 'erase': 'Account erased', 'order_settle': 'Order marked paid', 'order_cancel': 'Order cancelled',
                 'order_link': 'Pay link set', 'privacy_request_handled': 'Privacy request handled',
                 'invoice_export': 'Invoice CSV downloaded',
-                'unsuppress': 'Do-not-contact marks undone'}
+                'unsuppress': 'Do-not-contact marks undone',
+                'listing_block': 'Listing blocked', 'listing_unblock': 'Listing unblocked', 'listing_confirm': 'Listing removal confirmed',
+                'airbnb_resume': 'Airbnb fetching resumed'}
 
 
 def settings_view():
     """Cloud-managed configuration, read-only: secrets show only whether they are set."""
-    return [{'key': k, 'configured': bool((os.getenv(k) or '').strip()), 'secret': secret, 'hint': hint,
-             'value': '' if secret else (os.getenv(k) or '')} for k, secret, hint in SETTINGS]
+    out = []
+    for k, secret, hint in SETTINGS:
+        v, default = (os.getenv(k) or '').strip(), SETTING_DEFAULTS.get(k)
+        out.append({'key': k, 'configured': bool(v or default), 'secret': secret, 'hint': hint,
+                    'value': '' if secret else (v or (default + ' (default)' if default else '')),
+                    'state': ('On' if airbnb.enabled() else 'Off') if k == 'AIRBNB_FETCH_ENABLED' else
+                             'Default' if default and not v else None})
+    return out
 
 
 @app.get('/settings', response_class=HTMLResponse)
@@ -1365,6 +1505,7 @@ def settings(request: Request, saved: int = 0, flash: str = ''):
         'backup': invoices.status(),
         'referral_totals': referrals.totals(), 'referral_limit': referrals.MONTHLY_LIMIT,
         'companies': companies.status(),
+        'blocked': store.blocked_listings(), 'airbnb_state': airbnb.state(),
         'redirect_uri': _redirect_uri(request), 'webhook_base': (public_base() or str(request.base_url).rstrip('/'))})
 
 

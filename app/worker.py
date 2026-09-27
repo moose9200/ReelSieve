@@ -247,15 +247,24 @@ def _safe_result(result):
             'ai_plan': plan, 'selection': result.get('selection'), 'photo_scores': result.get('photo_scores')}
 
 
+def _refuse_if_removed(job):
+    """A host's takedown also stops a reel queued or rendering when it lands: checked before the render and again
+    before delivery. Fails the job, which refunds it."""
+    if store.blocked_ids([jobs.listing_id(job['url'])]):
+        raise RuntimeError(jobs.REMOVED)
+
+
 def process(job, command=render_command):
     d = scratch(job['id'])
     token = job['lease_token']
     try:
         _remove(d)
         d.mkdir(parents=True)
+        _refuse_if_removed(job)
         if (job['params'] or {}).get('source') == 'photos':
             _fetch_inputs(job, d)
         result = run_child(command(job, d), job, lambda line: _progress(job, line))
+        _refuse_if_removed(job)
         jobs.report(job['id'], token, meta=_safe_result(result), line='Reel ready')
         deliver(job, result)
         jobs.report(job['id'], token, line='Delivered to your Google Drive')

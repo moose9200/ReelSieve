@@ -43,8 +43,9 @@ def listing_id(url):
     return m.group(1)
 # ---------------- scraping ----------------
 def scrape_listing(url,cb=None):
+    from app import airbnb
     lid=listing_id(url);canon=f'https://www.airbnb.co.uk/rooms/{lid}'
-    log(cb,f'Fetching listing {lid}');t=httpx.get(canon,headers=UA,follow_redirects=True,timeout=40).text
+    log(cb,f'Fetching listing {lid}');t=airbnb.get(canon,headers=UA,timeout=40).text   # a block raises airbnb.Unavailable: the job stops here
     d={'id':lid,'url':canon}
     ld=re.search(r'<script type="application/ld\+json">(\{"@context":"https://schema.org","@type":"Product".*?)</script>',t)
     if ld:
@@ -82,16 +83,36 @@ def scrape_listing(url,cb=None):
     d['photos']=photos;log(cb,f'Found {len(photos)} photos, rating {d.get("rating")} from {d.get("count")} reviews')
     return d
 def scrape_reviews(url,cb=None,limit=12):
-    """Reviews are client-rendered; use headless Chromium and parse the visible text."""
-    lid=listing_id(url);out=[];scrape_reviews.meta={}
+    """Reviews are client-rendered; use headless Chromium and parse the visible text.
+    The base /rooms/<id> page carries no review text or dates (checked live 27 Sep 2026), so this page stays.
+    Every request the page makes to Airbnb goes through app.airbnb too: the page takes a slot of the page budget, each
+    script, style and data call one of the 'browser' budget, and pictures, video and fonts are not loaded at all (the
+    text renders the same without them, checked live 27 Sep 2026). A block status on any Airbnb response, the reviews
+    data call included, stops the job like any other."""
+    from app import airbnb
+    lid=listing_id(url);out=[];scrape_reviews.meta={};rurl=f'https://www.airbnb.co.uk/rooms/{lid}/reviews'
     try:
+        airbnb.gate(rurl)
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
             b=p.chromium.launch(headless=True);pg=b.new_page(user_agent=UA['User-Agent'],locale='en-GB')
-            pg.goto(f'https://www.airbnb.co.uk/rooms/{lid}/reviews',wait_until='domcontentloaded',timeout=60000)
-            try:pg.wait_for_selector('text=/Rating, \\d stars/',timeout=20000)
+            answers,stopped=[],[]
+            def route(r):
+                q=r.request
+                if q.resource_type in ('image','media','font'):return r.abort()
+                if not (q.url==rurl and q.is_navigation_request()):   # the page itself took its slot above
+                    try:airbnb.gate(q.url,None if q.is_navigation_request() else 'browser')
+                    except airbnb.Unavailable as e:stopped.append(e);return r.abort()
+                r.continue_()
+            pg.route('**/*',route);pg.on('response',lambda resp:answers.append((resp.url,resp.status)))
+            resp=pg.goto(rurl,wait_until='domcontentloaded',timeout=60000)
+            if resp:airbnb.check(rurl,resp.status)
+            try:pg.wait_for_selector('text=/Rating, \\d stars/',timeout=45000)   # paced requests: allow for the queue
             except Exception:pass
-            pg.wait_for_timeout(1500);text=pg.inner_text('body');b.close()
+            pg.wait_for_timeout(1500)
+            for u,s in answers:airbnb.check(u,s)   # every Airbnb response the page got, the reviews data call included
+            if stopped:raise stopped[0]
+            airbnb.check(rurl,200,pg.content(),'text/html');text=pg.inner_text('body');b.close()
         mm=re.search(r'5 stars, (\d+)% of reviews',text)
         if mm:scrape_reviews.meta['five_star_pct']=int(mm.group(1))
         lines=text.split('\n')
@@ -108,6 +129,7 @@ def scrape_reviews(url,cb=None,limit=12):
             body=re.sub(r'^[\s,·•]+','',body);body=re.sub(r'^(Stayed (with kids|with a pet|a few nights|one night|about a week|a week|over a week|in a home|for a month or more)|Group trip|Family trip|Trip with friends|Solo trip|Business trip|Couple.?s trip)\s*[,·]?\s*','',body,flags=re.I).strip()
             if body and name and len(name)<40:out.append({'name':name,'stars':stars,'date':date,'text':body})
             if len(out)>=limit:break
+    except airbnb.Unavailable:raise   # blocked or paused: stop the job, never continue by another route
     except Exception as e:log(cb,f'Reviews unavailable ({type(e).__name__}: {str(e)[:80]}) — continuing without review card')
     dedup=[];seen=set()
     for r in out:
@@ -238,7 +260,8 @@ def lint_manifest(m,min_images=6):
     return total
 # ---------------- media ----------------
 def download_photos(d,imgdir,cb=None,needed=None):
-    """Photo URLs come from a scraped page, so each goes through the public-host guard."""
+    """Photo URLs come from a scraped page, so each goes through the public-host guard. Airbnb CDN photos also take a slot
+    of the shared image budget (fetch.get -> airbnb.gate); a block raises airbnb.Unavailable out of here and stops the job."""
     from app import fetch
     from concurrent.futures import ThreadPoolExecutor
     imgdir.mkdir(parents=True,exist_ok=True);urls=needed or [p['url'] for p in d['photos']]
@@ -248,7 +271,7 @@ def download_photos(d,imgdir,cb=None,needed=None):
         try:_,body=fetch.get(u+('?im_w=1920' if 'muscache.com' in u else ''),headers=UA,timeout=60)
         except (ValueError,httpx.HTTPError):return
         f.write_bytes(body)
-    with ThreadPoolExecutor(6) as ex:list(ex.map(one,urls))   # small pool: one CDN host, politely bounded
+    with ThreadPoolExecutor(6) as ex:list(ex.map(one,urls))   # parallel, paced by the shared image budget
     log(cb,f'Downloaded {len(list(imgdir.iterdir()))} photos')
 def seedance_clips(m,workdir,cb=None,duration=4):
     """Optional: Higgsfield Seedance 2.5 image-to-video per scene (billable). Falls back per scene on any failure."""

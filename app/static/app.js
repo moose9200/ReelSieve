@@ -40,7 +40,11 @@
   function imgSrc(u) { return "/img?u=" + encodeURIComponent(u); }
   function getJSON(url) {
     return fetch(url, { headers: { "Accept": "application/json" } }).then(function (r) {
-      if (!r.ok) throw new Error("HTTP " + r.status); return r.json();
+      if (r.ok) return r.json();
+      // Show the server's own reason (for example "Airbnb is not serving this page to us right now").
+      return r.json().catch(function () { return {}; }).then(function (d) {
+        throw new Error((d && typeof d.detail === "string" && d.detail) || ("HTTP " + r.status));
+      });
     });
   }
 
@@ -1061,6 +1065,49 @@
         .then(function () { var li = b.closest("li"); if (li) li.parentNode.removeChild(li); out.textContent = ref + " marked handled."; })
         .catch(function (e) { out.textContent = e.message; out.classList.add("is-error"); b.disabled = false; });
     });
+  });
+
+  // ---------- admin: blocked listings ----------
+  var blAdd = document.getElementById("bl-add");
+  if (blAdd) blAdd.addEventListener("click", function () {
+    var out = document.getElementById("bl-status"), listing = (document.getElementById("bl-listing").value || "").trim();
+    out.className = "form-status";
+    if (!listing) { out.textContent = "Paste a listing link or number."; out.classList.add("is-error"); return; }
+    blAdd.disabled = true;
+    postJSON("/api/blocked-listings", { listing: listing, reason: document.getElementById("bl-reason").value || "" })
+      .then(function () { window.location.reload(); })
+      .catch(function (e) { out.textContent = e.message; out.classList.add("is-error"); blAdd.disabled = false; });
+  });
+  Array.prototype.forEach.call(document.querySelectorAll(".blocked-remove"), function (b) {
+    b.addEventListener("click", function () {
+      var out = document.getElementById("bl-status"), id = b.getAttribute("data-listing");
+      if (!confirm("Unblock listing " + id + "? ReelSieve users could make reels of it again.")) return;
+      b.disabled = true; out.className = "form-status";
+      postJSON("/api/blocked-listings/remove", { listing_id: id })
+        .then(function () { var li = b.closest("li"); if (li) li.parentNode.removeChild(li); out.textContent = "Listing " + id + " unblocked."; })
+        .catch(function (e) { out.textContent = e.message; out.classList.add("is-error"); b.disabled = false; });
+    });
+  });
+
+  Array.prototype.forEach.call(document.querySelectorAll(".blocked-confirm"), function (b) {
+    b.addEventListener("click", function () {
+      var out = document.getElementById("bl-status"), id = b.getAttribute("data-listing");
+      b.disabled = true; out.className = "form-status";
+      postJSON("/api/blocked-listings/confirm", { listing_id: id })
+        .then(function () { window.location.reload(); })
+        .catch(function (e) { out.textContent = e.message; out.classList.add("is-error"); b.disabled = false; });
+    });
+  });
+
+  // ---------- admin: resume Airbnb fetching after a block ----------
+  var abResume = document.getElementById("airbnb-resume");
+  if (abResume) abResume.addEventListener("click", function () {
+    var out = document.getElementById("airbnb-status");
+    if (!confirm("Resume Airbnb fetching? Do this only once you know why Airbnb refused us.")) return;
+    abResume.disabled = true; out.className = "form-status";
+    postJSON("/api/airbnb/resume", {})
+      .then(function () { window.location.reload(); })
+      .catch(function (e) { out.textContent = e.message; out.classList.add("is-error"); abResume.disabled = false; });
   });
 
   // ---------- admin: orders ----------
