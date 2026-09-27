@@ -94,8 +94,10 @@ def erase(email, by=None, via=None):
                   'scope=NULL,folder_id=NULL,connected_at=NULL,updated=%s WHERE owner_id=%s', (now, owner))
         c.execute('UPDATE usage SET listing_key=NULL,fp_hash=NULL WHERE owner_id=%s', (owner,))  # ip_hash: 90-day abuse window
         c.execute('UPDATE accounts SET ip_hash=NULL,fp_hash=NULL,note=NULL,referral_code=NULL,b2b_sender=NULL WHERE owner_id=%s', (owner,))
-        # the objections they recorded stay honoured; only the link to this account goes
-        c.execute('UPDATE outreach_suppressions SET owner_id=NULL WHERE owner_id=%s', (owner,))
+        # the objections they recorded stay honoured; the account link becomes a keyed hash of the email (never the
+        # email), so unsuppress <email> can still undo misuse until retention clears it 90 days after the mark
+        c.execute('UPDATE outreach_suppressions SET owner_id=NULL,owner_hash=%s WHERE owner_id=%s',
+                  (store.suppression_owner_hash(address), owner))
         c.execute("DELETE FROM orders WHERE owner_id=%s AND status IN ('pending','cancelled')", (owner,))
         # Paid, or reported paid and awaiting confirmation: the tax record needs the payer's email if the money clears.
         c.execute("UPDATE orders SET note=NULL,meta=NULL,pay_link=NULL,billing_email=COALESCE(billing_email,%s) WHERE owner_id=%s",
@@ -107,12 +109,16 @@ def erase(email, by=None, via=None):
 
 
 def unsuppress(email):
-    """Undo the "Do not contact" marks one account made, e.g. someone hiding companies from every other customer.
-    Objections through the privacy form have no account and are never touched; marks older than 90 days have lost
-    their account link (app/retention.py) and stay."""
+    """Undo the "Do not contact" marks one account made, e.g. someone hiding companies from every other customer, also
+    after that account was erased (by the keyed hash erasure leaves). Objections through the privacy form have no
+    account and are never touched here (Settings undoes those per request); marks older than 90 days have lost their
+    account link (app/retention.py) and stay. The event names an erased account by nothing at all."""
+    email = auth.norm(email)
     with database.connect() as c:
-        n = c.execute('DELETE FROM outreach_suppressions WHERE owner_id=%s', (database.user_id(auth.norm(email), c),)).rowcount
-        store.admin_event('unsuppress', None, auth.norm(email), conn=c, rows=n)
+        row = c.execute('SELECT id FROM users WHERE email=%s', (email,)).fetchone()
+        n = c.execute('DELETE FROM outreach_suppressions WHERE owner_id=%s OR owner_hash=%s',
+                      (row['id'] if row else None, store.suppression_owner_hash(email))).rowcount
+        store.admin_event('unsuppress', None, email if row else None, conn=c, rows=n)
     return n
 
 

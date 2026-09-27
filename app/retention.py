@@ -25,13 +25,14 @@ ERASED_UNPAID_ORDER_DAYS = 90  # a payment reported before erasure that never cl
 INVOICE_BACKUP_RUN_YEARS = 2   # records of the daily India backup (app/invoices.py); no personal data
 REFERRAL_REWARDED_YEARS = 2    # after the reward
 REFERRAL_UNREWARDED_YEARS = 1  # after signup, when never rewarded
-SUPPRESSION_OWNER_DAYS = 90    # which account marked "Do not contact"; the suppression itself is kept for good
+SUPPRESSION_OWNER_DAYS = 90    # which account marked "Do not contact" (or its erased email's keyed hash); the mark stays
 
 # A job keeps the customer's own reel history; only other people's data goes. Legacy jobs stored the finished
 # host message as the customer's template too. Guest quotes typed for an own-photo reel are review data as well.
-STRIP_JOBS = ("UPDATE jobs SET meta=(meta #- '{listing,host}') - 'message' - 'review_used',"
+STRIP_JOBS = ("UPDATE jobs SET meta=(meta #- '{listing,host}' #- '{listing,host_id}') - 'message' - 'review_used',"
               "params=(CASE WHEN meta->>'legacy'='true' THEN params - 'message' ELSE params END) - 'quotes' "
-              "WHERE finished_at<%s AND (meta #> '{listing,host}' IS NOT NULL OR meta ? 'message' OR meta ? 'review_used' "
+              "WHERE finished_at<%s AND (meta #> '{listing,host}' IS NOT NULL OR meta #> '{listing,host_id}' IS NOT NULL "
+              "OR meta ? 'message' OR meta ? 'review_used' "
               "OR (meta->>'legacy'='true' AND params ? 'message') OR params ? 'quotes')")
 
 
@@ -56,8 +57,8 @@ def run(now=None):
              now - REFERRAL_UNREWARDED_YEARS * YEAR),
             ('legacy_archives', 'DELETE FROM legacy_archives WHERE created<%s', now - keep_archive * DAY),
             ('invoice_backups', 'DELETE FROM invoice_backups WHERE ts<%s', now - INVOICE_BACKUP_RUN_YEARS * YEAR),
-            ('suppression_owner', 'UPDATE outreach_suppressions SET owner_id=NULL WHERE owner_id IS NOT NULL AND ts<%s',
-             now - SUPPRESSION_OWNER_DAYS * DAY),
+            ('suppression_owner', 'UPDATE outreach_suppressions SET owner_id=NULL,owner_hash=NULL '
+                                  'WHERE (owner_id IS NOT NULL OR owner_hash IS NOT NULL) AND ts<%s', now - SUPPRESSION_OWNER_DAYS * DAY),
             ('lapsed_listing_blocks', 'DELETE FROM blocked_listings WHERE expires_at<%s', now),
         ]}
         due = [r['email'] for r in c.execute('SELECT email FROM users WHERE NOT active AND erased_at IS NULL AND deactivated_at<%s',

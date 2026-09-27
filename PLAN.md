@@ -96,9 +96,9 @@ Owner-only (payment/identity): ICO registration (GBP 52), UK representative, Str
 Target: every finding below has a failing-first test (or a pinned notice fact) and the full suite stays green (baseline 509 passed, 2 skipped).
 - [x] N1 own-photo reels never go to Higgsfield (admit_photos + worker force ai_motion off; photos-mode option disabled; notice sentence gone). Evidence: 3 tests in test_final_review.py red on 3105f8e, green after
 - [x] N21 do-not-contact key frozen: derived once as before, stored encrypted in app_meta, old hashes still match. Evidence: 2 tests red on 3105f8e (no stored key; no refusal), green after; full suite 514 passed 2 skipped
-- [ ] S1 privacy form: rate limit per network; form suppressions tagged with the request ref, shown in Settings, undoable (admin event)
-- [ ] S3 erasure keeps a keyed hash of the email on do-not-contact marks so `admin unsuppress <email>` still works
-- [ ] N2 host objection hides the host card and drafted message on the job page (hostId captured, stripped at 30 days)
+- [x] S1 privacy form: rate limit per network; form suppressions tagged with the request ref, shown in Settings, undoable (admin event). Evidence: 2 tests red on 3105f8e (6th request from the same /64 got 200; no request_ref), green after
+- [x] S3 erasure keeps a keyed hash of the email on do-not-contact marks so `admin unsuppress <email>` still works. Evidence: test red on 3105f8e (owner_hash missing), green after; cleared at 90 days
+- [x] N2 host objection hides the host card and drafted message on the job page (hostId captured, stripped at 30 days). Evidence: 3 tests red on 3105f8e, green after
 - [ ] N5 Disconnect deletes pending Inputs first; _drop_inputs uses the current connection; failed deletes retried hourly for 7 days, then shown on the job page
 - [ ] S2 photo upload: Drive + credit checks before a slot or the body; 10-minute hard deadline; one slot per network; configurable
 - [ ] S4 upload parts parsed straight into the files list; MAX_PIXELS about 26 MP; 60 MP refused

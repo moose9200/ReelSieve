@@ -566,7 +566,9 @@ def test_privacy_request_form_is_public_acknowledged_and_handled_by_admins(web, 
         row = c.execute('SELECT status,handled_at FROM privacy_requests').fetchone()
     settings = web['admin'].get('/settings').text
     assert row['status'] == 'handled' and row['handled_at']
-    assert ref not in settings.split('id="requests-card"', 1)[1].split('</section>', 1)[0] and 'Privacy request handled' in settings
+    card = settings.split('id="requests-card"', 1)[1].split('</section>', 1)[0]
+    assert 'id="req-list"' not in card and 'Privacy request handled' in settings  # no longer open
+    assert ref in card.split('id="req-marks"', 1)[1]  # its do-not-contact entry stays visible and undoable
     for bad in ({'type': 'lawsuit'}, {'email': 'not-an-email'}, {'airbnb_profile': 'https://evil.example.org/users/show/1'}, {'details': ''}):
         assert _request(client_for(), **bad).status_code == 400, bad
 
@@ -630,7 +632,7 @@ def test_do_not_contact_suppresses_the_prospect_for_every_user(web, db, monkeypa
     with db.connect() as c:
         rows = c.execute('SELECT * FROM outreach_suppressions').fetchall()
     # nothing about the prospect but a keyed hash; owner_id is the account that marked it (exported, erased, 90 days)
-    assert rows and all(set(r) == {'key', 'ts', 'owner_id'} for r in rows)
+    assert rows and all(set(r) == {'key', 'ts', 'owner_id', 'owner_hash', 'request_ref'} for r in rows)
     assert {r['owner_id'] for r in rows} == {db.user_id(ALICE)} and 'Jo' not in str(rows) and 'Sam' not in str(rows)
     assert not any(x in str(rows) for x in ('4242', 'Sam', 'Jo', '222'))
     page = web['alice'].get('/outreach').text

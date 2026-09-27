@@ -43,7 +43,7 @@
         <span class="pill pill-email pill-{{ 'done' if job.drive_link else 'skipped' }}" id="drive-pill">{{ ('Delivered · ' ~ ('shared by link' if job.shared else 'private')) if job.drive_link else '—' }}</span>
         <a id="drive-link" class="{% if not job.drive_link %}hidden{% endif %}" href="{{ job.drive_link or '#' }}" target="_blank" rel="noopener">Open in Drive ↗</a>
       </span>
-      {% if job.source != 'photos' %}
+      {% if job.source != 'photos' and not job.host_suppressed %}
       <span class="email-line">
         <span class="eyebrow inline">Host message</span>
         <span class="pill pill-email" id="host-pill" data-status="{{ job.host_status or '' }}">{{ job.host_status or "—" }}</span>
@@ -69,7 +69,7 @@
     </div>
   </div>
 
-  {% if job.source != 'photos' %}
+  {% if job.source != 'photos' and not job.host_suppressed %}
   <div class="card host-card{% if job.status != 'done' %} hidden{% endif %}" id="host-card">
     <div class="section-head"><h2>Send to the host on Airbnb</h2></div>
     <div class="field">

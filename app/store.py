@@ -252,19 +252,39 @@ def suppression_keys(item):
 DAILY_SUPPRESSIONS = 30  # keys one account may add in 24 hours (a host can take two); cohost sends are capped at 5 a day
 
 
-def suppress(item, user=None):
+def suppress(item, user=None, ref=None):
     """Do not contact this prospect again, for any user. Stores hashes only.
     user: the account marking it, recorded so misuse can be traced and undone (app/admin.py unsuppress), and limited to
-    DAILY_SUPPRESSIONS a day; returns False, storing nothing, past that. None: an objection through the privacy form."""
+    DAILY_SUPPRESSIONS a day; returns False, storing nothing, past that. None: an objection through the privacy form,
+    honoured at once and tagged with its request reference `ref` so an admin can undo an abusive one."""
     with database.connect() as c:
         owner = database.user_id(user, c) if user else None
         if owner and c.execute('SELECT count(*) AS n FROM outreach_suppressions WHERE owner_id=%s AND ts>%s',
                                (owner, time.time() - 86400)).fetchone()['n'] >= DAILY_SUPPRESSIONS:
             return False
         for key in suppression_keys(item):
-            c.execute('INSERT INTO outreach_suppressions(key,ts,owner_id) VALUES(%s,%s,%s) ON CONFLICT (key) DO NOTHING',
-                      (key, time.time(), owner))
+            c.execute('INSERT INTO outreach_suppressions(key,ts,owner_id,request_ref) VALUES(%s,%s,%s,%s) '
+                      'ON CONFLICT (key) DO NOTHING', (key, time.time(), owner, ref))
     return True
+
+
+def suppression_owner_hash(email):
+    """What erasure leaves on the marks an account made instead of its email (app/admin.py): a keyed hash."""
+    return hmac.new(_suppression_key(), ('owner:' + (email or '').strip().lower()).encode(), hashlib.sha256).hexdigest()
+
+
+def request_suppressions(limit=100):
+    """{request ref: {'n', 'ts'}}: do-not-contact entries made through the privacy form, newest first (Settings)."""
+    with database.connect() as c:
+        rows = c.execute('SELECT request_ref,count(*) AS n,max(ts) AS ts FROM outreach_suppressions WHERE request_ref IS NOT NULL '
+                         'GROUP BY request_ref ORDER BY max(ts) DESC LIMIT %s', (limit,)).fetchall()
+    return {r['request_ref']: {'n': r['n'], 'ts': r['ts']} for r in rows}
+
+
+def undo_request_suppressions(ref):
+    """An admin found a privacy request abusive: its do-not-contact entries go. Returns how many."""
+    with database.connect() as c:
+        return c.execute('DELETE FROM outreach_suppressions WHERE request_ref=%s', (ref,)).rowcount
 
 
 def set_b2b_sender(user, name, business, email):

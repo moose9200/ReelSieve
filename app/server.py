@@ -615,8 +615,8 @@ def privacy_request_page(request: Request):
 @app.post('/privacy/request')
 async def privacy_request_post(request: Request):
     f = {k: (v or '').strip() for k, v in (await _form(request)).items() if k != 'csrf'}
-    ip = _ip(request)
-    if auth.too_many(ip, 'privacy'):
+    net = store.net_of(_ip(request))  # per /24 or /64: a new IPv6 address each time is still one network
+    if auth.too_many(net, 'privacy'):
         return _request_page(request, 429, f=f, error='Too many requests from this network. Try again in 10 minutes, or email hello@braivex.com.')
     profile = linkedin.airbnb_profile(f.get('airbnb_profile', ''))
     company = companies.number(f.get('company_number'))
@@ -634,15 +634,17 @@ async def privacy_request_post(request: Request):
              if f.get('listing_url') and not listing else None)
     if error:
         return _request_page(request, 400, f=f, error=error)
-    auth.record_fail(ip, 'privacy')  # counts submissions, not failures
+    auth.record_fail(net, 'privacy')  # counts submissions, not failures
     details = f.get('details') or 'Remove my listing from ReelSieve.'
     ref, received = store.add_privacy_request(f['type'], auth.norm(f['email']), f.get('name', '')[:200] or None, details[:4000],
                                               profile.rsplit('/', 1)[-1] if profile else None, company_number=company,
                                               listing_id=listing)
+    # An objection to direct marketing is honoured at once, for every user. Nothing proves who sent it, so each entry
+    # carries the request reference: Settings shows it next to the request and an admin can undo an abusive one.
     if f['type'] == 'objection' and profile:
-        store.suppress({'airbnb_profile': profile})  # stop outreach to them at once, for every user
+        store.suppress({'airbnb_profile': profile}, ref=ref)
     if f['type'] == 'objection' and company:
-        store.suppress({'company_number': company})  # the company leaves every user's results at once
+        store.suppress({'company_number': company}, ref=ref)
     if removal:
         # Anyone can send this form and nothing proves the listing is theirs, so the block is at once but provisional:
         # it lapses at the reply deadline unless an admin confirms it, and a few per address and per day block at once
@@ -663,6 +665,18 @@ async def privacy_request_handled(request: Request):
         raise HTTPException(404, 'No open request with that reference')
     store.admin_event('privacy_request_handled', request.state.user, None, ref=ref)
     return {'ok': True}
+
+
+@app.post('/api/privacy-requests/unsuppress')
+async def privacy_request_unsuppress(request: Request):
+    """Admin: a privacy request turned out abusive, so the do-not-contact entries it made are removed (logged)."""
+    _require_admin(request)
+    ref = str((await request.json()).get('ref') or '').strip()
+    n = store.undo_request_suppressions(ref) if ref else 0
+    if not n:
+        raise HTTPException(404, 'No do-not-contact entries came from that request')
+    store.admin_event('request_unsuppress', request.state.user, None, ref=ref, rows=n)
+    return {'ok': True, 'removed': n}
 
 
 @app.post('/api/blocked-listings')
@@ -905,6 +919,12 @@ def job_view(j, receipts=None):
              .replace('{listing_title}', listing.get('title') or 'your listing').replace('{city}', listing.get('city') or '')
              .replace('{search_phrase}', phrase).replace('{reel_link}', link or '(reel link not shared yet)'))
     lid = listing_id_of(j['url'])
+    # A host who objected (their Airbnb profile, or their name on this listing) is never offered as someone to contact.
+    hid = str(listing.get('host_id') or '')
+    quiet = not own and bool(hid or host) and not store.unsuppressed(
+        [{'airbnb_profile': f'/users/show/{hid}' if hid.isdigit() else '', 'name': host, 'listing_url': j['url']}])
+    if quiet:
+        msg = final = ''
     return {
         'id': j['id'], 'status': j['status'], 'progress': j['progress'], 'step': j['step'], 'log': j['log'] or [],
         'error': j['error'], 'listing': listing, 'style': p.get('style', 'v2'), 'duration': m.get('duration'),
@@ -919,7 +939,7 @@ def job_view(j, receipts=None):
         'host_status': m.get('host_status'), 'host_error': m.get('host_error'),
         'message': msg, 'message_final': final, 'search_phrase': phrase,
         'youtube_title': phrase.replace(' ReelSieve', ' — by ReelSieve'),
-        'contact_url': hostmsg.contact_url(lid) if lid else None,
+        'contact_url': hostmsg.contact_url(lid) if lid and not quiet else None, 'host_suppressed': quiet,
         'source': 'photos' if own else 'listing', 'key': lid or j['url'],
         'delete_inputs': bool(p.get('delete_inputs')), 'inputs': m.get('inputs')}
 
@@ -1478,7 +1498,7 @@ EVENT_LABELS = {'plan': 'Plan or credits changed', 'password_reset': 'Password r
                 'erase': 'Account erased', 'order_settle': 'Order marked paid', 'order_cancel': 'Order cancelled',
                 'order_link': 'Pay link set', 'privacy_request_handled': 'Privacy request handled',
                 'invoice_export': 'Invoice CSV downloaded',
-                'unsuppress': 'Do-not-contact marks undone',
+                'unsuppress': 'Do-not-contact marks undone', 'request_unsuppress': 'Do-not-contact from a privacy request undone',
                 'listing_block': 'Listing blocked', 'listing_unblock': 'Listing unblocked', 'listing_confirm': 'Listing removal confirmed',
                 'airbnb_resume': 'Airbnb fetching resumed'}
 
@@ -1503,6 +1523,7 @@ def settings(request: Request, saved: int = 0, flash: str = ''):
         'settings': settings_view(), 'gdrive': gdrive.status(request.state.user), 'saved': bool(saved), 'flash': flash[:400],
         'events': store.admin_events(50), 'event_labels': EVENT_LABELS,
         'requests': store.open_privacy_requests(), 'request_types': store.PRIVACY_REQUEST_TYPES, 'now': time.time(),
+        'form_marks': store.request_suppressions(),
         'backup': invoices.status(),
         'referral_totals': referrals.totals(), 'referral_limit': referrals.MONTHLY_LIMIT,
         'companies': companies.status(),

@@ -261,7 +261,7 @@ def test_do_not_contact_hides_a_company_from_every_user_by_keyed_hash(web, db):
     assert r.status_code == 404 and store.outreach_rows(BOB) == []
     with db.connect() as c:
         rows = c.execute('SELECT * FROM outreach_suppressions').fetchall()
-    assert len(rows) == 1 and set(rows[0]) == {'key', 'ts', 'owner_id'} and '00000001' not in str(rows)
+    assert len(rows) == 1 and set(rows[0]) == {'key', 'ts', 'owner_id', 'owner_hash', 'request_ref'} and '00000001' not in str(rows)
     assert rows[0]['key'] == hmac.new(store._suppression_key(), b'company:00000001', hashlib.sha256).hexdigest()
     assert post(web['alice'], '/api/outreach/companies/suppress', {'company_number': 'x; drop'}).status_code == 400
 

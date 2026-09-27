@@ -494,8 +494,8 @@
       if (st === "done") {
         renderDelivery(job);
         videoCard.classList.remove("hidden");
-        if (hostCard) hostCard.classList.remove("hidden");
-        renderHost(job);
+        if (hostCard && job.host_suppressed) { hostCard.parentNode.removeChild(hostCard); hostCard = null; }  // they objected
+        if (hostCard) { hostCard.classList.remove("hidden"); renderHost(job); }
       }
       var inp = el("inputs-state");
       if (inp && job.inputs === "deleted") inp.textContent = "Your uploaded photos were deleted from your Google Drive, as you asked.";
@@ -1062,6 +1062,17 @@
       b.disabled = true; out.className = "form-status";
       postJSON("/api/privacy-requests/handled", { ref: ref })
         .then(function () { var li = b.closest("li"); if (li) li.parentNode.removeChild(li); out.textContent = ref + " marked handled."; })
+        .catch(function (e) { out.textContent = e.message; out.classList.add("is-error"); b.disabled = false; });
+    });
+  });
+
+  Array.prototype.forEach.call(document.querySelectorAll(".req-unsuppress"), function (b) {
+    b.addEventListener("click", function () {
+      var out = document.getElementById("req-status"), ref = b.getAttribute("data-ref");
+      if (!confirm("Undo the do-not-contact entries from " + ref + "? Do this only if the request was not genuine.")) return;
+      b.disabled = true; out.className = "form-status";
+      postJSON("/api/privacy-requests/unsuppress", { ref: ref })
+        .then(function () { window.location.reload(); })
         .catch(function (e) { out.textContent = e.message; out.classList.add("is-error"); b.disabled = false; });
     });
   });

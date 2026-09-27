@@ -97,3 +97,134 @@ def test_an_undecryptable_stored_key_stops_the_app_instead_of_making_a_new_one(o
     store._suppression_keys.clear()
     with pytest.raises(RuntimeError, match='TOKEN_ENCRYPTION_OLD_KEYS'):
         store._suppression_key()
+
+
+# ---------------- S1: privacy-form objections are limited per network, tagged, visible and undoable ----------------
+
+from test_privacy_rights import _request, post, web  # noqa: E402,F401 (web: fixture)
+
+PROFILE = 'https://www.airbnb.co.uk/users/show/31337'
+
+
+def test_the_privacy_form_limit_counts_a_whole_network_not_one_address(web):
+    ipv6 = lambda n: {'X-Forwarded-For': f'2001:db8:1:2::{n:x}'}  # noqa: E731  one /64, a new address each time
+    for n in range(1, 6):
+        r = web['anon'].post('/privacy/request', data=_form(web['anon'], type='access'), headers=ipv6(n))
+        assert r.status_code == 200, n
+    assert web['anon'].post('/privacy/request', data=_form(web['anon'], type='access'), headers=ipv6(0xffff)).status_code == 429
+    other = {'X-Forwarded-For': '2001:db8:1:3::1'}  # the next /64 is another network
+    assert web['anon'].post('/privacy/request', data=_form(web['anon'], type='access'), headers=other).status_code == 200
+
+
+def _form(client, **fields):
+    page = client.get('/privacy/request').text
+    token = re.search(r'name="csrf" value="([0-9a-f]+)"', page).group(1)
+    return {'csrf': token, 'name': 'Pat Host', 'email': 'pat@example.org', 'type': 'objection',
+            'details': 'Please stop.', 'airbnb_profile': '', **fields}
+
+
+def _marks(db):
+    with db.connect() as c:
+        return c.execute('SELECT * FROM outreach_suppressions ORDER BY ts').fetchall()
+
+
+def test_form_objections_carry_the_request_ref_show_in_settings_and_an_admin_can_undo_them(web, db):
+    from app import store
+    store.suppress({'company_number': '00000009'}, ALICE)  # a user's own mark, made earlier: never undone by a request
+    r = _request(web['anon'], airbnb_profile=PROFILE, company_number='00000009')
+    ref = re.search(r'PR-\d{6}-[0-9A-F]{6}', r.text).group(0)
+    other = re.search(r'PR-\d{6}-[0-9A-F]{6}', _request(client_for(), airbnb_profile=PROFILE.replace('31337', '42')).text).group(0)
+    tagged = [m for m in _marks(db) if m['request_ref'] == ref]
+    assert len(tagged) == 1 and tagged[0]['owner_id'] is None  # the profile; the company was already on the list
+    assert store.unsuppressed([{'airbnb_profile': PROFILE}]) == []  # honoured at once
+    settings = web['admin'].get('/settings').text.split('id="requests-card"', 1)[1].split('</section>', 1)[0]
+    row = settings.split(f'data-request="{ref}"', 1)[1].split('</li>', 1)[0]
+    assert '1 do-not-contact entry' in row and f'class="btn btn-secondary btn-sm req-unsuppress" data-ref="{ref}"' in row
+    assert post(web['alice'], '/api/privacy-requests/unsuppress', {'ref': ref}).status_code == 403
+    assert post(web['admin'], '/api/privacy-requests/handled', {'ref': ref}).status_code == 200
+    settings = web['admin'].get('/settings').text.split('id="requests-card"', 1)[1].split('</section>', 1)[0]
+    assert f'data-ref="{ref}"' in settings  # still visible and undoable once the request is closed
+    r = post(web['admin'], '/api/privacy-requests/unsuppress', {'ref': ref})
+    assert r.status_code == 200 and r.json()['removed'] == 1
+    assert store.unsuppressed([{'airbnb_profile': PROFILE}]) == [{'airbnb_profile': PROFILE}]
+    assert store.unsuppressed([{'company_number': '00000009'}]) == []  # the user's mark stays
+    assert [m['request_ref'] for m in _marks(db) if m['request_ref']] == [other]  # the other request is untouched
+    events = [(e['action'], e['actor'], e['detail']) for e in store.admin_events()]
+    assert ('request_unsuppress', 'operator@example.test', {'ref': ref, 'rows': 1}) in events
+    assert post(web['admin'], '/api/privacy-requests/unsuppress', {'ref': ref}).status_code == 404
+    assert 'Do-not-contact from a privacy request undone' in web['admin'].get('/settings').text
+
+
+# ---------------- S3: erasure keeps a keyed hash of the email so unsuppress still works ----------------
+
+def test_marks_of_an_erased_account_can_still_be_undone_by_its_email(owners, db):
+    import time
+    from app import admin, retention, store
+    store.suppress({'company_number': '00000001'}, ALICE)
+    store.suppress({'company_number': '00000002'})  # an objection through the form: no account
+    admin.erase(ALICE)
+    marks = _marks(db)
+    assert [m['owner_id'] for m in marks] == [None, None] and ALICE not in json.dumps(marks)
+    assert marks[0]['owner_hash'] and marks[1]['owner_hash'] is None
+    assert admin.main(['unsuppress', ALICE]) == 0
+    assert store.unsuppressed([{'company_number': '00000001'}]) == [{'company_number': '00000001'}]
+    assert store.unsuppressed([{'company_number': '00000002'}]) == []
+    assert ('unsuppress', {'rows': 1}) in [(e['action'], e['detail']) for e in store.admin_events()]
+    assert ALICE not in json.dumps([e['detail'] for e in store.admin_events()], default=str)
+    store.suppress({'company_number': '00000003'}, BOB)
+    admin.erase(BOB)
+    retention.run(now=time.time() + 91 * 86400)
+    assert all(m['owner_hash'] is None and m['owner_id'] is None for m in _marks(db))  # the link goes after 90 days
+
+
+# ---------------- N2: a host who objected is not offered as someone to contact on a reel's page ----------------
+
+HOSTED = r'''
+import json, pathlib, sys
+d = pathlib.Path(sys.argv[1])
+(d / 'a.mp4').write_bytes(b'primary'); (d / 'b.mp4').write_bytes(b'small')
+print(json.dumps({'result': {'video': str(d / 'a.mp4'), 'video_720': str(d / 'b.mp4'), 'duration': 31,
+      'listing': {'url': 'https://www.airbnb.co.uk/rooms/4242', 'title': 'Sea view flat', 'city': 'Brighton', 'host': 'Sam',
+                  'host_id': '777'}}}), flush=True)
+'''
+
+
+def _hosted_reel(owners, google):
+    import sys
+    from app import worker
+    connect(owners, google)
+    job = jobs.admit(ALICE, URL, {'message': 'Hi {host_name}, I made a reel of {listing_title}.'})
+    worker.process(jobs.claim('w', 30), lambda j, d: [sys.executable, '-c', HOSTED, str(d)])
+    return job['id']
+
+
+def test_the_listing_page_scrape_keeps_the_hosts_airbnb_id_for_the_reel(airbnb_net, db):
+    from app import pipeline
+    assert pipeline.scrape_listing(URL)['host_id'] == '987654321'  # pdpContext.hostId, as cohost.py reads it
+    assert 'host_id' in pipeline.LISTING_KEYS and 'host' in pipeline.LISTING_KEYS
+
+
+def test_a_host_who_objected_is_not_shown_as_someone_to_contact_on_the_reel_page(owners, google, db):
+    jid = _hosted_reel(owners, google)
+    alice = client_for(owners['alice'])
+    assert jobs.get(ALICE, jid)['meta']['listing']['host_id'] == '777'
+    page = alice.get(f'/jobs/{jid}').text
+    assert 'id="host-card"' in page and 'Hi Sam, I made a reel' in page and '/contact_host/4242/' in page
+    _request(client_for(), airbnb_profile='https://www.airbnb.co.uk/users/show/777')  # the host objects
+    page = alice.get(f'/jobs/{jid}').text
+    assert 'id="host-card"' not in page and 'Hi Sam' not in page and '/contact_host/' not in page and 'Host message' not in page
+    view = alice.get(f'/api/jobs/{jid}').json()
+    assert view['host_suppressed'] is True and view['contact_url'] is None and not view['message_final'] and not view['message']
+    js = alice.get('/static/app.js').text
+    assert 'host_suppressed' in js  # the live page hides the card too when the job finishes after the objection
+
+
+def test_the_hosts_id_goes_with_the_host_name_after_30_days(owners, google, db):
+    import time
+    from app import retention
+    jid = _hosted_reel(owners, google)
+    with db.connect() as c:
+        c.execute('UPDATE jobs SET finished_at=%s WHERE id=%s', (time.time() - 31 * 86400, jid))
+    retention.run()
+    listing = jobs.get(ALICE, jid)['meta']['listing']
+    assert 'host' not in listing and 'host_id' not in listing and listing['title'] == 'Sea view flat'
