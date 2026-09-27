@@ -37,7 +37,7 @@ with every current feature still working (189 tests stay green, all live routes 
 ## Phase 2 - lawful growth (owner decisions taken 27 Sep 2026 12:05 BST, no evasion)
 Decisions: keep every feature; remove legal blockers lawfully; no proxies/auto-messaging/fake consent.
 - [ ] B2B prospects from the Companies House bulk register (company data only; PECR reg 22 does not cover corporate subscribers; reg 23 identity + opt-out) - feature/b2b-companies
-- [ ] "Your own photos" reels via the customer's own Drive + ownership confirmation for listing links (reduces Airbnb Terms/copyright exposure) - feature/own-photos
+- [-] DROPPED by owner 27 Sep 12:16 BST: "Your own photos" + ownership tick box (feature/own-photos will not be merged; Airbnb link flow stays unchanged). Replaced by: sourced research on fetching public Airbnb pages (compliance/2026-09-27_public-data-scraping-legality.md).
 - [ ] Referral programme: link only, no cookie, no messaging by us, +1 video each on first delivered reel, guardrails - feature/referrals
 - [ ] Daily invoice backup to an S3 bucket in ap-south-1 (Income-tax Rules 2026 r.46(8)); off until env set - feature/india-invoice-backup
 - [ ] Each branch reviewed (security/privacy, legal, correctness) and confirmed findings fixed; merged; privacy notice updated; tests green; deployed; live checks
