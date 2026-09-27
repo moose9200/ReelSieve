@@ -24,6 +24,7 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, PlainTe
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.formparsers import MultiPartException, MultiPartParser
 from starlette.middleware.base import BaseHTTPMiddleware
 
@@ -148,10 +149,14 @@ class Gate(BaseHTTPMiddleware):
             return RedirectResponse('/login?next=' + quote(target), status_code=303)
         if request.method not in ('GET', 'HEAD', 'OPTIONS') and not path.startswith('/api/billing/webhook/'):
             sent = request.headers.get('x-csrf-token', '')
-            if not sent and request.headers.get('content-type', '').startswith(('application/x-www-form-urlencoded', 'multipart/form-data')):
-                form = await request.form()
-                sent = form.get('csrf') or ''
-                request.scope['_form'] = dict(form)
+            # /api/ callers are the page's scripts, which always send the header: the body is never read here.
+            if not sent and not path.startswith('/api/') and \
+                    request.headers.get('content-type', '').startswith(('application/x-www-form-urlencoded', 'multipart/form-data')):
+                try:
+                    request.scope['_form'] = await _small_form(request)
+                except HTTPException as e:
+                    return HTMLResponse(e.detail, status_code=e.status_code)
+                sent = request.scope['_form'].get('csrf') or ''
             basis = _csrf_basis(request)
             if (fresh and not session) or not auth.csrf_ok(basis, sent):
                 if path.startswith('/api/'):
@@ -185,8 +190,22 @@ async def security_headers(request, call_next):
     return response
 
 
+FORM_MAX = 64 * 1024  # sign-in, sign-up and privacy forms; files only ever arrive through the photo upload API
+
+
+async def _small_form(request):
+    """An HTML form body: small, read in memory, never a file part, so nothing reaches disk before sign-in and CSRF."""
+    length = request.headers.get('content-length', '')
+    if not length.isdigit() or not 0 < int(length) <= FORM_MAX:
+        raise HTTPException(413, 'This form is too large. Reload the page and try again.')
+    try:
+        return dict(await request.form(max_files=0, max_fields=50))
+    except (MultiPartException, StarletteHTTPException):  # Starlette turns a refused part into its own 400
+        raise HTTPException(400, 'This form could not be read. Reload the page and try again.')
+
+
 async def _form(request):
-    return request.scope.get('_form') or dict(await request.form())
+    return request.scope['_form'] if '_form' in request.scope else await _small_form(request)
 
 
 def _set_session(resp, request, user, long=True):
@@ -238,8 +257,9 @@ LLMS_TXT = """# ReelSieve
 
 > ReelSieve, made by Braivex, turns an Airbnb listing link into a cinematic walkthrough video built from the listing's own photos and real guest reviews.
 
-It works from an Airbnb listing link, the kind with /rooms/ in the address, or from 6 to 40 photos the customer uploads.
-Each video has an intro, a rating card, the rooms in walking order with captions, a real guest review card and an outro.
+It works from an Airbnb listing link, the kind with /rooms/ in the address, or from {min_photos} to {max_photos} photos the customer uploads.
+Link reels have an intro, a rating card when the listing has reviews, the rooms in walking order with captions, a real guest review card and an outro.
+Photo reels have an intro, the rooms in walking order with captions and an outro, and can show one guest quote the customer provides.
 There are two styles: 16:9 cinematic and 9:16 vertical.
 Every listing photo is scored and the best frame for each room is used.
 Paid plans can add AI camera motion.
@@ -298,7 +318,8 @@ def llms_txt():
     """https://llmstxt.org format. Prices come from plans.PLANS on every request."""
     lines = '\n'.join(f"- {p['name']}: {p['price_label']} for {p['videos']} videos" if p['price_usd'] is not None
                       else f"- {p['name']}: priced on request" for p in plans.public_plans())
-    return PlainTextResponse(LLMS_TXT.format(plans=lines, base=site_url()))
+    return PlainTextResponse(LLMS_TXT.format(plans=lines, base=site_url(), min_photos=photos.MIN_PHOTOS,
+                                             max_photos=photos.MAX_PHOTOS))
 
 
 # ---------------- identity ----------------
@@ -509,7 +530,7 @@ def landing(request: Request):
     return tpl.TemplateResponse(request, 'landing.html', {
         'signed_in': bool(request.state.user), 'user': request.state.user, 'plans': plans.public_plans(),
         'products': plans.PRODUCTS, 'sample_video': os.getenv('SAMPLE_VIDEO_URL') or None,
-        'sample_poster': os.getenv('SAMPLE_POSTER_URL') or None})
+        'sample_poster': os.getenv('SAMPLE_POSTER_URL') or None, 'limits': photos})
 
 
 @app.get('/privacy', response_class=HTMLResponse)
@@ -817,8 +838,13 @@ async def create_job(request: Request):
 
 
 PHOTO_BODY_MAX = photos.MAX_TOTAL + 1024 * 1024  # the photos plus the typed fields and multipart framing
+TOO_BIG = 'Your photos add up to more than 250 MB. Choose fewer or smaller photos.'
+PHOTO_SLOT_WAIT = 20         # seconds a request waits for a free upload slot before it is told to try again
+PHOTO_MIN_RATE = 64 * 1024   # bytes a second an upload must average (after the grace period) to keep its slot
+PHOTO_READ_GRACE = 30        # seconds before that rate counts: connection set-up and a slow first chunk
 # ponytail: each upload is held in memory (up to ~250 MB); two at a time bounds the web process. Raise with its memory.
 _photo_slots = asyncio.Semaphore(int(os.getenv('PHOTO_UPLOAD_SLOTS', '2')))
+_uploading = set()  # owners with an upload in progress in this (single) web process: one at a time each
 
 
 class _PhotoForm(MultiPartParser):
@@ -826,40 +852,65 @@ class _PhotoForm(MultiPartParser):
 
 
 async def _capped(stream, limit):
-    got = 0
-    async for chunk in stream:
+    """The body, refused past `limit` bytes or once it falls behind PHOTO_MIN_RATE: a stalled or trickling client
+    cannot hold an upload slot (uvicorn itself has no body-read timeout)."""
+    got, start, chunks = 0, time.monotonic(), stream.__aiter__()
+    while True:
+        try:
+            async with asyncio.timeout(max(0.01, start + PHOTO_READ_GRACE + got / PHOTO_MIN_RATE - time.monotonic())):
+                chunk = await chunks.__anext__()
+        except StopAsyncIteration:
+            return
+        except TimeoutError:
+            raise HTTPException(408, 'The upload was too slow and has stopped. Check your connection and try again.')
         got += len(chunk)
         if got > limit:
-            raise HTTPException(413, 'Your photos add up to more than 250 MB. Choose fewer or smaller photos.')
+            raise HTTPException(413, TOO_BIG)
         yield chunk
 
 
 @app.post('/api/jobs/photos')
 async def create_photo_job(request: Request):
-    """'Your own photos': one multipart request with 6-40 photos and the typed facts (app.jobs.admit_photos)."""
-    if request.scope.get('_form') is not None:  # already read by the CSRF gate: not sent by the page's script
-        raise HTTPException(400, 'Reload the page and try again')
-    if int(request.headers.get('content-length') or 0) > PHOTO_BODY_MAX:
-        raise HTTPException(413, 'Your photos add up to more than 250 MB. Choose fewer or smaller photos.')
-    async with _photo_slots:
+    """'Your own photos': one multipart request with the photos and the typed facts (app.jobs.admit_photos)."""
+    length = request.headers.get('content-length', '')
+    if length.isdigit() and int(length) > PHOTO_BODY_MAX:
+        raise HTTPException(413, TOO_BIG)
+    user = request.state.user
+    if user in _uploading:
+        raise HTTPException(429, 'You are already uploading photos for a reel. Wait for that upload to finish.')
+    _uploading.add(user)
+    try:
         try:
-            form = await _PhotoForm(request.headers, _capped(request.stream(), PHOTO_BODY_MAX), max_files=photos.MAX_PHOTOS + 1,
-                                    max_fields=40, max_part_size=64 * 1024).parse()
-        except MultiPartException:
-            raise HTTPException(400, 'Choose 6 to 40 photos, each under 15 MB, and try again')
+            async with asyncio.timeout(PHOTO_SLOT_WAIT):
+                await _photo_slots.acquire()
+        except TimeoutError:
+            raise HTTPException(503, 'Photo uploads are busy right now. Try again in a minute.')
         try:
-            files = [(f.filename or '', await f.read()) for f in form.getlist('photos') if not isinstance(f, str)]
-            fields = {k: form.get(k) for k in ('title', 'location', 'highlights', 'style', 'ai_resolution')}
-            fields.update(ai_motion=form.get('ai_motion') == 'true', delete_inputs=form.get('delete_inputs') != 'false',
-                          rooms=form.getlist('room'),
-                          quotes=[{'text': t, 'stars': s} for t, s in zip(form.getlist('quote_text'), form.getlist('quote_stars'))])
-            j = await run_in_threadpool(jobs.admit_photos, request.state.user, fields, files,
-                                        request.headers.get('idempotency-key'), _ip(request))
-        except jobs.AdmissionError as e:
-            raise HTTPException(e.status, str(e))
+            try:
+                form = await _PhotoForm(request.headers, _capped(request.stream(), PHOTO_BODY_MAX),
+                                        max_files=photos.MAX_PHOTOS + 1, max_fields=photos.MAX_PHOTOS + 20,
+                                        max_part_size=64 * 1024).parse()
+            except MultiPartException:
+                raise HTTPException(400, f'Choose {photos.MIN_PHOTOS} to {photos.MAX_PHOTOS} photos, each under 15 MB, '
+                                         'and try again')
+            try:
+                files = [(f.filename or '', await f.read()) for f in form.getlist('photos') if not isinstance(f, str)]
+                fields = {k: form.get(k) for k in ('title', 'location', 'highlights', 'style', 'ai_resolution')}
+                fields.update(ai_motion=form.get('ai_motion') == 'true', delete_inputs=form.get('delete_inputs') != 'false',
+                              quotes_real=form.get('quotes_real') == 'true', rooms=form.getlist('room'),
+                              quotes=[{'text': t, 'stars': s} for t, s in zip(form.getlist('quote_text'), form.getlist('quote_stars'))])
+            finally:
+                await form.close()  # the parser's copy goes now: only `files` is held while the photos are processed
+            try:
+                j = await run_in_threadpool(jobs.admit_photos, user, fields, files,
+                                            request.headers.get('idempotency-key'), _ip(request))
+            except jobs.AdmissionError as e:
+                raise HTTPException(e.status, str(e))
         finally:
-            await form.close()
-    return {'id': j['id'], 'account': plans.account_view(request.state.user)}
+            _photo_slots.release()
+    finally:
+        _uploading.discard(user)
+    return {'id': j['id'], 'account': plans.account_view(user)}
 
 
 @app.get('/api/jobs/{jid}')
