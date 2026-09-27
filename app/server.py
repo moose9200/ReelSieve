@@ -49,11 +49,12 @@ SETTINGS = [('HF_KEY', True, 'Higgsfield API key — enables AI camera motion (b
             ('BILLING_WEBHOOK_SECRET', True, 'Secret your payment provider signs webhooks with'),
             ('STRIPE_SECRET_KEY', True, 'Stripe secret or restricted key (Checkout Sessions: write); card checkout needs this and the webhook secret'),
             ('STRIPE_WEBHOOK_SECRET', True, 'Signing secret (whsec_…) of the Stripe webhook endpoint for checkout.session.completed'),
-            ('INVOICE_BACKUP_BUCKET', False, 'S3 bucket in India for the daily invoice backup (Income-tax Rules 2026 r.46(8)); the backup is off until the bucket and both keys are set'),
-            ('INVOICE_BACKUP_REGION', False, 'Bucket region: ap-south-1 (Mumbai, the default) or ap-south-2 (Hyderabad)'),
-            ('INVOICE_BACKUP_ACCESS_KEY_ID', True, 'Access key ID of the IAM user allowed only s3:PutObject on invoices/*'),
-            ('INVOICE_BACKUP_SECRET_ACCESS_KEY', True, 'Secret access key of that IAM user'),
-            ('INVOICE_BACKUP_ENDPOINT', False, 'Optional: https:// endpoint of another S3-compatible store whose servers are in India'),
+            ('INVOICE_BACKUP_BUCKET', False, 'Worker service: S3 bucket in India for the daily invoice backup (Income-tax Rules 2026 r.46(8)), with a lifecycle rule deleting invoices/ within 90 days and versioning off; the backup is off until the bucket and both keys are set'),
+            ('INVOICE_BACKUP_REGION', False, 'Worker service: bucket region, ap-south-1 (Mumbai, the default) or ap-south-2 (Hyderabad)'),
+            ('INVOICE_BACKUP_ACCESS_KEY_ID', True, 'Worker service: access key ID of an IAM user allowed only s3:PutObject on invoices/* when If-None-Match is sent, and s3:GetLifecycleConfiguration on the bucket'),
+            ('INVOICE_BACKUP_SECRET_ACCESS_KEY', True, 'Worker service: secret access key of that IAM user'),
+            ('INVOICE_BACKUP_ENDPOINT', False, 'Worker service, optional: https:// S3 endpoint. An AWS one must name the region (https://s3.ap-south-1.amazonaws.com); any other needs INVOICE_BACKUP_ENDPOINT_IN_INDIA'),
+            ('INVOICE_BACKUP_ENDPOINT_IN_INDIA', False, 'Worker service: set to 1 to confirm a non-AWS INVOICE_BACKUP_ENDPOINT keeps files on servers in India; the app cannot check this'),
             ('BILLING_NOTE', False, 'Line shown to customers who choose invoice'),
             ('DEFAULT_MESSAGE', False, 'Default host message template')]
 
