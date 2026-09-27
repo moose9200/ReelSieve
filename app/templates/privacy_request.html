@@ -31,6 +31,8 @@
         <p class="hint">If you have a ReelSieve account, use the email you signed up with.</p></div>
       <div class="field"><label for="pr-profile">Your Airbnb profile link (optional)</label><input type="url" id="pr-profile" name="airbnb_profile" value="{{ f.airbnb_profile or '' }}" placeholder="https://www.airbnb.co.uk/users/show/…" autocomplete="off" spellcheck="false">
         <p class="hint">Airbnb hosts: with an objection to outreach, we stop every ReelSieve user from finding or queueing you, straight away.</p></div>
+      <div class="field"><label for="pr-company">Company number (optional)</label><input type="text" id="pr-company" name="company_number" value="{{ f.company_number or '' }}" placeholder="01234567" maxlength="12" autocomplete="off" spellcheck="false">
+        <p class="hint">UK companies on the Companies House register: with an objection to outreach, we stop every ReelSieve user from finding or queueing your company, straight away.</p></div>
       {% if error %}<p class="hint hint-warn" role="alert">{{ error }}</p>{% endif %}
       <div class="actions"><button type="submit" class="btn btn-primary btn-wide">Send request</button></div>
     </form>

@@ -83,6 +83,51 @@
   <p class="hint">Tokens: <code>{name}</code> <code>{company}</code> <code>{city}</code>. Connection notes are capped at 300 characters — the counter turns amber past 300.</p>
 </section>
 
+<section class="card" id="companies-card">
+  <p class="eyebrow">COMPANIES HOUSE</p>
+  <div class="section-head"><h2>UK property companies (business to business)</h2><span class="pill pill-skipped">Companies only</span></div>
+  <p class="hint">Limited companies and LLPs on the official Companies House register whose business is holiday and short-stay accommodation, or managing property for others. Company details only: no officer or shareholder details. {% if b2b_snapshot %}From the register snapshot of {{ b2b_snapshot }}, refreshed monthly.{% else %}The first register snapshot has not been loaded yet, so there is nothing to search.{% endif %}</p>
+
+  <div class="or-find-row or-find-row-b2b">
+    <div class="field">
+      <label for="b2b-place">Town or postcode area</label>
+      <input type="text" id="b2b-place" placeholder="Bournemouth, BH or BH1" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field">
+      <label for="b2b-category">Category</label>
+      <select id="b2b-category">
+        <option value="">All property companies</option>
+        {%- for key, c in (b2b_categories or {}).items() %}<option value="{{ key }}">{{ c[0]|capitalize }}</option>{% endfor -%}
+      </select>
+    </div>
+    <button type="button" class="btn btn-primary" id="b2b-find">Find companies</button>
+  </div>
+
+  <p class="or-statusline"><span class="form-status" id="b2b-status" role="status" aria-live="polite"></span></p>
+  <div id="b2b-results" class="or-results"></div>
+  <div class="actions or-mt hidden" id="b2b-pager">
+    <button type="button" class="btn btn-secondary btn-sm" id="b2b-prev">Previous</button>
+    <span class="hint" id="b2b-page" aria-live="polite"></span>
+    <button type="button" class="btn btn-secondary btn-sm" id="b2b-next">Next</button>
+  </div>
+</section>
+
+<section class="card" id="b2b-email-card">
+  <p class="eyebrow">COMPANIES HOUSE</p>
+  <div class="section-head"><h2>Business email</h2><span class="pill pill-skipped">You send each one</span></div>
+  <p class="hint" id="b2b-consent">When does a business email need consent? You can email a limited company or LLP without asking first, as long as you say who you are and give an easy way to opt out. This covers the company's own email addresses, such as those on its own website domain. A personal address such as Gmail belongs to an individual, so email it only if they have agreed. Sole traders and ordinary partnerships count as individuals, so email them only if they have agreed to hear from you. Whoever you write to, stop as soon as they ask. If you write to a named person at a company, data protection law covers their details too.</p>
+  <div class="grid-3 b2b-sender or-mt">
+    <div class="field"><label for="b2b-sender-name">Your name</label><input type="text" id="b2b-sender-name" autocomplete="name" placeholder="Priya Shah" value="{{ b2b_sender.name or '' }}"></div>
+    <div class="field"><label for="b2b-sender-business">Business name (required if you are writing for a business)</label><input type="text" id="b2b-sender-business" autocomplete="organization" placeholder="Reel Studio" value="{{ b2b_sender.business or '' }}"></div>
+    <div class="field"><label for="b2b-sender-email">Reply email</label><input type="email" id="b2b-sender-email" autocomplete="email" value="{{ b2b_sender.email or request.state.user or '' }}"></div>
+  </div>
+  <div class="field or-mt">
+    <label for="b2b-template">What each company receives</label>
+    <textarea id="b2b-template" rows="7" spellcheck="true">{{ b2b_template or '' }}</textarea>
+  </div>
+  <p class="hint">Token: <code>{company}</code>. <b>Queue</b> adds the company and its finished email to the tracker, where you copy it into your own email. Every email ends with your name, business and reply email, then an opt-out line: “If you would rather not hear from me again, reply "unsubscribe" or email [your reply email] and I will not contact you again.” ReelSieve always adds that ending, so it cannot be left out by mistake. When you queue, your name, business name and reply email are saved to your account so they are filled in next time. Deleting your account deletes them.</p>
+</section>
+
 <section class="card" id="tracker-card">
   <div class="section-head">
     <h2>Tracker</h2>
@@ -101,6 +146,7 @@
         <option value="">All channels</option>
         <option value="cohost">Co-host</option>
         <option value="linkedin">LinkedIn</option>
+        <option value="company">Company</option>
       </select>
     </div>
     <div class="field">
@@ -133,7 +179,7 @@
             <span class="or-when" data-ts="{{ r.ts }}">{{ r.ts }}</span>
             {% if r.sent_at %}<small class="or-sub">sent <span class="or-when" data-ts="{{ r.sent_at }}">{{ r.sent_at }}</span></small>{% endif %}
           </td>
-          <td data-label="Channel"><span class="or-chan">{{ 'Co-host' if r.channel == 'cohost' else ('LinkedIn' if r.channel == 'linkedin' else (r.channel or '—')) }}</span></td>
+          <td data-label="Channel"><span class="or-chan">{{ {'cohost': 'Co-host', 'linkedin': 'LinkedIn', 'company': 'Company'}.get(r.channel, r.channel or '—') }}</span></td>
           <td data-label="Name">
             <span class="or-name">{{ r.name or '—' }}</span>
             <small class="or-sub or-note{% if not r.note %} hidden{% endif %}">{{ r.note or '' }}</small>
@@ -164,7 +210,7 @@
   </div>
   <p class="empty hidden" id="tr-none">Nothing matches those filters.</p>
   {% else %}
-  <p class="empty">Nothing yet. Find co-hosts above, or build a LinkedIn list.</p>
+  <p class="empty">Nothing yet. Find co-hosts above, build a LinkedIn list, or queue a UK property company.</p>
   {% endif %}
 </section>
 {% endblock %}

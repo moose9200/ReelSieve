@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 
-from app import gdrive, invoices, jobs, retention, store
+from app import companies, gdrive, invoices, jobs, retention, store
 
 LEASE = int(os.getenv('WORKER_LEASE_SECONDS', '90'))
 BEAT = max(1.0, LEASE / 6)
@@ -226,11 +226,25 @@ def process(job, command=render_command):
         jobs.mark_cleaned(job['id'], None if _remove(d) else 'scratch directory could not be deleted')
 
 
+_refreshing = threading.Lock()
+
+
+def _refresh_companies():
+    """A monthly Companies House load takes minutes, so it runs beside job claims, one at a time in this process
+    (and on one replica: an advisory lock). refresh never raises. A load cut off by shutdown rolls back."""
+    if _refreshing.acquire(blocking=False):
+        try:
+            companies.refresh()
+        finally:
+            _refreshing.release()
+
+
 def run_once(worker, command=render_command):
     jobs.recover_stale()
     sweep()
     if time.time() - _last_purge[0] > 3600:
         _last_purge[0] = time.time()  # first: a failing purge must never stop jobs being claimed; it retries next hour
+        threading.Thread(target=_refresh_companies, name='companies-refresh', daemon=True).start()
         for task in (store.purge_signals, retention.run, invoices.backup):
             try:  # one failing task never skips the others (the India backup is a legal duty)
                 task()

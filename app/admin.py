@@ -6,6 +6,7 @@
     python -m app.admin set-plan <email> <plan> <credits>   # e.g. give free credits
     python -m app.admin deactivate <email>       # stops their jobs, revokes their Drive grant, keeps history
     python -m app.admin erase <email>            # erases their personal data; paid orders kept for tax records
+    python -m app.admin unsuppress <email>       # undoes the "Do not contact" marks that account made (misuse only)
 """
 import secrets
 import sys
@@ -63,7 +64,9 @@ def erase(email, by=None, via=None):
         c.execute("UPDATE drive_connections SET status='disconnected',credentials=NULL,google_sub=NULL,google_email=NULL,"
                   'scope=NULL,folder_id=NULL,connected_at=NULL,updated=%s WHERE owner_id=%s', (now, owner))
         c.execute('UPDATE usage SET listing_key=NULL,fp_hash=NULL WHERE owner_id=%s', (owner,))  # ip_hash: 90-day abuse window
-        c.execute('UPDATE accounts SET ip_hash=NULL,fp_hash=NULL,note=NULL,referral_code=NULL WHERE owner_id=%s', (owner,))
+        c.execute('UPDATE accounts SET ip_hash=NULL,fp_hash=NULL,note=NULL,referral_code=NULL,b2b_sender=NULL WHERE owner_id=%s', (owner,))
+        # the objections they recorded stay honoured; only the link to this account goes
+        c.execute('UPDATE outreach_suppressions SET owner_id=NULL WHERE owner_id=%s', (owner,))
         c.execute("DELETE FROM orders WHERE owner_id=%s AND status IN ('pending','cancelled')", (owner,))
         # Paid, or reported paid and awaiting confirmation: the tax record needs the payer's email if the money clears.
         c.execute("UPDATE orders SET note=NULL,meta=NULL,pay_link=NULL,billing_email=COALESCE(billing_email,%s) WHERE owner_id=%s",
@@ -72,6 +75,16 @@ def erase(email, by=None, via=None):
                   'session_version=session_version+1 WHERE id=%s',
                   (f'deleted-{owner}@erased.invalid', secrets.token_hex(16), 'erased:' + secrets.token_hex(32), now, owner))
     return warning
+
+
+def unsuppress(email):
+    """Undo the "Do not contact" marks one account made, e.g. someone hiding companies from every other customer.
+    Objections through the privacy form have no account and are never touched; marks older than 90 days have lost
+    their account link (app/retention.py) and stay."""
+    with database.connect() as c:
+        n = c.execute('DELETE FROM outreach_suppressions WHERE owner_id=%s', (database.user_id(auth.norm(email), c),)).rowcount
+        store.admin_event('unsuppress', None, auth.norm(email), conn=c, rows=n)
+    return n
 
 
 def main(argv):
@@ -107,6 +120,14 @@ def main(argv):
             print(e, file=sys.stderr)
             return 1
         print('erased', auth.norm(argv[1]) + (f' (warning: {warning})' if warning else ''))
+        return 0
+    if argv[:1] == ['unsuppress'] and len(argv) == 2:
+        try:
+            n = unsuppress(argv[1])
+        except ValueError as e:
+            print(e, file=sys.stderr)
+            return 1
+        print('removed', n, 'do-not-contact marks made by', auth.norm(argv[1]))
         return 0
     if len(argv) != 2 or argv[0] not in ('create-admin', 'set-password'):
         print(__doc__.strip(), file=sys.stderr)

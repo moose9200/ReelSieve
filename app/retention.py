@@ -25,6 +25,7 @@ ERASED_UNPAID_ORDER_DAYS = 90  # a payment reported before erasure that never cl
 INVOICE_BACKUP_RUN_YEARS = 2   # records of the daily India backup (app/invoices.py); no personal data
 REFERRAL_REWARDED_YEARS = 2    # after the reward
 REFERRAL_UNREWARDED_YEARS = 1  # after signup, when never rewarded
+SUPPRESSION_OWNER_DAYS = 90    # which account marked "Do not contact"; the suppression itself is kept for good
 
 # A job keeps the customer's own reel history; only other people's data goes. Legacy jobs stored the finished
 # host message as the customer's template too.
@@ -55,6 +56,8 @@ def run(now=None):
              now - REFERRAL_UNREWARDED_YEARS * YEAR),
             ('legacy_archives', 'DELETE FROM legacy_archives WHERE created<%s', now - keep_archive * DAY),
             ('invoice_backups', 'DELETE FROM invoice_backups WHERE ts<%s', now - INVOICE_BACKUP_RUN_YEARS * YEAR),
+            ('suppression_owner', 'UPDATE outreach_suppressions SET owner_id=NULL WHERE owner_id IS NOT NULL AND ts<%s',
+             now - SUPPRESSION_OWNER_DAYS * DAY),
         ]}
         due = [r['email'] for r in c.execute('SELECT email FROM users WHERE NOT active AND erased_at IS NULL AND deactivated_at<%s',
                                              (now - DEACTIVATED_DAYS * DAY,)).fetchall()]
