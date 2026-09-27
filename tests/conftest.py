@@ -11,6 +11,17 @@ from cryptography.fernet import Fernet
 from fakes import Google
 
 
+@pytest.fixture(autouse=True)
+def no_companies_house(monkeypatch):
+    """No test ever reaches Companies House: the worker's hourly refresh would otherwise download the real snapshot."""
+    from app import companies
+
+    def refuse(*_args, **_kw):
+        raise RuntimeError('network disabled in tests')
+    monkeypatch.setattr(companies, '_get_page', refuse)
+    monkeypatch.setattr(companies, '_download', refuse)
+
+
 @pytest.fixture
 def db(monkeypatch, tmp_path):
     dsn = os.environ.get('TEST_DATABASE_URL')
