@@ -150,3 +150,20 @@ def test_terms_pin_photo_rights_ownership_and_the_listing_link_note(pages):
     assert "Do not publish or share a reel of someone else's listing without the host's permission" in terms
     assert "Do not publish or share that reel without the host's permission" in pages('/app', 'alice')
     assert 'full rights' not in terms + pages('/')
+
+
+def test_sign_in_throttle_counts_a_whole_ipv6_network_but_keeps_ipv4_addresses_apart(db):
+    from app import auth
+    for i in range(5):
+        auth.record_fail(f'2001:db8:1:2::{i + 1}')
+    assert auth.too_many('2001:db8:1:2::99')          # same /64, another address: still limited
+    assert not auth.too_many('2001:db8:1:3::1')       # another /64
+    for i in range(5):
+        auth.record_fail('203.0.113.7')
+    assert auth.too_many('203.0.113.7') and not auth.too_many('203.0.113.8')  # shared offices are not locked out
+
+
+def test_default_host_message_does_not_claim_the_sender_runs_reelsieve():
+    from app import hostmsg
+    assert 'I run ReelSieve' not in hostmsg.DEFAULT_MESSAGE and 'Braivex' not in hostmsg.DEFAULT_MESSAGE
+    assert '{host_name}' in hostmsg.DEFAULT_MESSAGE and '{listing_title}' in hostmsg.DEFAULT_MESSAGE

@@ -2,6 +2,7 @@
 import base64
 import hashlib
 import hmac
+import ipaddress
 import os
 import re
 import secrets
@@ -144,6 +145,13 @@ def verify(user, pw):
 
 
 def _ip_key(ip, purpose='login'):
+    """IPv6: one /64 is one subscriber, and rotating within it must not reset the count. IPv4 stays per address so a
+    shared office or phone NAT is not locked out by one person's typos."""
+    try:
+        a = ipaddress.ip_address(str(ip))
+        ip = ipaddress.ip_network(f'{a}/64', strict=False) if a.version == 6 else a
+    except ValueError:
+        pass
     return hmac.new(secret().encode(), (purpose + '|' + str(ip)).encode(), hashlib.sha256).hexdigest()
 
 
