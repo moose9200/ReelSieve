@@ -1243,7 +1243,8 @@ def settings_view():
         v, default = (os.getenv(k) or '').strip(), SETTING_DEFAULTS.get(k)
         out.append({'key': k, 'configured': bool(v or default), 'secret': secret, 'hint': hint,
                     'value': '' if secret else (v or (default + ' (default)' if default else '')),
-                    'state': ('On' if airbnb.enabled() else 'Off') if k == 'AIRBNB_FETCH_ENABLED' else None})
+                    'state': ('On' if airbnb.enabled() else 'Off') if k == 'AIRBNB_FETCH_ENABLED' else
+                             'Default' if default and not v else None})
     return out
 
 

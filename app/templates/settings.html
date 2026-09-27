@@ -90,7 +90,7 @@
     <li class="config-row">
       <code>{{ s.key }}</code>
       {% set label = s.state or ('Set' if s.configured else 'Not set') %}
-      <span class="pill pill-sm {{ 'pill-done' if label in ('Set', 'On') else 'pill-neg' }}">{{ label }}</span>
+      <span class="pill pill-sm {{ 'pill-done' if label in ('Set', 'On', 'Default') else 'pill-neg' }}">{{ label }}</span>
       {% if s.value and not s.secret %}<span class="hint">{{ s.value[:120] }}</span>{% endif %}
       <p class="hint">{{ s.hint }}</p>
     </li>

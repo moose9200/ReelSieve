@@ -319,6 +319,7 @@ def test_admin_settings_show_the_switch_state_and_the_last_block(web, db, monkey
     monkeypatch.delenv('AIRBNB_FETCH_ENABLED', raising=False)
     rows = {s['key']: s for s in server.settings_view()}
     assert rows['AIRBNB_FETCH_ENABLED']['state'] == 'On' and rows['AIRBNB_BLOCK_COOLDOWN_MIN']['value'] == '30 (default)'
+    assert rows['AIRBNB_BLOCK_COOLDOWN_MIN']['state'] == 'Default' and rows['HF_KEY']['state'] is None
     monkeypatch.setenv('AIRBNB_FETCH_ENABLED', '0')
     config = web['admin'].get('/settings').text.split('id="config-card"', 1)[1]
     assert re.search(r'<code>AIRBNB_FETCH_ENABLED</code>\s*<span class="pill pill-sm pill-neg">Off</span>', config)
