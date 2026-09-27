@@ -13,7 +13,7 @@
     <li>Up to {{ account.max_seconds }} seconds per video</li>
     <li>{{ 'AI camera motion included' if account.ai_motion else 'AI camera motion on paid plans' }}</li>
     <li>Full HD 16:9 or 9:16 video, plus a 720p copy</li>
-    {% if account.bonus_videos %}<li>{{ account.bonus_videos }} bonus video{{ 's' if account.bonus_videos != 1 }} from invites, used first</li>{% endif %}
+    {% if account.bonus_videos and account.remaining is not none %}<li>{{ account.bonus_videos }} bonus video{{ 's' if account.bonus_videos != 1 }} from invites, used first</li>{% endif %}
   </ul>
   <div class="actions">
     <a class="btn btn-primary" href="/upgrade">{% if account.plan == 'free' %}Upgrade{% elif account.remaining is none %}See plans{% else %}Buy more videos{% endif %}</a>
@@ -25,7 +25,7 @@
 
 <section class="card" id="invite-card">
   <div class="section-head"><h2>Invite other hosts</h2><span class="pill {{ 'pill-done' if referral.rewarded else 'pill-skipped' }}">{{ referral.rewarded }} rewarded</span></div>
-  <p class="hint">When a host signs up through your link and their first reel reaches their Google Drive, you each get one bonus video. You can earn up to {{ referral.monthly_limit }} a month.</p>
+  <p class="hint">When a host signs up through your link and their first reel reaches their Google Drive, you each get one bonus video. You can earn up to {{ referral.monthly_limit }} a month. <a href="/terms">Conditions apply</a>.</p>
   <div class="field">
     <label for="ref-link">Your invite link</label>
     <div class="copy-row">
@@ -33,8 +33,9 @@
       <button type="button" class="btn btn-secondary" id="ref-copy">Copy link</button>
     </div>
   </div>
-  <p class="hint">Share it where hosts will see it: a post on your social media, your guest guidebook or your website. Please don't send it in emails, texts or direct messages to people who haven't asked to hear from you: unsolicited marketing messages are against UK law (PECR), and the person who sends them is responsible. We never message anyone for you.</p>
-  <p class="hint">Your code travels in the link only. We don't set a cookie or store anything in the browser of someone who opens it.</p>
+  <p class="hint">Share it in public posts, for example on your social media or your website. You get a reward when people sign up, so label those posts as an ad (for example #ad). Don't put it in Airbnb listings, guidebooks, house manuals or guest messages.</p>
+  <p class="hint">Only send it by email, text or direct message to someone who has asked you for it. Sending it to anyone else is unsolicited marketing, which UK law (PECR) forbids, and both you and ReelSieve can be held responsible. We never message anyone for you.</p>
+  <p class="hint">Your code travels in the link only. We don't set a referral or tracking cookie: the only cookie is the security cookie described in our <a href="/privacy">privacy notice</a>.</p>
 </section>
 
 <section class="card">

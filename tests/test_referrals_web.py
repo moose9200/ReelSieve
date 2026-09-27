@@ -19,6 +19,7 @@ def test_link_redirects_to_signup_with_the_code_and_stores_nothing_in_the_browse
     r = client_for().get('/r/' + code, follow_redirects=False)
     assert r.status_code == 303 and r.headers['location'] == '/signup?ref=' + code
     assert code not in ' '.join(r.headers.get_list('set-cookie'))
+    assert [c.split('=')[0] for c in r.headers.get_list('set-cookie')] == ['reelsieve_csrf']  # what the Account card says
     assert client_for().get('/r/not-a-code!', follow_redirects=False).headers['location'] == '/signup'
     page = client_for().get('/signup?ref=' + code)
     assert f'<input type="hidden" name="ref" value="{code}">' in page.text
@@ -85,14 +86,28 @@ def test_account_page_offers_the_link_with_plain_sharing_guidance_and_no_messagi
     card = page[page.index('id="invite-card"'):page.index('</section>', page.index('id="invite-card"'))]
     assert 'Invite other hosts' in card and f'value="https://www.reelsieve.braivex.com/r/{code}"' in card  # configured origin
     assert 'id="ref-copy"' in card and '0 rewarded' in card
-    for words in ('social media', 'guidebook', 'website', "don't send it", 'unsolicited'):
+    for words in ('public posts', 'social media', 'website', '#ad', "Don't put it in Airbnb listings, guidebooks",
+                  'someone who has asked you for it', 'both you and ReelSieve', 'security cookie'):
         assert words in card, words
+    for wrong in ('your guest guidebook', 'the person who sends them is responsible', "We don't set a cookie"):
+        assert wrong not in card, wrong
     for banned in ('mailto:', 'sms:', 'wa.me', 'navigator.share', 'type="email"', '<textarea'):
         assert banned not in card, banned
     js = web['alice'].get('/static/app.js').text
     assert 'ref-copy' in js and 'navigator.share' not in js
     assert 'Invites: your invite code' in web['anon'].get('/privacy').text  # the notice lists the new data
-    assert 'At most 10 rewards per inviter' in web['anon'].get('/terms').text
+    terms = web['anon'].get('/terms').text
+    for words in ('Neither of you gets a bonus video', '10 rewards', 'same Google account', '#ad', 'guidebooks'):
+        assert words in terms, words
+
+
+def test_bonus_videos_show_as_used_first_only_where_they_are_spent(web, db):
+    store.ensure_account(ALICE)
+    store.set_plan('operator@example.test', 'enterprise', 0)  # admins default to unlimited Enterprise
+    with db.connect() as c:
+        c.execute('UPDATE accounts SET bonus_videos=1')
+    assert '1 bonus video from invites, used first' in web['alice'].get('/account').text
+    assert 'from invites, used first' not in web['admin'].get('/account').text
 
 
 def test_admin_settings_show_programme_totals(web, db):

@@ -879,7 +879,7 @@
           var pay = document.createElement("button"); pay.type = "button"; pay.className = "btn btn-primary btn-sm"; pay.textContent = "Mark paid";
           pay.addEventListener("click", function () {
             if (!confirm("Mark " + o.ref + " paid and grant " + o.plan + " credits to " + o.user + "?")) return;
-            postJSON("/api/billing/settle", { ref: o.ref }).then(function (r) { ordStatus.textContent = o.ref + " settled — " + r.account.plan_name + ", " + r.account.remaining + " credits."; load(); })
+            postJSON("/api/billing/settle", { ref: o.ref }).then(function (r) { ordStatus.textContent = o.ref + " settled — " + r.account.plan_name + ", " + r.account.credits + " credits."; load(); })
               .catch(function (e) { ordStatus.textContent = e.message; });
           });
           var can = document.createElement("button"); can.type = "button"; can.className = "btn btn-secondary btn-sm"; can.textContent = "Cancel";
