@@ -35,6 +35,7 @@
       });
     });
   }
+  function newKey() { return (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2); }
   // Listing photos come through our own server, so the visitor's browser never contacts Airbnb's CDN.
   function imgSrc(u) { return "/img?u=" + encodeURIComponent(u); }
   function getJSON(url) {
@@ -261,10 +262,12 @@
       var style = form.style ? form.style.value : "cinematic";
       status.className = "form-status";
       if (!url) { status.textContent = "Paste an Airbnb listing URL."; status.classList.add("is-error"); form.url.focus(); return; }
+      var attested = !!(form.attested && form.attested.checked);
+      if (!attested) { status.textContent = "Tick the box to confirm this is your listing, or that you have the owner's permission."; status.classList.add("is-error"); form.attested.focus(); return; }
       btn.disabled = true;
       status.textContent = "Starting…";
-      if (!idemKey) idemKey = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2);
-      postJSON("/api/jobs", { url: url, send_to_host: sendToHost, message: message, ai_motion: aiMotion, style: style, ai_resolution: (form.ai_resolution ? form.ai_resolution.value : "1080p") }, { "Idempotency-Key": idemKey })
+      if (!idemKey) idemKey = newKey();
+      postJSON("/api/jobs", { url: url, attested: attested, send_to_host: sendToHost, message: message, ai_motion: aiMotion, style: style, ai_resolution: (form.ai_resolution ? form.ai_resolution.value : "1080p") }, { "Idempotency-Key": idemKey })
         .then(function (data) {
           var id = data && (data.id || data.job_id || (data.job && data.job.id));
           if (!id) throw new Error("Server did not return a job id.");

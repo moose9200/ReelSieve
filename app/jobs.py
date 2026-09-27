@@ -48,19 +48,36 @@ def _request_hash(url, params):
     return hashlib.sha256(json.dumps({'url': url, **params}, sort_keys=True).encode()).hexdigest()
 
 
-def admit(user, url, requested, idempotency_key=None, ip=None):
-    """Create a job for the signed-in owner. Same key + same input returns the original job."""
-    url = canonical_listing(url)
-    requested = {
+ATTEST = ("Tick \u201cThis is my listing, or I have the owner's permission to use its photos\u201d to make a reel from a "
+          'listing link. Or make it from your own photos instead.')
+
+
+def _style(requested):
+    return {
         'ai_motion': bool(requested.get('ai_motion')),
         'style': 'v3' if requested.get('style') in ('tutorial', 'v3') else 'v2',
         'ai_resolution': '720p' if requested.get('ai_resolution') == '720p' else '1080p',
-        'send_to_host': bool(requested.get('send_to_host', True)),
-        'message': str(requested.get('message') or '')[:2000],
     }
+
+
+def admit(user, url, requested, idempotency_key=None, ip=None):
+    """Create a job for the signed-in owner. Same key + same input returns the original job.
+    A listing link is only made into a reel once the customer confirms the listing is theirs, or that
+    they have the owner's permission; the confirmation and its time are kept with the job."""
+    url = canonical_listing(url)
+    if requested.get('attested') is not True:
+        raise AdmissionError(ATTEST)
+    requested = {**_style(requested), 'attested': True,
+                 'send_to_host': bool(requested.get('send_to_host', True)),
+                 'message': str(requested.get('message') or '')[:2000]}
+    return _admit(user, url, requested, idempotency_key, ip, {'attested_at': time.time()})
+
+
+def _admit(user, url, requested, idempotency_key, ip, extra=None, job_id=None):
+    """Drive check, credit reservation and the job row in ONE transaction; `extra` is kept but not hashed."""
     key = str(idempotency_key or '')[:120] or secrets.token_hex(16)
     digest = _request_hash(url, requested)
-    job_id = uuid.uuid4().hex[:16]
+    job_id = job_id or uuid.uuid4().hex[:16]
     now = time.time()
     with database.connect() as c:
         owner = database.user_id(user, c)
@@ -79,7 +96,7 @@ def admit(user, url, requested, idempotency_key=None, ip=None):
         except ValueError as e:
             raise AdmissionError(str(e), 402) from None
         plan = plans.PLANS.get(store.get_account(user, c)['plan'], plans.PLANS['free'])
-        params = {**requested, 'plan': plan['key'], 'max_seconds': plan['max_seconds'],
+        params = {**requested, **(extra or {}), 'plan': plan['key'], 'max_seconds': plan['max_seconds'],
                   'ai_motion': requested['ai_motion'] and bool(plan['ai_motion'])}
         c.execute('INSERT INTO jobs(id,owner_id,idempotency_key,request_hash,url,params,drive_generation,created,updated) '
                   'VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)',
