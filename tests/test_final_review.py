@@ -228,3 +228,59 @@ def test_the_hosts_id_goes_with_the_host_name_after_30_days(owners, google, db):
     retention.run()
     listing = jobs.get(ALICE, jid)['meta']['listing']
     assert 'host' not in listing and 'host_id' not in listing and listing['title'] == 'Sea view flat'
+
+
+# ---------------- N5: uploaded photos are deleted from the customer's Drive, whatever happens to the connection ----------------
+
+def _inputs(jid):
+    return (jobs.get(ALICE, jid)['meta'] or {}).get('inputs')
+
+
+def test_disconnecting_google_drive_deletes_the_photos_waiting_to_be_deleted_first(drive, db, owners):
+    paid()
+    drop = photo_job()
+    keep = photo_job(key='keep', files=batch(N + 1), delete_inputs=False)
+    r = client_for(owners['alice']).post('/api/gdrive/disconnect', headers=csrf(owners['alice']))
+    assert r.status_code == 200 and r.json()['connected'] is False and not r.json()['warning']
+    assert not set(drop['params']['photos']['ids']) & set(drive.blobs)
+    assert set(keep['params']['photos']['ids']) <= set(drive.blobs)  # the customer chose to keep these
+    assert _inputs(drop['id']) == 'deleted'
+    paths = [c.url.path for c in drive.calls]
+    assert max(i for i, p in enumerate(paths) if p.startswith('/drive/v3/files/')) < paths.index('/revoke')
+
+
+def test_input_clean_up_uses_the_current_connection_after_a_reconnect(drive, db, owners):
+    from app import database, gdrive, worker
+    job = photo_job()
+    jobs.cancel(ALICE, job['id'])
+    with database.connect() as c:
+        gdrive.disconnect_owner(database.user_id(ALICE, c))  # e.g. Google access revoked, then connected again
+    connect(owners, drive)
+    worker.sweep()
+    assert _inputs(job['id']) == 'deleted' and not drive.blobs
+
+
+def test_a_failed_delete_is_retried_hourly_for_7_days_then_reported_on_the_job_page(drive, db, owners, monkeypatch):
+    import time
+    from app import gdrive, retention, worker
+    paid()
+    soon, late = photo_job(), photo_job(key='late', files=batch(N + 1))
+    for j in (soon, late):
+        jobs.cancel(ALICE, j['id'])
+    real = gdrive.delete_inputs
+    monkeypatch.setattr(gdrive, 'delete_inputs', lambda *a, **k: (_ for _ in ()).throw(RuntimeError('Google did not respond')))
+    worker.sweep()
+    assert _inputs(soon['id']) == _inputs(late['id']) == 'delete_failed'
+    alice = client_for(owners['alice'])
+    assert 'We will keep trying for 7 days' in alice.get(f"/jobs/{soon['id']}").text
+    with db.connect() as c:
+        c.execute('UPDATE jobs SET finished_at=%s WHERE id=%s', (time.time() - 8 * 86400, late['id']))
+    monkeypatch.setattr(gdrive, 'delete_inputs', real)
+    retention.run()
+    assert _inputs(soon['id']) == 'deleted' and not set(soon['params']['photos']['ids']) & set(drive.blobs)
+    assert _inputs(late['id']) == 'left' and set(late['params']['photos']['ids']) <= set(drive.blobs)  # stopped trying
+    page = alice.get(f"/jobs/{late['id']}").text
+    assert 'could not delete your uploaded photos' in page and 'Inputs folder' in page
+    assert page.index('id="inputs-state"') < page.index('id="video-card"')  # shown for a cancelled reel, not in the hidden video card
+    js = alice.get('/static/app.js').text
+    assert '"left"' in js and 'keep trying for 7 days' in js

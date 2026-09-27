@@ -335,10 +335,29 @@ def live_leases():
                                            (time.time(),)).fetchall()}
 
 
+def drop_inputs(job):
+    """Delete a photo reel's uploaded photos from the owner's Drive when they asked for it, through whichever Drive
+    connection is current (drive.file reaches the app's own files after a reconnect too), also for an account being
+    deactivated or erased. Records 'deleted', or 'delete_failed' for the hourly retry (app/retention.py). True when
+    nothing is left to delete. Never raises: clean-up must never stop jobs being claimed or an account change."""
+    p = job['params'] or {}
+    folder = (p.get('photos') or {}).get('folder')
+    if not folder or not p.get('delete_inputs') or (job.get('meta') or {}).get('inputs') == 'deleted':
+        return True
+    try:
+        gdrive.delete_inputs(None, folder, None, p['photos'].get('ids') or (), owner_id=job['owner_id'])
+        state = 'deleted'
+    except Exception:  # e.g. Drive disconnected or Google down: the photos stay in the customer's own Drive for now
+        state = 'delete_failed'
+    with database.connect() as c:
+        c.execute('UPDATE jobs SET meta=meta || %s,updated=%s WHERE id=%s', (Jsonb({'inputs': state}), time.time(), job['id']))
+    return state == 'deleted'
+
+
 def pending_cleanup(limit=50):
     """Finished jobs whose scratch (and, for photo reels, Drive inputs) no worker has cleaned up yet."""
     with database.connect() as c:
-        return c.execute("SELECT j.id,j.params,j.meta,j.drive_generation,u.email AS owner_email FROM jobs j "
+        return c.execute("SELECT j.id,j.owner_id,j.params,j.meta,j.drive_generation,u.email AS owner_email FROM jobs j "
                          "JOIN users u ON u.id=j.owner_id WHERE j.status IN ('done','failed','cancelled') "
                          'AND j.cleanup_at IS NULL ORDER BY j.finished_at LIMIT %s', (limit,)).fetchall()
 

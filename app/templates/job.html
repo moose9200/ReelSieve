@@ -26,6 +26,9 @@
       <button type="button" class="btn btn-secondary btn-sm" id="cancel-btn">Cancel this reel</button>
       <span class="form-status" id="cancel-status" role="status" aria-live="polite">{% if job.cancel_requested %}Stopping…{% endif %}</span>
     </div>
+    {% if job.source == 'photos' %}
+    <p class="hint" id="inputs-state">{% if job.inputs == 'deleted' %}Your uploaded photos were deleted from your Google Drive, as you asked.{% elif job.inputs == 'delete_failed' %}We could not delete your uploaded photos from Google Drive yet. We will keep trying for 7 days; if you disconnected Google Drive, connect it again.{% elif job.inputs == 'left' %}We could not delete your uploaded photos from Google Drive. They are in the Inputs folder inside your ReelSieve folder; delete them there.{% elif job.delete_inputs %}Your uploaded photos will be deleted from your Google Drive once the reel is finished.{% else %}Your uploaded photos are in the Inputs folder inside your ReelSieve folder in Google Drive.{% endif %}</p>
+    {% endif %}
   </div>
 
   <div class="card video-card{% if job.status != 'done' %} hidden{% endif %}" id="video-card">
@@ -33,9 +36,6 @@
       <video id="video" controls playsinline preload="metadata"{% if job.stream_url %} src="{{ job.stream_url }}"{% endif %}{% if job.poster %} poster="{{ job.poster }}"{% endif %}></video>
     </div>
     <p class="hint">Stored in your Google Drive only — ReelSieve keeps no copy.</p>
-    {% if job.source == 'photos' %}
-    <p class="hint" id="inputs-state">{% if job.inputs == 'deleted' %}Your uploaded photos were deleted from your Google Drive, as you asked.{% elif job.inputs == 'delete_failed' %}We could not delete your uploaded photos from Google Drive. They are in the Inputs folder inside your ReelSieve folder; delete them there if you like.{% elif job.delete_inputs %}Your uploaded photos will be deleted from your Google Drive once the reel is finished.{% else %}Your uploaded photos are in the Inputs folder inside your ReelSieve folder in Google Drive.{% endif %}</p>
-    {% endif %}
     <div class="video-actions">
       <a class="btn btn-primary{% if not job.download_url %} hidden{% endif %}" id="download-btn" href="{{ job.download_url or '#' }}">Download reel</a>
       <span class="email-line">

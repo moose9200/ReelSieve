@@ -499,7 +499,8 @@
       }
       var inp = el("inputs-state");
       if (inp && job.inputs === "deleted") inp.textContent = "Your uploaded photos were deleted from your Google Drive, as you asked.";
-      if (inp && job.inputs === "delete_failed") inp.textContent = "We could not delete your uploaded photos from Google Drive. They are in the Inputs folder inside your ReelSieve folder; delete them there if you like.";
+      if (inp && job.inputs === "delete_failed") inp.textContent = "We could not delete your uploaded photos from Google Drive yet. We will keep trying for 7 days; if you disconnected Google Drive, connect it again.";
+      if (inp && job.inputs === "left") inp.textContent = "We could not delete your uploaded photos from Google Drive. They are in the Inputs folder inside your ReelSieve folder; delete them there.";
       // a photo reel's Drive clean-up lands just after it finishes: keep polling briefly until it is reported
       var terminal = st === "done" || st === "failed" || st === "cancelled";
       var cleaning = terminal && job.source === "photos" && job.delete_inputs && !job.inputs && extraPolls++ < 15;

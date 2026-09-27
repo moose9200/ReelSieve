@@ -1333,12 +1333,13 @@ def gdrive_status(request: Request):
 
 @app.post('/api/gdrive/disconnect')
 def gdrive_disconnect(request: Request):
-    warning = None
+    """Photos the customer asked us to delete go first, while the grant still reaches them (as deactivate and erase)."""
+    warnings = [admin.drop_photo_inputs(database.user_id(request.state.user))]
     try:
         gdrive.disconnect(request.state.user)
     except RuntimeError as e:
-        warning = str(e)
-    return {**gdrive.status(request.state.user), 'warning': warning}
+        warnings.append(str(e))
+    return {**gdrive.status(request.state.user), 'warning': ' '.join(w for w in warnings if w) or None}
 
 
 # ---------------- outreach (drafted here, sent by the customer) ----------------
