@@ -136,8 +136,19 @@ def add_outreach(user, channel, name, url, city, message, meta=None, status='que
                          (now, now, database.user_id(user, c), channel, name, url, city, message, status, json.dumps(meta or {}))).fetchone()['id']
 
 
+def _outreach_listings(row):
+    """The listings an outreach row names: its link, and the listing link kept in meta (never the row's own id)."""
+    try:
+        meta = json.loads(row.get('meta') or '{}')
+    except (TypeError, ValueError):
+        meta = {}
+    return listing_ids({'url': row.get('url'), 'listing_url': meta.get('listing_url') if isinstance(meta, dict) else None})
+
+
 def outreach_rows(user=None, limit=500):
-    return _owned_rows('outreach', user, limit)
+    """What the Outreach page and export show: a listing taken down from ReelSieve leaves them at once (the row itself
+    stays until outreach retention, and in the user's own data export)."""
+    return without_blocked_listings(_owned_rows('outreach', user, limit), _outreach_listings)
 
 
 def outreach_get(rid, user=None):
@@ -221,25 +232,41 @@ def listing_ids(item):
     return found | ({pid} if re.fullmatch(r'\d{1,20}', pid) else set())
 
 
+ACTIVE_BLOCK = '(expires_at IS NULL OR expires_at>%s)'  # confirmed, or waiting for an admin's check and not lapsed
+
+
 def blocked_ids(ids, conn=None):
     ids = sorted({str(i) for i in ids if i})
     if not ids:
         return set()
     with database.transaction(conn) as c:
-        return {r['listing_id'] for r in c.execute('SELECT listing_id FROM blocked_listings WHERE listing_id=ANY(%s)', (ids,)).fetchall()}
+        return {r['listing_id'] for r in c.execute(f'SELECT listing_id FROM blocked_listings WHERE listing_id=ANY(%s) AND {ACTIVE_BLOCK}',
+                                                   (ids, time.time())).fetchall()}
 
 
-def without_blocked_listings(items):
-    keyed = [(it, listing_ids(it)) for it in items]
+def without_blocked_listings(items, key=listing_ids):
+    keyed = [(it, key(it)) for it in items]
     hit = blocked_ids(set().union(*(k for _, k in keyed))) if keyed else set()
     return [it for it, k in keyed if not k & hit]
 
 
-def block_listing(listing_id, reason, conn=None):
-    """True when newly blocked; blocking twice keeps the first reason."""
+def block_listing(listing_id, reason, conn=None, expires_at=None):
+    """True when newly blocked; blocking twice keeps the first reason. expires_at: a provisional block (a public request
+    nobody has checked yet) that lapses then unless confirmed. A confirmed block replaces a provisional one, and any
+    block replaces a lapsed one."""
+    now = time.time()
     with database.transaction(conn) as c:
-        return bool(c.execute('INSERT INTO blocked_listings(listing_id,reason,ts) VALUES(%s,%s,%s) ON CONFLICT (listing_id) '
-                              'DO NOTHING RETURNING listing_id', (listing_id, reason[:300], time.time())).fetchone())
+        return bool(c.execute('INSERT INTO blocked_listings(listing_id,reason,ts,expires_at) VALUES(%s,%s,%s,%s) '
+                              'ON CONFLICT (listing_id) DO UPDATE SET reason=EXCLUDED.reason,ts=EXCLUDED.ts,expires_at=EXCLUDED.expires_at '
+                              'WHERE blocked_listings.expires_at IS NOT NULL AND (EXCLUDED.expires_at IS NULL OR blocked_listings.expires_at<=%s) '
+                              'RETURNING listing_id', (listing_id, reason[:300], now, expires_at, now)).fetchone())
+
+
+def confirm_listing_block(listing_id):
+    """An admin checked a provisional block: it stays until removed."""
+    with database.connect() as c:
+        return bool(c.execute('UPDATE blocked_listings SET expires_at=NULL WHERE listing_id=%s AND expires_at IS NOT NULL '
+                              'RETURNING listing_id', (listing_id,)).fetchone())
 
 
 def unblock_listing(listing_id):
@@ -249,7 +276,15 @@ def unblock_listing(listing_id):
 
 def blocked_listings():
     with database.connect() as c:
-        return c.execute('SELECT * FROM blocked_listings ORDER BY ts DESC').fetchall()
+        return c.execute(f'SELECT * FROM blocked_listings WHERE {ACTIVE_BLOCK} ORDER BY ts DESC', (time.time(),)).fetchall()
+
+
+def recent_removals(email, since):
+    """(this email's, everyone's) 'Remove my listing' requests since ts."""
+    with database.connect() as c:
+        row = c.execute("SELECT count(*) FILTER (WHERE email=%s) AS mine, count(*) AS total FROM privacy_requests "
+                        "WHERE type='listing_removal' AND ts>%s", (email, since)).fetchone()
+    return row['mine'], row['total']
 
 
 def outreach_stats(user=None):

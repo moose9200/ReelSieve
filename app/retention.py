@@ -48,6 +48,7 @@ def run(now=None):
             ('privacy_requests', "DELETE FROM privacy_requests WHERE status='handled' AND handled_at<%s",
              now - PRIVACY_REQUEST_YEARS * YEAR),
             ('legacy_archives', 'DELETE FROM legacy_archives WHERE created<%s', now - keep_archive * DAY),
+            ('lapsed_listing_blocks', 'DELETE FROM blocked_listings WHERE expires_at<%s', now),
         ]}
         due = [r['email'] for r in c.execute('SELECT email FROM users WHERE NOT active AND erased_at IS NULL AND deactivated_at<%s',
                                              (now - DEACTIVATED_DAYS * DAY,)).fetchall()]

@@ -12,7 +12,7 @@ import types
 import pytest
 from fastapi.testclient import TestClient
 
-from app import airbnb, auth, cohost, fetch, jobs, pipeline, search, server, store, worker
+from app import airbnb, auth, cohost, fetch, jobs, pipeline, retention, search, server, store, worker
 from fakes import CHALLENGE, connect
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -700,6 +700,108 @@ def test_co_host_discovery_does_not_fetch_a_blocked_listing(airbnb_net, db, monk
     assert '2' not in [i['id'] for i in res['items']]
 
 
+def refunded(db, job_id):
+    with db.connect() as c:
+        return bool(c.execute('SELECT refunded_at FROM usage WHERE job_id=%s', (job_id,)).fetchone()['refunded_at'])
+
+
+def test_a_takedown_stops_a_reel_already_queued_and_refunds_it(drive, db):
+    job = jobs.admit(ALICE, ROOM, {})
+    store.block_listing('4242', 'Removal request PR-test')
+
+    def command(job, d):
+        raise AssertionError('the render started')
+    worker.process(jobs.claim('w', 30), command)
+    failed = jobs.get(ALICE, job['id'])
+    assert (failed['status'], failed['error']) == ('failed', jobs.REMOVED) and refunded(db, job['id'])
+
+
+TAKEDOWN_DURING_RENDER = r'''
+import json, pathlib, sys
+from app import store
+store.block_listing('4242', 'Removal request PR-test')  # the host's request lands while the reel renders
+(pathlib.Path(sys.argv[1]) / 'v.mp4').write_bytes(b'video')
+print(json.dumps({'result': {'video': sys.argv[1] + '/v.mp4', 'listing': {'url': 'https://www.airbnb.co.uk/rooms/4242'}}}), flush=True)
+'''
+
+
+def test_a_takedown_while_a_reel_renders_stops_its_delivery(drive, google, db):
+    job = jobs.admit(ALICE, ROOM, {})
+    worker.process(jobs.claim('w', 30), lambda job, d: [sys.executable, '-c', TAKEDOWN_DURING_RENDER, str(d)])
+    failed = jobs.get(ALICE, job['id'])
+    assert (failed['status'], failed['error']) == ('failed', jobs.REMOVED) and refunded(db, job['id'])
+    assert google.files == {}  # nothing reached the customer's Drive
+
+
+def test_find_a_listing_leaves_out_taken_down_listings(web, db, monkeypatch):
+    store.block_listing('4242', 'test')
+    found = [{'id': '4242', 'url': ROOM, 'photo': PHOTO}, {'id': '4243', 'url': 'https://www.airbnb.co.uk/rooms/4243', 'photo': PHOTO}]
+    monkeypatch.setattr(server.listing_search, 'search', lambda *a, **k: {'items': [dict(i) for i in found], 'count': 2})
+    monkeypatch.setattr(server.listing_search, 'search_page', lambda *a, **k: {'items': [dict(i) for i in found], 'page': 1})
+    res = web['alice'].get('/api/search', params={'location': 'Poole'}).json()
+    assert [i['id'] for i in res['items']] == ['4243'] and res['count'] == 1
+    more = web['alice'].get('/api/search/more', params={'location': 'Poole', 'page': 1}).json()
+    assert [i['id'] for i in more['items']] == ['4243']
+
+
+def test_outreach_rows_of_a_taken_down_listing_leave_the_page_and_the_export(web, db):
+    post(web['alice'], '/api/outreach/queue', {'channel': 'cohost', 'items': [dict(p, message='Hi') for p in PROSPECTS]})
+    row_ids = [r['id'] for r in store.outreach_rows(ALICE)]
+    store.block_listing('222', 'test')
+    store.block_listing(str(min(row_ids)), 'test')  # a listing number that equals an outreach row's own id hides nothing
+    page, export = web['alice'].get('/outreach').text, web['alice'].get('/api/outreach/export.csv').text
+    assert 'or-name">Sam<' not in page and 'contact_host/222' not in export
+    assert 'or-name">Jo<' in page and 'or-name">Kim<' in page and 'contact_host/111' in export
+    assert sorted(r['name'] for r in store.outreach_rows(ALICE)) == ['Jo', 'Kim']
+
+
+def blocked_rows(db):
+    with db.connect() as c:
+        return c.execute('SELECT * FROM blocked_listings ORDER BY listing_id').fetchall()
+
+
+def test_a_public_removal_blocks_at_once_and_lapses_unless_an_admin_confirms_it(web, drive, db):
+    """Anyone can send the form, with no proof the listing is theirs: the block is immediate but provisional."""
+    r = _request(web['anon'], listing_url=ROOM)
+    assert 'while we check your request' in r.text
+    [row] = blocked_rows(db)
+    assert 29 * 86400 < row['expires_at'] - time.time() < 32 * 86400  # the one-month reply deadline
+    with pytest.raises(jobs.AdmissionError):
+        jobs.admit(ALICE, ROOM, {})
+    card = web['admin'].get('/settings').text.split('id="blocked-card"', 1)[1].split('</section>', 1)[0]
+    assert 'Waiting for a check' in card and 'blocked-confirm' in card
+    with db.connect() as c:
+        c.execute('UPDATE blocked_listings SET expires_at=%s', (time.time() - 1,))
+    assert store.blocked_ids(['4242']) == set() and jobs.admit(ALICE, ROOM, {})['status'] == 'queued'
+    assert _request(client_for(), listing_url=ROOM).status_code == 200  # a new request blocks it again
+    assert store.blocked_ids(['4242']) == {'4242'}
+    assert post(web['alice'], '/api/blocked-listings/confirm', {'listing_id': '4242'}).status_code == 403
+    assert post(web['admin'], '/api/blocked-listings/confirm', {'listing_id': '4242'}).status_code == 200
+    assert blocked_rows(db)[0]['expires_at'] is None
+    activity = web['admin'].get('/settings').text.split('id="events-card"', 1)[1].split('</section>', 1)[0]
+    assert 'Listing removal confirmed' in activity
+
+
+def test_lapsed_removals_are_deleted_by_retention(db):
+    store.block_listing('4242', 'Removal request PR-test', expires_at=time.time() - 1)
+    store.block_listing('4243', 'Added by an admin')
+    retention.run()
+    assert [b['listing_id'] for b in blocked_rows(db)] == ['4243']
+
+
+def test_public_removals_are_capped_per_email_and_per_day(web, db, monkeypatch):
+    for n in (1, 2, 3):
+        assert 'while we check' in _request(client_for(), listing_url=f'https://www.airbnb.co.uk/rooms/{n}').text
+    r = _request(client_for(), listing_url='https://www.airbnb.co.uk/rooms/4')  # a fourth from the same address today
+    assert r.status_code == 200 and 'once we have checked' in r.text
+    monkeypatch.setattr(server, 'REMOVALS_PER_DAY', 4)
+    r = _request(client_for(), email='someone@example.org', listing_url='https://www.airbnb.co.uk/rooms/5')
+    assert 'once we have checked' in r.text  # the fifth request today, from anyone
+    assert store.blocked_ids(['1', '2', '3', '4', '5']) == {'1', '2', '3'}
+    with db.connect() as c:
+        assert [r['listing_id'] for r in c.execute('SELECT listing_id FROM privacy_requests ORDER BY ts').fetchall()] == ['1', '2', '3', '4', '5']
+
+
 # ---------------- 6. privacy notice ----------------
 
 def test_privacy_notice_says_how_we_fetch_and_how_hosts_stop_reels(web):
@@ -710,3 +812,7 @@ def test_privacy_notice_says_how_we_fetch_and_how_hosts_stop_reels(web):
         assert phrase in listing, phrase
     assert 'Remove my listing from ReelSieve' in hosts and 'href="/privacy/request"' in hosts
     assert "Videos show the text, star rating and month of a guest review, but not the reviewer's name." in listing
+    retention_table = page.split('How long we keep it', 1)[1].split('</table>', 1)[0]
+    how_long = hosts.split('<strong>How long:</strong>', 1)[1].split('</li>', 1)[0]
+    for text in (retention_table, how_long):  # the blocklist is kept until lifted, so the notice says so
+        assert 'Listings a host asks us to remove' in text and 'until the host asks us to lift it' in text.lower()

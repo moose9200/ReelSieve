@@ -63,6 +63,8 @@ SETTING_DEFAULTS = airbnb.DEFAULTS
 # A person's browser runs one search at a time and loads a screen of thumbnails; a script running more is refused.
 AT_ONCE = {'lookup': 2, 'img': 24}
 _running, _running_lock = {}, threading.Lock()
+# "Remove my listing" requests from the public form that block at once, per email address and in total, in 24 hours.
+REMOVALS_PER_EMAIL, REMOVALS_PER_DAY = 3, 20
 
 
 def validate_config():
@@ -590,9 +592,15 @@ async def privacy_request_post(request: Request):
     if f['type'] == 'objection' and profile:
         store.suppress({'airbnb_profile': profile})  # stop outreach to them at once, for every user
     if removal:
-        store.block_listing(listing, 'Removal request ' + ref)  # no more reels of it, for every user, at once
+        # Anyone can send this form and nothing proves the listing is theirs, so the block is at once but provisional:
+        # it lapses at the reply deadline unless an admin confirms it, and a few per address and per day block at once
+        # (the rest wait for the admin's check).
+        mine, total = store.recent_removals(auth.norm(f['email']), received - 86400)
+        if mine <= REMOVALS_PER_EMAIL and total <= REMOVALS_PER_DAY:
+            store.block_listing(listing, 'Removal request ' + ref, expires_at=store.one_month_after(received))
     return _request_page(request, ack={'ref': ref, 'received': received, 'due': store.one_month_after(received),
-                                       'listing': listing if removal else None})
+                                       'listing': listing if removal else None,
+                                       'listing_blocked': bool(removal and store.blocked_ids([listing]))})
 
 
 @app.post('/api/privacy-requests/handled')
@@ -626,6 +634,17 @@ async def blocked_listing_remove(request: Request):
     if not store.unblock_listing(lid):
         raise HTTPException(404, 'That listing is not blocked')
     store.admin_event('listing_unblock', request.state.user, None, listing=lid)
+    return {'ok': True}
+
+
+@app.post('/api/blocked-listings/confirm')
+async def blocked_listing_confirm(request: Request):
+    """Admin: a public removal request checked and upheld, so its block no longer lapses."""
+    _require_admin(request)
+    lid = str((await request.json()).get('listing_id') or '').strip()
+    if not store.confirm_listing_block(lid):
+        raise HTTPException(404, 'No provisional block for that listing')
+    store.admin_event('listing_confirm', request.state.user, None, listing=lid)
     return {'ok': True}
 
 
@@ -1078,6 +1097,12 @@ def _airbnb_on():
         raise HTTPException(503, airbnb.DISABLED)
 
 
+def _unblocked(res):
+    """A listing taken down from ReelSieve never shows in Find a listing (so neither do its photos)."""
+    items = store.without_blocked_listings(res.get('items') or [])
+    return {**res, 'items': items, **({'count': len(items)} if 'count' in res else {})}
+
+
 @app.get('/api/search')
 def api_search(request: Request, location: str, checkin: str = '', checkout: str = '', adults: int = 2, offset: int = 0, pages: int = 3):
     """In-app listing picker: public Airbnb search results (no login)."""
@@ -1086,7 +1111,7 @@ def api_search(request: Request, location: str, checkin: str = '', checkout: str
         raise HTTPException(400, 'Enter a location')
     with at_once(request.state.user, 'lookup'):
         try:
-            return listing_search.search(location[:120], checkin or None, checkout or None, adults, offset, min(max(pages, 1), 5))
+            return _unblocked(listing_search.search(location[:120], checkin or None, checkout or None, adults, offset, min(max(pages, 1), 5)))
         except airbnb.Unavailable as e:
             raise HTTPException(503, str(e))
         except Exception:
@@ -1098,7 +1123,7 @@ def api_search_more(request: Request, location: str, page: int, checkin: str = '
     _airbnb_on()
     with at_once(request.state.user, 'lookup'):
         try:
-            return listing_search.search_page(location[:120], checkin or None, checkout or None, adults, page)
+            return _unblocked(listing_search.search_page(location[:120], checkin or None, checkout or None, adults, page))
         except airbnb.Unavailable as e:
             raise HTTPException(503, str(e))
         except Exception:
@@ -1274,7 +1299,8 @@ def api_out_csv(request: Request):
 EVENT_LABELS = {'plan': 'Plan or credits changed', 'password_reset': 'Password reset', 'deactivate': 'Removed (deactivated)',
                 'erase': 'Account erased', 'order_settle': 'Order marked paid', 'order_cancel': 'Order cancelled',
                 'order_link': 'Pay link set', 'privacy_request_handled': 'Privacy request handled',
-                'listing_block': 'Listing blocked', 'listing_unblock': 'Listing unblocked', 'airbnb_resume': 'Airbnb fetching resumed'}
+                'listing_block': 'Listing blocked', 'listing_unblock': 'Listing unblocked', 'listing_confirm': 'Listing removal confirmed',
+                'airbnb_resume': 'Airbnb fetching resumed'}
 
 
 def settings_view():

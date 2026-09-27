@@ -20,11 +20,15 @@ CREATE TABLE IF NOT EXISTS airbnb_blocks (
 CREATE INDEX IF NOT EXISTS ix_airbnb_blocks_ts ON airbnb_blocks(ts);
 
 -- Listings nobody may make a reel of (a host's takedown request, or an admin). Kept until an admin removes it.
+-- expires_at: a public request nobody has checked yet blocks at once but lapses then (the one-month reply deadline)
+-- unless an admin confirms it (NULL); retention deletes lapsed rows.
 CREATE TABLE IF NOT EXISTS blocked_listings (
     listing_id TEXT PRIMARY KEY CHECK (listing_id ~ '^[0-9]{1,20}$'),
     reason TEXT NOT NULL,
-    ts DOUBLE PRECISION NOT NULL
+    ts DOUBLE PRECISION NOT NULL,
+    expires_at DOUBLE PRECISION
 );
+ALTER TABLE blocked_listings ADD COLUMN IF NOT EXISTS expires_at DOUBLE PRECISION;
 
 -- The listing a privacy request is about ("Remove my listing from ReelSieve").
 ALTER TABLE privacy_requests ADD COLUMN IF NOT EXISTS listing_id TEXT;

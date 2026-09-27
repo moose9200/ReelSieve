@@ -10,7 +10,7 @@
     <ul class="steps">
       <li>Reference <strong>{{ ack.ref }}</strong></li>
       <li>Received {{ ack.received|when }}</li>
-      {% if ack.listing %}<li>Listing {{ ack.listing }} is removed from ReelSieve now: nobody can make a reel of it here, and it no longer appears in co-host or Outreach results.</li>{% endif %}
+      {% if ack.listing %}<li>{% if ack.listing_blocked %}Listing {{ ack.listing }} is removed from ReelSieve now, while we check your request: nobody can make a reel of it here, and it no longer appears in Find a listing, co-host or Outreach results.{% else %}We will remove listing {{ ack.listing }} from ReelSieve once we have checked your request.{% endif %}</li>{% endif %}
       <li>We reply to the email you gave by {{ ack.due|day }} at the latest (one month from receipt). If we need to confirm who you are, or need more time, we will tell you before then.</li>
     </ul>
     <p class="hint">You can also complain to the UK Information Commissioner's Office at <a href="https://ico.org.uk/make-a-complaint/" target="_blank" rel="noopener">ico.org.uk</a>.</p>
@@ -33,7 +33,7 @@
       <div class="field"><label for="pr-profile">Your Airbnb profile link (optional)</label><input type="url" id="pr-profile" name="airbnb_profile" value="{{ f.airbnb_profile or '' }}" placeholder="https://www.airbnb.co.uk/users/show/…" autocomplete="off" spellcheck="false">
         <p class="hint">Airbnb hosts: with an objection to outreach, we stop every ReelSieve user from finding or queueing you, straight away.</p></div>
       <div class="field"><label for="pr-listing">Your Airbnb listing link (for "Remove my listing from ReelSieve")</label><input type="url" id="pr-listing" name="listing_url" value="{{ f.listing_url or '' }}" placeholder="https://www.airbnb.co.uk/rooms/…" autocomplete="off" spellcheck="false">
-        <p class="hint">We remove the listing straight away: no ReelSieve user can make a reel of it, and it stops appearing in co-host and Outreach results.</p></div>
+        <p class="hint">We normally remove the listing straight away, while we check your request: no ReelSieve user can make a reel of it, and it stops appearing in Find a listing, co-host and Outreach results.</p></div>
       {% if error %}<p class="hint hint-warn" role="alert">{{ error }}</p>{% endif %}
       <div class="actions"><button type="submit" class="btn btn-primary btn-wide">Send request</button></div>
     </form>

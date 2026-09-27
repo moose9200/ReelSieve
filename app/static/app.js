@@ -878,6 +878,16 @@
     });
   });
 
+  Array.prototype.forEach.call(document.querySelectorAll(".blocked-confirm"), function (b) {
+    b.addEventListener("click", function () {
+      var out = document.getElementById("bl-status"), id = b.getAttribute("data-listing");
+      b.disabled = true; out.className = "form-status";
+      postJSON("/api/blocked-listings/confirm", { listing_id: id })
+        .then(function () { window.location.reload(); })
+        .catch(function (e) { out.textContent = e.message; out.classList.add("is-error"); b.disabled = false; });
+    });
+  });
+
   // ---------- admin: resume Airbnb fetching after a block ----------
   var abResume = document.getElementById("airbnb-resume");
   if (abResume) abResume.addEventListener("click", function () {
