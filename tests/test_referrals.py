@@ -129,7 +129,8 @@ def test_deactivated_or_erased_accounts_earn_nothing(owners, db):
     with db.connect() as c:
         assert referrals.reward_first_delivery(c, db.user_id('erin@example.org')) == 'account_inactive'
     assert bonus(db, BOB) == 0 and bonus(db, 'erin@example.org') == 0
-    assert sorted(r['reward_reason'] for r in referral_rows(db)) == ['account_erased', 'account_inactive', 'account_inactive']
+    # Dave's row went with his erasure: nothing about him is written onto Bob's side.
+    assert sorted(r['reward_reason'] for r in referral_rows(db)) == ['account_inactive', 'account_inactive']
     assert all(r['rewarded_at'] is None for r in referral_rows(db))
 
 
@@ -139,6 +140,86 @@ def test_referee_on_the_referrers_free_network_at_delivery_is_not_rewarded(invit
     worker.process(claimed(db), command(SUCCESS))
     assert referral_rows(db)[0]['reward_reason'] == 'same_network'
     assert bonus(db, BOB) == 0
+
+
+def test_paid_inviter_who_signed_in_from_the_invited_accounts_network_is_not_rewarded(invited, db):
+    """Paid videos keep no network hash, so the inviter's sign-in network is what gives a self-invite away."""
+    store.set_plan(BOB, 'starter', 3)
+    plans.reserve(BOB, 'https://www.airbnb.co.uk/rooms/1', 'bbbbbb000001', ip='203.0.113.7')
+    store.note_signin(BOB, '203.0.113.8')
+    store.note_signin(ALICE, '203.0.113.9')  # her signup, same /24
+    jobs.admit(ALICE, URL, {})
+    worker.process(claimed(db), command(SUCCESS))
+    assert referral_rows(db)[0]['reward_reason'] == 'same_network'
+    assert bonus(db, BOB) == 0 and bonus(db, ALICE) == 0
+
+
+def google_sub(db, email):
+    with db.connect() as c:
+        return c.execute('SELECT google_sub FROM drive_connections WHERE owner_id=%s', (db.user_id(email),)).fetchone()['google_sub']
+
+
+def link_drive(db, email, sub):
+    with db.connect() as c:
+        c.execute("INSERT INTO drive_connections(owner_id,status,google_sub,updated) VALUES(%s,'connected',%s,%s) "
+                  'ON CONFLICT (owner_id) DO UPDATE SET google_sub=EXCLUDED.google_sub', (db.user_id(email), sub, time.time()))
+
+
+def test_invited_account_on_the_inviters_google_account_is_not_rewarded(invited, db):
+    link_drive(db, BOB, google_sub(db, ALICE))
+    jobs.admit(ALICE, URL, {})
+    worker.process(claimed(db), command(SUCCESS))
+    assert referral_rows(db)[0]['reward_reason'] == 'same_google_account' and bonus(db, BOB) == 0
+
+
+def test_one_google_account_earns_one_invite_reward_even_after_disconnecting(invited, db):
+    sub = google_sub(db, ALICE)
+    jobs.admit(ALICE, URL, {})
+    worker.process(claimed(db), command(SUCCESS))
+    assert bonus(db, BOB) == 1
+    link_drive(db, ALICE, None)  # Alice disconnects; her Google account then goes to a second invited account
+    carol = new_user('carol@example.org')
+    referrals.attribute(carol, referrals.code_for(BOB))
+    link_drive(db, carol, sub)
+    with db.connect() as c:
+        assert referrals.reward_first_delivery(c, db.user_id(carol)) == 'google_account_used'
+    assert bonus(db, BOB) == 1 and bonus(db, carol) == 0
+
+
+def test_a_referral_error_never_undoes_a_delivered_reel(invited, db, monkeypatch):
+    def broken(c, *a):
+        c.execute('SELECT * FROM no_such_table')
+    monkeypatch.setattr(referrals, '_refusal', broken)
+    job = uploading_job(db, ALICE, 'aaaaaa00000e')
+    assert jobs.finish(job, 'lease-' + job, 'done')
+    with db.connect() as c:
+        assert c.execute('SELECT status FROM jobs WHERE id=%s', (job,)).fetchone()['status'] == 'done'
+    assert referral_rows(db)[0]['reward_reason'] is None and bonus(db, BOB) == 0 and bonus(db, ALICE) == 0
+
+
+def test_signup_during_the_inviters_erasure_leaves_no_row_with_the_erased_id(owners, db, monkeypatch):
+    """attribute() locks the inviter's users row, so erasure waits for the insert and then clears it."""
+    store.ensure_account(BOB)
+    code, bob_id, carol = referrals.code_for(BOB), db.user_id(BOB), new_user('carol@example.org')
+    paused, go, real = threading.Event(), threading.Event(), time.time
+
+    class Clock:  # attribute() reads the clock between its inviter lookup and its insert: pause it there
+        @staticmethod
+        def time():
+            paused.set()
+            go.wait(10)
+            return real()
+    monkeypatch.setattr(referrals, 'time', Clock)
+    signup = threading.Thread(target=referrals.attribute, args=(carol, code))
+    signup.start()
+    assert paused.wait(10)
+    erase = threading.Thread(target=admin.erase, args=(BOB,))
+    erase.start()
+    erase.join(1.0)  # without the lock, erasure finishes here, before the insert
+    go.set()
+    signup.join(10)
+    erase.join(10)
+    assert bob_id not in str(referral_rows(db))
 
 
 # ---------------- 4. monthly limit, also under concurrency ----------------
@@ -222,23 +303,55 @@ def test_export_has_both_sides_of_a_referral_without_the_other_party(invited, db
     assert BOB not in a.text and db.user_id(BOB) not in a.text
     assert ALICE not in b.text and db.user_id(ALICE) not in b.text
     assert b.json()['accounts'][0]['referral_code'] == referrals.code_for(BOB) and 'bonus_videos' in b.json()['accounts'][0]
+    # A neutral status only: the reason for a refusal would describe the other account (UK GDPR Art 15(4)).
+    assert a.json()['signin_networks'] == [] and 'signin_networks' in b.json()
+    assert [r['status'] for r in a.json()['referrals'] + b.json()['referrals']] == ['pending', 'pending']
+    assert not any('reward_reason' in r for r in a.json()['referrals'] + b.json()['referrals'])
 
 
-def test_erasure_anonymises_referral_rows_and_retires_the_code(invited, db):
+def test_erasing_an_invited_account_writes_nothing_new_about_it_on_the_inviters_side(invited, db):
+    carol = new_user('carol@example.org')
+    referrals.attribute(carol, referrals.code_for(BOB))
+    jobs.admit(ALICE, URL, {})
+    worker.process(claimed(db), command(SUCCESS))  # Alice rewarded, Carol still pending
+    admin.erase(carol)
+    admin.erase(ALICE)
+    [row] = referral_rows(db)
+    assert row['referee_id'] is None and row['google_hash'] is None and row['reward_reason'] == 'first_reel_delivered'
+    [r] = client_for(invited['bob']).get('/api/account/export').json()['referrals']
+    assert r['you_are'] == 'referrer' and r['status'] == 'rewarded' and r['google_account_hash'] is None
+    assert set(r) == {'you_are', 'ts', 'rewarded_at', 'status', 'google_account_hash'}
+
+
+def test_erasure_removes_the_erased_side_and_unrewarded_rows_and_retires_the_code(invited, db):
     code = referrals.code_for(BOB)
+    jobs.admit(ALICE, URL, {})
+    worker.process(claimed(db), command(SUCCESS))  # Alice's invite is rewarded
     carol = new_user('carol@example.org')
     referrals.attribute(carol, code)  # still pending when Bob is erased
     bob_id = db.user_id(BOB)
     admin.erase(BOB)
-    rows = referral_rows(db)
-    assert all(r['referrer_id'] is None for r in rows) and bob_id not in str(rows)
-    assert {r['reward_reason'] for r in rows} == {'account_erased'}
+    [row] = referral_rows(db)  # Carol's unrewarded row is gone; Alice keeps the record of her own bonus
+    assert row['referrer_id'] is None and row['referee_id'] == db.user_id(ALICE) and bob_id not in str(row)
+    assert row['reward_reason'] == 'first_reel_delivered'
     with db.connect() as c:
         assert c.execute('SELECT referral_code FROM accounts WHERE owner_id=%s', (bob_id,)).fetchone()['referral_code'] is None
     assert referrals.attribute(new_user('dave@example.org'), code) is None  # the old link no longer attributes
     admin.erase(ALICE)
-    admin.erase(carol)
     assert referral_rows(db) == []  # nobody left on either side
+
+
+def test_sign_in_networks_are_kept_90_days_and_only_the_latest_time_per_network(owners, db):
+    store.note_signin(ALICE, '203.0.113.7')
+    store.note_signin(ALICE, '203.0.113.99')  # same /24: one row
+    store.note_signin(ALICE, 'not-an-ip')     # unknown network: nothing kept
+    with db.connect() as c:
+        assert c.execute('SELECT count(*) AS n FROM signin_networks').fetchone()['n'] == 1
+        c.execute('UPDATE signin_networks SET ts=ts-%s', (store.SIGNAL_DAYS * DAY + 60,))
+    store.note_signin(BOB, '198.51.100.1')
+    store.purge_signals()
+    with db.connect() as c:
+        assert [r['owner_id'] for r in c.execute('SELECT owner_id FROM signin_networks').fetchall()] == [db.user_id(BOB)]
 
 
 def test_retention_deletes_referrals_two_years_after_reward_or_one_year_if_never_rewarded(owners, db):

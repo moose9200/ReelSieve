@@ -329,6 +329,7 @@ async def login_post(request: Request):
         time.sleep(0.6)
         return ctx('Wrong email or password', 401)
     auth.clear_fails(ip)
+    store.note_signin(u, ip)
     return _set_session(RedirectResponse(nxt, status_code=303), request, u, f.get('remember') == '1')
 
 
@@ -379,7 +380,8 @@ async def signup_post(request: Request):
     except ValueError as e:
         return ctx(str(e))
     store.ensure_account(u, 'free')
-    referrals.attribute(u, ref, ip)
+    store.note_signin(u, ip)
+    referrals.attribute(u, ref)
     nxt = '/app' + (('?url=' + quote(url)) if url else '')
     if plan in ('starter', 'commercial'):
         nxt = '/upgrade?plan=' + plan

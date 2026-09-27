@@ -53,12 +53,30 @@ def test_unknown_codes_and_deactivated_referrers_are_ignored(web, db):
 
 def test_signup_from_a_network_the_referrer_made_free_videos_on_is_never_rewarded(web, db):
     plans.reserve(ALICE, 'https://www.airbnb.co.uk/rooms/1', 'aaaaaa000001', ip='203.0.113.7')
-    signup(client_for(), referrals.code_for(ALICE), 'carol@example.org', ip='203.0.113.99')  # same /24
+    carol = client_for()
+    signup(carol, referrals.code_for(ALICE), 'carol@example.org', ip='203.0.113.99')  # same /24
     [row] = referral_rows(db)
-    assert row['reward_reason'] == 'same_network' and row['rewarded_at'] is None
+    assert row['reward_reason'] is None  # nothing decided at signup, so there is no instant answer to read
+    [mine] = carol.get('/api/account/export').json()['referrals']
+    assert mine == {'you_are': 'referee', 'ts': row['ts'], 'rewarded_at': None, 'status': 'pending', 'google_account_hash': None}
     with db.connect() as c:
-        assert referrals.reward_first_delivery(c, db.user_id('carol@example.org')) is None
+        assert referrals.reward_first_delivery(c, db.user_id('carol@example.org')) == 'same_network'
+    assert carol.get('/api/account/export').json()['referrals'][0]['status'] == 'not_rewarded'
     assert bonus(db, ALICE) == 0 and bonus(db, 'carol@example.org') == 0
+
+
+def test_sign_in_and_sign_up_keep_a_network_hash_never_the_address(web, db):
+    page = client_for()
+    token = re.search(r'name="csrf" value="([0-9a-f]+)"', page.get('/login').text).group(1)
+    r = page.post('/login', data={'csrf': token, 'user': BOB, 'password': 'synthetic-password'},
+                  headers={'X-Forwarded-For': '198.51.100.77'}, follow_redirects=False)
+    assert r.status_code == 303
+    signup(client_for(), referrals.code_for(ALICE), 'carol@example.org', ip='203.0.113.5')
+    with db.connect() as c:
+        rows = c.execute('SELECT owner_id,ip_hash FROM signin_networks ORDER BY owner_id').fetchall()
+    assert sorted((r['owner_id'], r['ip_hash']) for r in rows) == sorted(
+        [(db.user_id(BOB), store.ip_hash('198.51.100.77')), (db.user_id('carol@example.org'), store.ip_hash('203.0.113.5'))])
+    assert '198.51.100' not in str(rows) and '203.0.113' not in str(rows)
 
 
 def test_account_page_offers_the_link_with_plain_sharing_guidance_and_no_messaging(web, db):

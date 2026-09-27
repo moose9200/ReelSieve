@@ -31,7 +31,8 @@ def erase(email, by=None, via=None):
     """Erase an account (UK/EU GDPR Art 17, DPDP s12), also one already deactivated. Returns a warning or None.
 
     Sign-in ends, jobs stop, the Drive grant is revoked, then one transaction deletes jobs, outreach, Drive
-    receipts, OAuth states and unpaid orders; removes their side of every referral and retires their invite code;
+    receipts, OAuth states, sign-in network hashes and unpaid orders; deletes their unrewarded referrals, removes
+    their side of rewarded ones and retires their invite code;
     strips accounts, usage and paid orders to what accounting and the statutory record period need; and anonymises
     the users row (the email becomes free for a new signup).
     by: the admin, the account itself (self-service) or None (operator console / retention)."""
@@ -51,12 +52,13 @@ def erase(email, by=None, via=None):
             return warning  # another worker finished erasing it first
         address = row['email']
         store.admin_event('erase', by, address, conn=c, via=via)
-        for table in ('jobs', 'outreach', 'drive_uploads', 'drive_oauth_states'):
+        for table in ('jobs', 'outreach', 'drive_uploads', 'drive_oauth_states', 'signin_networks'):
             c.execute(f'DELETE FROM {table} WHERE owner_id=%s', (owner,))
-        # Referrals: the erased side goes, the other account keeps its own record; a waiting reward is closed.
-        for side in ('referrer_id', 'referee_id'):
-            c.execute(f"UPDATE referrals SET {side}=NULL,reward_reason=COALESCE(reward_reason,'account_erased') "
-                      f'WHERE {side}=%s', (owner,))
+        # Referrals: a row with no reward holds nothing the other account needs, so it goes. A rewarded row keeps only
+        # the other account's side (its own bonus). Nothing new is written about the erased account.
+        c.execute('DELETE FROM referrals WHERE (referrer_id=%s OR referee_id=%s) AND rewarded_at IS NULL', (owner, owner))
+        c.execute('UPDATE referrals SET referrer_id=NULL WHERE referrer_id=%s', (owner,))
+        c.execute('UPDATE referrals SET referee_id=NULL,google_hash=NULL WHERE referee_id=%s', (owner,))
         c.execute('DELETE FROM referrals WHERE referrer_id IS NULL AND referee_id IS NULL')
         c.execute("UPDATE drive_connections SET status='disconnected',credentials=NULL,google_sub=NULL,google_email=NULL,"
                   'scope=NULL,folder_id=NULL,connected_at=NULL,updated=%s WHERE owner_id=%s', (now, owner))
