@@ -1,5 +1,6 @@
 """Disposable PostgreSQL schemas only; never load the application's local environment."""
 import os
+import threading
 import uuid
 
 import httpx
@@ -20,6 +21,10 @@ def no_companies_house(monkeypatch):
         raise RuntimeError('network disabled in tests')
     monkeypatch.setattr(companies, '_get_page', refuse)
     monkeypatch.setattr(companies, '_download', refuse)
+    yield
+    for t in threading.enumerate():  # the worker loads snapshots in a thread: let it finish while the network is refused
+        if t.name == 'companies-refresh':
+            t.join(10)
 
 
 @pytest.fixture

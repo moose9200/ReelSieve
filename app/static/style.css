@@ -890,7 +890,7 @@ body.lp-page { display: block; font-size: 15px; }
 
 /* outreach: Companies House search (town, category, button) and the business email's sender fields */
 .or-find-row-b2b { grid-template-columns: 1.4fr 1fr auto; }
-.b2b-sender { grid-template-columns: 1fr 1fr 1.2fr; }
+.b2b-sender { grid-template-columns: 1fr 1fr 1.2fr; align-items: end; } /* inputs line up when a label wraps */
 .b2b-sender .field + .field { margin-top: 0; }
 @media (max-width: 720px) {
   .or-find-row-b2b, .b2b-sender { grid-template-columns: 1fr; }

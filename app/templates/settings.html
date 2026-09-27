@@ -43,7 +43,7 @@
   {% if requests %}
   <ul class="user-list" id="req-list">
     {% for r in requests %}
-    <li class="user-row" data-request="{{ r.ref }}"><span class="u-mail">{{ r.ref }} · {{ request_types.get(r.type, r.type) }} · {{ r.email }}{% if r.name %} ({{ r.name }}){% endif %}{% if r.airbnb_profile_id %} · Airbnb user {{ r.airbnb_profile_id }}{% endif %}</span><span class="pill pill-sm {{ 'pill-neg' if r.due_at < now else 'pill-skipped' }}">Due {{ r.due_at|day }}</span><span class="u-actions"><button type="button" class="btn btn-secondary btn-sm req-done" data-ref="{{ r.ref }}">Mark handled</button></span><p class="hint">Received {{ r.ts|when }}. {{ r.details }}</p></li>
+    <li class="user-row" data-request="{{ r.ref }}"><span class="u-mail">{{ r.ref }} · {{ request_types.get(r.type, r.type) }} · {{ r.email }}{% if r.name %} ({{ r.name }}){% endif %}{% if r.airbnb_profile_id %} · Airbnb user {{ r.airbnb_profile_id }}{% endif %}{% if r.company_number %} · Company {{ r.company_number }}{% endif %}</span><span class="pill pill-sm {{ 'pill-neg' if r.due_at < now else 'pill-skipped' }}">Due {{ r.due_at|day }}</span><span class="u-actions"><button type="button" class="btn btn-secondary btn-sm req-done" data-ref="{{ r.ref }}">Mark handled</button></span><p class="hint">Received {{ r.ts|when }}. {{ r.details }}</p></li>
     {% endfor %}
   </ul>
   {% else %}<p class="hint">No open requests.</p>{% endif %}
@@ -66,6 +66,7 @@
   <div class="section-head"><h2>Companies House data</h2><span class="pill {{ 'pill-done' if companies.snapshot else 'pill-neg' }}">{{ ('Snapshot ' ~ companies.snapshot) if companies.snapshot else 'Not loaded yet' }}</span></div>
   <p class="hint">UK property companies for Outreach, from the Companies House Free Company Data Product. The worker checks every hour and loads each new monthly snapshot once; each load replaces the company rows and removes companies no longer on the register. Company details only, never people.</p>
   {% if companies.snapshot %}<p class="hint">Last snapshot {{ companies.snapshot }}, loaded {{ companies.ingested_at|when }}. Held now: {{ '{:,}'.format(companies.rows) }} companies.</p>{% endif %}
+  {% if companies.failed %}<p class="hint hint-warn">The snapshot of {{ companies.failed.snapshot }} failed to load {{ companies.failed.failed_at|when }}: {{ companies.failed.error }}. The worker tries it again a day later.</p>{% endif %}
 </section>
 
 {% include '_gdrive_card.html' %}

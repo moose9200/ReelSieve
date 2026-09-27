@@ -96,6 +96,8 @@ def seed(db, email, marker, drive=True):
     billing.create_order(email, 'commercial', note=marker + ' pending')
     billing.cancel(billing.create_order(email, 'commercial', note=marker + ' cancelled')['ref'])
     store.add_outreach(email, 'cohost', marker + '-host', 'https://www.airbnb.co.uk/users/show/9', 'Leeds', marker + ' message')
+    store.suppress({'airbnb_profile': f'https://www.airbnb.co.uk/users/show/{100 + len(marker)}'}, email)  # a "Do not contact" mark
+    store.set_b2b_sender(email, marker + ' Sender', marker + ' Lets', marker + '@sender.test')           # business email sender
     store.admin_event('plan', None, email, plan='starter', credits=3)
     with db.connect() as c:
         c.execute("INSERT INTO jobs(id,owner_id,idempotency_key,request_hash,url,params,status,log,meta,drive_generation,created,updated,"
@@ -162,8 +164,10 @@ def test_erase_removes_or_anonymises_every_table(web, owners, google, db):
     with db.connect() as c:
         u = c.execute('SELECT * FROM users WHERE id=%s', (owner,)).fetchone()
         assert u['email'] == f'deleted-{owner}@erased.invalid' and not u['active'] and u['erased_at'] and u['role'] == 'member'
-        assert c.execute('SELECT ip_hash,fp_hash,note FROM accounts WHERE owner_id=%s', (owner,)).fetchone() == \
-            {'ip_hash': None, 'fp_hash': None, 'note': None}
+        assert c.execute('SELECT ip_hash,fp_hash,note,b2b_sender FROM accounts WHERE owner_id=%s', (owner,)).fetchone() == \
+            {'ip_hash': None, 'fp_hash': None, 'note': None, 'b2b_sender': None}
+        marks = c.execute('SELECT owner_id FROM outreach_suppressions').fetchall()  # objections stay; Alice's link goes
+        assert len(marks) == 2 and [m['owner_id'] for m in marks].count(None) == 1 and owner not in str(marks)
         usage = c.execute('SELECT listing_key,fp_hash FROM usage WHERE owner_id=%s', (owner,)).fetchall()
         assert usage and all(r['listing_key'] is None and r['fp_hash'] is None for r in usage)
         for table in ('jobs', 'outreach', 'drive_uploads', 'drive_oauth_states'):
@@ -624,7 +628,9 @@ def test_do_not_contact_suppresses_the_prospect_for_every_user(web, db, monkeypa
     assert [r['name'] for r in store.outreach_rows(BOB)] == ['Kim']
     with db.connect() as c:
         rows = c.execute('SELECT * FROM outreach_suppressions').fetchall()
-    assert rows and all(set(r) == {'key', 'ts'} for r in rows)
+    # nothing about the prospect but a keyed hash; owner_id is the account that marked it (exported, erased, 90 days)
+    assert rows and all(set(r) == {'key', 'ts', 'owner_id'} for r in rows)
+    assert {r['owner_id'] for r in rows} == {db.user_id(ALICE)} and 'Jo' not in str(rows) and 'Sam' not in str(rows)
     assert not any(x in str(rows) for x in ('4242', 'Sam', 'Jo', '222'))
     page = web['alice'].get('/outreach').text
     assert 'Do not contact' in web['alice'].get('/static/app.js').text or 'Do not contact' in page

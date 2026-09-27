@@ -15,8 +15,11 @@ Why limited companies and LLPs only, and never people (sources fetched 27 Sep 20
 - ICO B2B guidance: "you should comply with a corporate subscriber's opt-out request", and a named person's details are
   personal data even in a business context.
   https://ico.org.uk/for-organisations/direct-marketing-and-privacy-and-electronic-communications/business-to-business-marketing/
-Hence: bodies corporate only (CORPORATE), company-level fields only, every email carries the sender and an opt-out line
-that cannot be edited away (compose), and "Do not contact" hides a company from every user (store.suppress).
+Hence: bodies corporate only (CORPORATE), only the company-level fields search needs (never officers or shareholders, and
+only the outward half of the registered-office postcode, because a small company's office is often its owner's home),
+every email carries the sender and an opt-out line that cannot be edited away (compose), and "Do not contact" hides a
+company from every user (store.suppress). The privacy notice's "If your company is on the Companies House register"
+section describes this data: change both together.
 
 Source: the Free Company Data Product, https://download.companieshouse.gov.uk/en_output.html ("The latest snapshot will be
 updated within 5 working days of the previous month end"), files BasicCompanyData-YYYY-MM-01-partN_M.zip, one CSV each;
@@ -25,7 +28,8 @@ Companies Act 2006 s1085-1086, not the Open Government Licence.
 SIC codes: the Companies House condensed SIC 2007 list, https://resources.companieshouse.gov.uk/sic/
 """
 import csv
-import datetime as dt
+import hashlib
+import hmac
 import io
 import json
 import re
@@ -53,12 +57,12 @@ CORPORATE = {'Private Limited Company', 'Public Limited Company', 'Old Public Co
              'Private Unlimited Company', 'Private Unlimited', 'Community Interest Company',
              'PRI/LTD BY GUAR/NSC (Private, limited by guarantee, no share capital)',
              "PRI/LBG/NSC (Private, Limited by guarantee, no share capital, use of 'Limited' exemption)"}
-NEEDED = {'CompanyName', 'CompanyNumber', 'RegAddress.PostTown', 'RegAddress.County', 'RegAddress.Country',
-          'RegAddress.PostCode', 'CompanyCategory', 'CompanyStatus', 'CountryOfOrigin', 'IncorporationDate',
-          *(f'SICCode.SicText_{i}' for i in range(1, 5))}
+NEEDED = {'CompanyName', 'CompanyNumber', 'RegAddress.PostTown', 'RegAddress.County', 'RegAddress.PostCode',
+          'CompanyCategory', 'CompanyStatus', 'CountryOfOrigin', *(f'SICCode.SicText_{i}' for i in range(1, 5))}
 NUMBER = re.compile(r'[A-Z0-9]{8}')
 POSTCODE = re.compile(r'[A-Z]{1,2}[0-9][A-Z0-9]?[0-9][A-Z]{2}')
 PAGE_SIZE = 25
+RETRY_FAILED = 86400  # a snapshot that failed to load is tried again a day later, not every hour
 TEMPLATE = ('Hello {company} team,\n\n'
             'I make short cinematic walkthrough videos for holiday lets and serviced apartments, built from the photos '
             'already on a listing. I would be glad to make one for one of your properties free of charge, so you can see '
@@ -99,8 +103,8 @@ def latest(page):
 
 
 def _keep(rec, ix, snapshot):
-    """The stored fields of an active UK corporate property company, else None.
-    Never a person's name, a street address or a "care of" line: those columns are not read."""
+    """The stored fields of an active UK corporate property company, else None. Never a person's name, a street
+    address, a "care of" line or the full postcode: only its outward code (BH1 of BH1 1AA) is kept."""
     get = lambda k: rec[ix[k]].strip() if ix[k] < len(rec) else ''  # noqa: E731
     if get('CompanyStatus') != 'Active' or get('CountryOfOrigin') != 'United Kingdom' or get('CompanyCategory') not in CORPORATE:
         return None
@@ -108,14 +112,9 @@ def _keep(rec, ix, snapshot):
     number = get('CompanyNumber').upper()
     if not SIC & set(sic) or not NUMBER.fullmatch(number):
         return None
-    try:
-        incorporated = dt.datetime.strptime(get('IncorporationDate'), '%d/%m/%Y').date()
-    except ValueError:
-        incorporated = None
     pc = re.sub(r'\s+', '', get('RegAddress.PostCode').upper())
-    pc = f'{pc[:-3]} {pc[-3:]}' if POSTCODE.fullmatch(pc) else pc
     return (number, get('CompanyName')[:160], (get('RegAddress.PostTown') or get('RegAddress.County'))[:50] or None,
-            pc[:10] or None, get('RegAddress.Country')[:50] or None, sic, incorporated, snapshot)
+            pc[:-3] if POSTCODE.fullmatch(pc) else None, sic, snapshot)
 
 
 def rows(path, snapshot):
@@ -137,21 +136,43 @@ def rows(path, snapshot):
                         yield row
 
 
-def meta(conn=None):
-    """The last snapshot ingested: {'snapshot', 'ingested_at', 'rows'}, or {} before the first."""
+def meta(conn=None, key='companies'):
+    """app_meta: 'companies' is the last snapshot ingested {'snapshot', 'ingested_at', 'rows'}; 'companies_failed' the
+    last one that failed to load {'snapshot', 'failed_at', 'error'}. {} when there is none."""
     with database.transaction(conn) as c:
-        row = c.execute("SELECT value FROM app_meta WHERE key='companies'").fetchone()
+        row = c.execute('SELECT value FROM app_meta WHERE key=%s', (key,)).fetchone()
     return row['value'] if row else {}
 
 
-UPSERT = ('INSERT INTO companies SELECT DISTINCT ON (company_number) * FROM companies_new ORDER BY company_number '
-          'ON CONFLICT (company_number) DO UPDATE SET name=EXCLUDED.name,town=EXCLUDED.town,postcode=EXCLUDED.postcode,'
-          'country=EXCLUDED.country,sic_codes=EXCLUDED.sic_codes,incorporated=EXCLUDED.incorporated,snapshot=EXCLUDED.snapshot')
+def _set_meta(c, key, value):
+    c.execute('INSERT INTO app_meta(key,value) VALUES(%s,%s) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value',
+              (key, Jsonb(value)))
+
+
+def _reason(e):
+    return str(e)[:200] if isinstance(e, RuntimeError) else type(e).__name__
+
+
+def _key_check(key):
+    """Identifies the suppression key a row's suppression_key was made with, without revealing it."""
+    return hmac.new(key, b'reelsieve:companies-key-check', hashlib.sha256).hexdigest()
+
+
+def _key_of(key, n):
+    return hmac.new(key, ('company:' + n).encode(), hashlib.sha256).hexdigest()  # = store.suppression_keys (tested)
+
+
+COLUMNS = 'company_number,name,town,postcode_district,sic_codes,snapshot,suppression_key'
+UPSERT = (f'INSERT INTO companies ({COLUMNS}) SELECT DISTINCT ON (company_number) {COLUMNS} FROM companies_new '
+          'ORDER BY company_number ON CONFLICT (company_number) DO UPDATE SET name=EXCLUDED.name,town=EXCLUDED.town,'
+          'postcode_district=EXCLUDED.postcode_district,sic_codes=EXCLUDED.sic_codes,snapshot=EXCLUDED.snapshot,'
+          'suppression_key=EXCLUDED.suppression_key')
 
 
 def ingest(now=None):
     """Load a new monthly snapshot, once, on one worker replica. One transaction: web readers see the old companies until
-    the new ones are complete, and any failure (download, zip, columns, empty result) leaves the table as it was."""
+    the new ones are complete, and any failure (download, zip, columns, empty result) leaves the table as it was.
+    A snapshot that failed is not downloaded again for RETRY_FAILED; one older than the loaded snapshot is ignored."""
     from app.worker import root
     now = now or time.time()
     with database.connect() as c:
@@ -162,78 +183,109 @@ def ingest(now=None):
         if done == time.strftime('%Y-%m-01', time.gmtime(now)):
             return {'skipped': 'up to date', 'snapshot': done}  # snapshots are dated the 1st: nothing newer this month
         snapshot, urls = latest(_get_page())
-        if snapshot == done:
+        if done and snapshot <= done:  # ISO dates compare as strings: a stale page never loads older data over newer
             return {'skipped': 'up to date', 'snapshot': done}
+        failed = meta(c, 'companies_failed')
+        if failed.get('snapshot') == snapshot and now - failed.get('failed_at', 0) < RETRY_FAILED:
+            return {'skipped': 'failed recently', 'snapshot': snapshot}
         scratch = root() / 'companies'
         shutil.rmtree(scratch, ignore_errors=True)
         scratch.mkdir(parents=True)
         try:
+            key = store._suppression_key()  # keyed here, so search never has to (a different key is re-keyed by _keyed)
             c.execute('CREATE TEMP TABLE companies_new (LIKE companies) ON COMMIT DROP')
-            with c.cursor().copy('COPY companies_new FROM STDIN') as copy:
+            with c.cursor().copy(f'COPY companies_new ({COLUMNS}) FROM STDIN') as copy:
                 for url in urls:  # one part (about 70 MB) on disk at a time
                     part = scratch / 'part.zip'
                     _download(url, part)
                     for row in rows(part, snapshot):
-                        copy.write_row(row)
+                        copy.write_row((*row, _key_of(key, row[0])))
                     part.unlink()
             kept = c.execute(UPSERT).rowcount
             if not kept:
                 raise RuntimeError('No matching companies in the snapshot, so nothing was changed')
             deleted = c.execute('DELETE FROM companies WHERE snapshot<>%s', (snapshot,)).rowcount
-            c.execute("INSERT INTO app_meta(key,value) VALUES('companies',%s) ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value",
-                      (Jsonb({'snapshot': snapshot, 'ingested_at': now, 'rows': kept}),))
+            _set_meta(c, 'companies', {'snapshot': snapshot, 'ingested_at': now, 'rows': kept})
+            _set_meta(c, 'companies_key', {'check': _key_check(key)})
+            c.execute("DELETE FROM app_meta WHERE key='companies_failed'")
+        except Exception as e:
+            with database.connect() as own:  # its own transaction: the load itself rolls back
+                _set_meta(own, 'companies_failed', {'snapshot': snapshot, 'failed_at': now, 'error': _reason(e)})
+            raise
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
     return {'snapshot': snapshot, 'rows': kept, 'deleted': deleted}
 
 
 def refresh(now=None):
-    """The worker's hourly call. Never raises (it retries next hour); prints one JSON line of counts when it did something."""
+    """The worker's hourly call. Never raises (a snapshot that failed is tried again a day later); prints one JSON line
+    of counts when it did something."""
     try:
         out = ingest(now)
     except Exception as e:  # noqa: BLE001 - a failed refresh must never stop the worker claiming jobs
-        out = {'error': str(e)[:200] if isinstance(e, RuntimeError) else type(e).__name__}
+        out = {'error': _reason(e)}
     if 'skipped' not in out:
         print(json.dumps({'companies': out}), flush=True)
     return out
 
 
 def status():
-    """Admin settings: the last snapshot ingested, when, and how many companies are held now."""
+    """Admin settings: the last snapshot ingested, when, how many companies are held now, and a failed load if any."""
     with database.connect() as c:
-        return {**meta(c), 'rows': c.execute('SELECT count(*) AS n FROM companies').fetchone()['n']}
+        failed = meta(c, 'companies_failed')
+        return {**meta(c), 'rows': c.execute('SELECT count(*) AS n FROM companies').fetchone()['n'],
+                **({'failed': failed} if failed else {})}
 
 
 # ---------------- search, queue (web) ----------------
 
 def number(value):
+    """A Companies House number as stored: eight characters, digits padded with the leading zeros people often drop."""
     n = str(value or '').strip().upper()
+    n = n.zfill(8) if n.isdigit() else n
     return n if NUMBER.fullmatch(n) else None
 
 
-def _pads():
-    k = store._suppression_key().ljust(64, b'\0')
-    return bytes(b ^ 0x36 for b in k), bytes(b ^ 0x5C for b in k)
+def _keyed(c):
+    """Make sure every company carries its suppression key, the HMAC store.suppression_keys makes of 'company:<number>',
+    worked out in Python so search anti-joins outreach_suppressions on an index and the key never reaches the database.
+    ingest keys every row it loads, so this normally costs one indexed lookup. It re-keys here only when the rows were
+    keyed with a different key (the worker's SESSION_SECRET differs from the web's, or it was rotated) or not at all."""
+    key = store._suppression_key()
+    check = _key_check(key)
+    if meta(c, 'companies_key').get('check') == check and \
+            not c.execute('SELECT 1 FROM companies WHERE suppression_key IS NULL LIMIT 1').fetchone():
+        return
+    c.execute('SELECT pg_advisory_xact_lock(hashtext(%s))', ('reelsieve-companies-keys-' + database.schema_name(),))
+    stale = meta(c, 'companies_key').get('check') != check
+    q = 'SELECT company_number FROM companies' + ('' if stale else ' WHERE suppression_key IS NULL')
+    todo = [r['company_number'] for r in c.execute(q).fetchall()]
+    if todo:
+        c.execute('UPDATE companies c SET suppression_key=v.k FROM unnest(%s::text[],%s::text[]) AS v(n,k) WHERE c.company_number=v.n',
+                  (todo, [_key_of(key, n) for n in todo]))
+    if stale:
+        _set_meta(c, 'companies_key', {'check': check})
+        print(json.dumps({'companies': {'rekeyed': len(todo)}}), flush=True)  # the worker and web keys differ? check SESSION_SECRET
 
 
-# HMAC-SHA256 (RFC 2104) of 'company:<number>' spelt out with PostgreSQL's sha256(), equal to store.suppression_keys (tested),
-# so companies someone asked us not to contact are left out before counting and paging.
-UNSUPPRESSED = ("NOT EXISTS (SELECT 1 FROM outreach_suppressions s WHERE s.key=encode(sha256(%(opad)s || "
-                "sha256(%(ipad)s || convert_to('company:' || c.company_number, 'UTF8'))), 'hex'))")
+# Companies someone asked us not to contact are left out before counting and paging. A row not keyed yet (a snapshot
+# committed between _keyed and the query) is left out too, until the next search keys it.
+UNSUPPRESSED = ('c.suppression_key IS NOT NULL AND '
+                'NOT EXISTS (SELECT 1 FROM outreach_suppressions s WHERE s.key=c.suppression_key)')
 
 
 def search(place='', category='', page=1):
-    """Companies by town, postcode area (BH) or district (BH1, or a full postcode), and category; PAGE_SIZE a page."""
-    ipad, opad = _pads()
-    where, args = [UNSUPPRESSED], {'ipad': ipad, 'opad': opad}
+    """Companies by town, postcode area (BH) or district (BH1; a full postcode typed in searches its district), and
+    category; PAGE_SIZE a page. A page past the end shows the last page."""
+    where, args = [UNSUPPRESSED], {}
     p = ' '.join(str(place or '').upper().split())[:60]
     district = re.fullmatch(r'([A-Z]{1,2}[0-9][A-Z0-9]?)(?: ?[0-9][A-Z]{2})?', p)
     if re.fullmatch(r'[A-Z]{1,2}', p):
-        where.append('c.postcode ~ %(pc)s')
+        where.append('c.postcode_district ~ %(pc)s')
         args['pc'] = f'^{p}[0-9]'
     elif district:
-        where.append('c.postcode LIKE %(pc)s')
-        args['pc'] = district.group(1) + ' %'
+        where.append('c.postcode_district = %(pc)s')
+        args['pc'] = district.group(1)
     elif p:
         where.append('upper(c.town)=%(town)s')
         args['town'] = p
@@ -242,13 +294,20 @@ def search(place='', category='', page=1):
             raise ValueError('Unknown category')
         where.append('c.sic_codes && %(sic)s')
         args['sic'] = sorted(CATEGORIES[category][1])
-    page = max(1, min(int(page or 1), 10000))
     frm = ' FROM companies c WHERE ' + ' AND '.join(where)
     with database.connect() as c:
+        _keyed(c)
         total = c.execute('SELECT count(*) AS n' + frm, args).fetchone()['n']
+        pages = max(1, -(-total // PAGE_SIZE))
+        page = max(1, min(int(page or 1), pages))
         found = c.execute('SELECT company_number,name,town,sic_codes' + frm + ' ORDER BY name,company_number LIMIT %(lim)s OFFSET %(off)s',
                           {**args, 'lim': PAGE_SIZE, 'off': (page - 1) * PAGE_SIZE}).fetchall()
-    return {'items': [_item(r) for r in found], 'total': total, 'page': page, 'pages': max(1, -(-total // PAGE_SIZE))}
+    return {'items': [_item(r) for r in found], 'total': total, 'page': page, 'pages': pages}
+
+
+def exists(company_number):
+    with database.connect() as c:
+        return bool(c.execute('SELECT 1 FROM companies WHERE company_number=%s', (company_number,)).fetchone())
 
 
 def _item(r):
@@ -275,19 +334,23 @@ def footer(company, sender):
 
 
 def compose(template, company, sender):
-    """The email as the user will send it: their words, then who it is from and how to opt out (PECR reg 23).
-    The footer is added here, so no edit to the template can remove it."""
+    """The email as the user will send it: their words, then who it is from and how to opt out (PECR reg 23(a) and (b)).
+    Naming the business they write for, and the rest of reg 23, rests with the sender. The footer is added here, so no
+    edit to the template can remove it."""
     body = str(template or '').replace('{company}', company)[:2000].strip()
     return (body + '\n\n' if body else '') + footer(company, sender)
 
 
 def queue(user, company_number, template, sender):
-    """Add a company to the user's tracker: its number and registered name (from the register, not the browser), and the email."""
+    """Add a company to the user's tracker: its number and registered name (from the register, not the browser), and the
+    email. The sender's details are kept on the account to fill in next time."""
     n = number(company_number)
-    _sender(sender)  # a missing sender is refused before anything is looked up
+    name, business, email = _sender(sender)  # a missing sender is refused before anything is looked up
     with database.connect() as c:
         co = c.execute('SELECT name FROM companies WHERE company_number=%s', (n,)).fetchone() if n else None
     if not co or not store.unsuppressed([{'company_number': n}]):
         raise LookupError('That company is not in the register snapshot, or has asked not to be contacted')
-    return store.add_outreach(user, 'company', co['name'], RECORD + n, None, compose(template, co['name'], sender),
-                              meta={'company_number': n})
+    rid = store.add_outreach(user, 'company', co['name'], RECORD + n, None, compose(template, co['name'], sender),
+                             meta={'company_number': n})
+    store.set_b2b_sender(user, name, business, email)
+    return rid

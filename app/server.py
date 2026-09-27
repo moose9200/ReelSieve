@@ -537,18 +537,23 @@ async def privacy_request_post(request: Request):
     if auth.too_many(ip, 'privacy'):
         return _request_page(request, 429, f=f, error='Too many requests from this network. Try again in 10 minutes, or email hello@braivex.com.')
     profile = linkedin.airbnb_profile(f.get('airbnb_profile', ''))
+    company = companies.number(f.get('company_number'))
     error = ('Choose what the request is about' if f.get('type') not in store.PRIVACY_REQUEST_TYPES else
              'Enter a valid email address so we can reply' if not auth.EMAIL.match(f.get('email', '')) else
              'Tell us what you would like us to do' if not f.get('details') else
              'Paste the link to your Airbnb profile (airbnb.co.uk/users/show/<number>), or leave it empty'
-             if f.get('airbnb_profile') and not profile else None)
+             if f.get('airbnb_profile') and not profile else
+             'Enter the 8-character company number from Companies House (for example 01234567 or SC123456), or leave it empty'
+             if f.get('company_number') and not company else None)
     if error:
         return _request_page(request, 400, f=f, error=error)
     auth.record_fail(ip, 'privacy')  # counts submissions, not failures
     ref, received = store.add_privacy_request(f['type'], auth.norm(f['email']), f.get('name', '')[:200] or None, f['details'][:4000],
-                                              profile.rsplit('/', 1)[-1] if profile else None)
+                                              profile.rsplit('/', 1)[-1] if profile else None, company)
     if f['type'] == 'objection' and profile:
         store.suppress({'airbnb_profile': profile})  # stop outreach to them at once, for every user
+    if f['type'] == 'objection' and company:
+        store.suppress({'company_number': company})  # the company leaves every user's results at once
     return _request_page(request, ack={'ref': ref, 'received': received, 'due': store.one_month_after(received)})
 
 
@@ -1081,7 +1086,8 @@ def outreach_page(request: Request):
         'csrf': csrf_for(request), 'stats': store.outreach_stats(u), 'cities': store.cities(u), 'rows': rows,
         'default_message': os.getenv('COHOST_MESSAGE') or COHOST_MESSAGE, 'linkedin_default': linkedin.CONNECT_DEFAULT,
         'daily_cap': DAILY_CAP, 'cap': DAILY_CAP, 'sent_today': store.sent_today(u),
-        'b2b_template': companies.TEMPLATE, 'b2b_categories': companies.CATEGORIES, 'b2b_snapshot': companies.meta().get('snapshot')})
+        'b2b_template': companies.TEMPLATE, 'b2b_categories': companies.CATEGORIES, 'b2b_snapshot': companies.meta().get('snapshot'),
+        'b2b_sender': (store.get_account(u) or {}).get('b2b_sender') or {}})
 
 
 @app.get('/api/outreach/cohosts')
@@ -1140,13 +1146,25 @@ async def api_company_queue(request: Request):
     return {'ok': True, 'id': rid, 'stats': store.outreach_stats(u)}
 
 
+def _suppress(item, user):
+    """Do not contact, for every user: recorded against the account marking it and limited per day (store.suppress)."""
+    if not store.suppress(item, user):
+        raise HTTPException(429, 'You have reached the daily limit for marking prospects as do not contact. Do not contact '
+                                 'this one meanwhile, and mark it again tomorrow. If they want it done today, they can use '
+                                 'our privacy request form.')
+
+
 @app.post('/api/outreach/companies/suppress')
 async def api_company_suppress(request: Request):
-    """Do not contact: the company never appears in anyone's results again (a keyed hash of its number is kept)."""
+    """Do not contact: the company never appears in anyone's results again (a keyed hash of its number is kept).
+    Only companies in the register snapshot, recorded against this account and capped per day, so no account can wipe
+    the list for everyone; python -m app.admin unsuppress undoes one account's marks."""
     n = companies.number((await request.json()).get('company_number'))
     if not n:
         raise HTTPException(400, 'That is not a company number')
-    store.suppress({'company_number': n})
+    if not companies.exists(n):
+        raise HTTPException(404, 'That company is not in the register snapshot')
+    _suppress({'company_number': n}, request.state.user)
     return {'ok': True}
 
 
@@ -1161,7 +1179,7 @@ async def api_out_suppress(request: Request):
         meta = json.loads(r.get('meta') or '{}')
     except ValueError:
         meta = {}
-    store.suppress({**(meta if isinstance(meta, dict) else {}), 'name': r['name'], 'url': r['url']})
+    _suppress({**(meta if isinstance(meta, dict) else {}), 'name': r['name'], 'url': r['url']}, u)
     store.outreach_delete(r['id'], u)
     return {'ok': True, 'stats': store.outreach_stats(u)}
 
@@ -1199,7 +1217,8 @@ def api_out_csv(request: Request):
 
 EVENT_LABELS = {'plan': 'Plan or credits changed', 'password_reset': 'Password reset', 'deactivate': 'Removed (deactivated)',
                 'erase': 'Account erased', 'order_settle': 'Order marked paid', 'order_cancel': 'Order cancelled',
-                'order_link': 'Pay link set', 'privacy_request_handled': 'Privacy request handled'}
+                'order_link': 'Pay link set', 'privacy_request_handled': 'Privacy request handled',
+                'unsuppress': 'Do-not-contact marks undone'}
 
 
 def settings_view():

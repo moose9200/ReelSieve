@@ -753,14 +753,9 @@
     var b2bResults = document.getElementById("b2b-results"), b2bStatus = document.getElementById("b2b-status"), b2bPager = document.getElementById("b2b-pager");
     var b2bPrev = document.getElementById("b2b-prev"), b2bNext = document.getElementById("b2b-next"), b2bPageEl = document.getElementById("b2b-page");
     var b2bTpl = document.getElementById("b2b-template"), b2bPage = 1, b2bPages = 1;
+    var b2bQuery = { place: "", category: "" }; // the search that produced the results on screen: Previous/Next page through it
+    // the sender's details are kept on the account when they queue (the page fills them in), never in this browser
     var b2bSender = { name: "b2b-sender-name", business: "b2b-sender-business", email: "b2b-sender-email" };
-    // the sender's own details are remembered in this browser only, never on our server until they queue an email
-    Object.keys(b2bSender).forEach(function (k) {
-      var el = document.getElementById(b2bSender[k]);
-      if (!el) return;
-      try { var v = localStorage.getItem("rs-" + b2bSender[k]); if (v) el.value = v; } catch (e) {}
-      el.addEventListener("change", function () { try { localStorage.setItem("rs-" + b2bSender[k], el.value.trim()); } catch (e) {} });
-    });
     function b2bSenderNow() {
       var out = {};
       Object.keys(b2bSender).forEach(function (k) { var el = document.getElementById(b2bSender[k]); out[k] = el ? el.value.trim() : ""; });
@@ -804,21 +799,23 @@
       if (b2bPrev) b2bPrev.disabled = b2bPage <= 1;
       if (b2bNext) b2bNext.disabled = b2bPage >= b2bPages;
     }
-    function b2bLoad(page) {
-      var place = ((b2bPlace && b2bPlace.value) || "").trim();
+    function b2bLoad(page, q) {
+      q = q || b2bQuery; // a new search passes the boxes; paging reuses the search on screen even if the boxes changed
       if (b2bFind) b2bFind.disabled = true;
       orSay(b2bStatus, "Searching the register…");
-      getJSON("/api/outreach/companies?place=" + encodeURIComponent(place) + "&category=" + encodeURIComponent(b2bCat ? b2bCat.value : "") + "&page=" + page)
+      getJSON("/api/outreach/companies?place=" + encodeURIComponent(q.place) + "&category=" + encodeURIComponent(q.category) + "&page=" + page)
         .then(function (d) {
+          b2bQuery = q;
           b2bRender(d);
           var n = (d && d.total) || 0;
-          orSay(b2bStatus, n.toLocaleString("en-GB") + (n === 1 ? " company" : " companies") + (place ? " in " + place : " across the UK"));
+          orSay(b2bStatus, n.toLocaleString("en-GB") + (n === 1 ? " company" : " companies") + (q.place ? " in " + q.place : " across the UK"));
         })
         .catch(function (err) { orSay(b2bStatus, err.message, true); })
         .then(function () { if (b2bFind) b2bFind.disabled = false; });
     }
-    if (b2bFind) b2bFind.addEventListener("click", function () { b2bLoad(1); });
-    if (b2bPlace) b2bPlace.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); b2bLoad(1); } });
+    function b2bSearch() { b2bLoad(1, { place: ((b2bPlace && b2bPlace.value) || "").trim(), category: b2bCat ? b2bCat.value : "" }); }
+    if (b2bFind) b2bFind.addEventListener("click", b2bSearch);
+    if (b2bPlace) b2bPlace.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); b2bSearch(); } });
     if (b2bPrev) b2bPrev.addEventListener("click", function () { if (b2bPage > 1) b2bLoad(b2bPage - 1); });
     if (b2bNext) b2bNext.addEventListener("click", function () { if (b2bPage < b2bPages) b2bLoad(b2bPage + 1); });
 

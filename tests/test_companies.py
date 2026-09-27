@@ -2,9 +2,12 @@
 Synthetic zips only: no test downloads the real snapshot (conftest refuses the network for app.companies)."""
 import hashlib
 import hmac
-import io
+import json
+import threading
+import time
 import zipfile
 
+import httpx
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
@@ -12,6 +15,7 @@ from fastapi.testclient import TestClient
 from app import auth, companies, server, store
 
 ALICE, BOB, ADMIN = 'alice@example.test', 'bob@example.test', 'operator@example.test'
+REAL_GET_PAGE, REAL_DOWNLOAD = companies._get_page, companies._download  # before conftest refuses the network
 # The header line of the real snapshot, copied from BasicCompanyData-2026-09-01-part7_7.csv (fetched 27 Sep 2026).
 HEADER = ('CompanyName, CompanyNumber,RegAddress.CareOf,RegAddress.POBox,RegAddress.AddressLine1, RegAddress.AddressLine2,'
           'RegAddress.PostTown,RegAddress.County,RegAddress.Country,RegAddress.PostCode,CompanyCategory,CompanyStatus,'
@@ -95,10 +99,12 @@ def test_ingest_keeps_active_uk_corporate_property_companies_and_nothing_about_p
     got = table(db)
     assert sorted(got) == ['00000001', 'OC000002']
     assert got['OC000002']['name'] == 'HARBOUR STAYS LLP' and got['OC000002']['town'] == 'POOLE'
-    assert got['OC000002']['postcode'] == 'BH15 1AA' and got['OC000002']['sic_codes'] == ['47990', '55209']
-    assert str(got['00000001']['incorporated']) == '2024-05-14' and got['00000001']['snapshot'] == '2026-09-01'
-    assert set(got['00000001']) == {'company_number', 'name', 'town', 'postcode', 'country', 'sic_codes', 'incorporated', 'snapshot'}
-    assert 'JOHN SMITH' not in str(got) and 'PRIVATE LANE' not in str(got)
+    assert got['OC000002']['postcode_district'] == 'BH15' and got['OC000002']['sic_codes'] == ['47990', '55209']
+    assert got['00000001']['postcode_district'] == 'BH1' and got['00000001']['snapshot'] == '2026-09-01'
+    assert set(got['00000001']) == {'company_number', 'name', 'town', 'postcode_district', 'sic_codes', 'snapshot', 'suppression_key'}
+    assert 'JOHN SMITH' not in str(got) and 'PRIVATE LANE' not in str(got) and '1AA' not in str(got)  # outward code only
+    assert 'ENGLAND' not in str(got) and '2024' not in str(got)       # no country or incorporation date either
+    assert got['00000001']['suppression_key'] == store.suppression_keys({'company_number': '00000001'})[0]  # keyed at ingest
     assert ch.downloads == ['BasicCompanyData-2026-09-01-part1_2.zip', 'BasicCompanyData-2026-09-01-part2_2.zip']
     assert not (tmp_path / 'scratch' / 'companies').exists()  # temp files deleted
     assert companies.status()['snapshot'] == '2026-09-01' and companies.status()['rows'] == 2
@@ -178,7 +184,10 @@ def test_worker_checks_for_a_new_snapshot_hourly_next_to_retention(db, monkeypat
     monkeypatch.setattr(worker, '_last_purge', [0.0])
     worker.run_once('w')
     worker.run_once('w')
-    assert calls == ['companies', 'retention']  # refresh never raises, so a failing retention cannot block it or vice versa
+    for t in threading.enumerate():
+        if t.name == 'companies-refresh':
+            t.join(5)
+    assert sorted(calls) == ['companies', 'retention']  # once an hour; the load runs in its own thread
 
 
 def test_a_failed_refresh_never_raises_into_the_worker(db, capsys):
@@ -211,18 +220,18 @@ def web(owners):
 
 def seed(db, rows):
     with db.connect() as c:
-        for number, name, town, postcode, sic in rows:
-            c.execute("INSERT INTO companies(company_number,name,town,postcode,country,sic_codes,incorporated,snapshot) "
-                      "VALUES(%s,%s,%s,%s,'ENGLAND',%s,'2020-01-01','2026-09-01')", (number, name, town, postcode, sic))
+        for number, name, town, district, sic in rows:
+            c.execute("INSERT INTO companies(company_number,name,town,postcode_district,sic_codes,snapshot) "
+                      "VALUES(%s,%s,%s,%s,%s,'2026-09-01')", (number, name, town, district, sic))
 
 
 SENDER = {'name': 'Priya Shah', 'business': 'Reel Studio', 'email': 'priya@reelstudio.test'}
 
 
 def test_search_filters_by_town_postcode_area_and_category_and_pages(web, db):
-    seed(db, [(f'1{n:07d}', f'BOURNEMOUTH LETS {n:02d} LTD', 'BOURNEMOUTH', f'BH1 {n % 9}AA', ['68320']) for n in range(30)] +
-             [('20000001', 'POOLE STAYS LTD', 'POOLE', 'BH15 1AA', ['55209']),
-              ('20000002', 'BIRMINGHAM LETS LTD', 'BIRMINGHAM', 'B1 1AA', ['68320', '55209'])])
+    seed(db, [(f'1{n:07d}', f'BOURNEMOUTH LETS {n:02d} LTD', 'BOURNEMOUTH', 'BH1', ['68320']) for n in range(30)] +
+             [('20000001', 'POOLE STAYS LTD', 'POOLE', 'BH15', ['55209']),
+              ('20000002', 'BIRMINGHAM LETS LTD', 'BIRMINGHAM', 'B1', ['68320', '55209'])])
     get = lambda q: web['alice'].get('/api/outreach/companies' + q).json()  # noqa: E731
     first = get('?place=bournemouth')
     assert first['total'] == 30 and first['pages'] == 2 and len(first['items']) == 25
@@ -243,8 +252,8 @@ def test_search_filters_by_town_postcode_area_and_category_and_pages(web, db):
 
 
 def test_do_not_contact_hides_a_company_from_every_user_by_keyed_hash(web, db):
-    seed(db, [('00000001', 'SEASIDE LETS LTD', 'BOURNEMOUTH', 'BH1 1AA', ['68320']),
-              ('00000002', 'HARBOUR STAYS LTD', 'BOURNEMOUTH', 'BH1 2AA', ['55209'])])
+    seed(db, [('00000001', 'SEASIDE LETS LTD', 'BOURNEMOUTH', 'BH1', ['68320']),
+              ('00000002', 'HARBOUR STAYS LTD', 'BOURNEMOUTH', 'BH1', ['55209'])])
     assert post(web['alice'], '/api/outreach/companies/suppress', {'company_number': '00000001'}).status_code == 200
     assert [i['name'] for i in web['bob'].get('/api/outreach/companies?place=Bournemouth').json()['items']] == ['HARBOUR STAYS LTD']
     assert web['bob'].get('/api/outreach/companies?place=Bournemouth').json()['total'] == 1
@@ -252,20 +261,20 @@ def test_do_not_contact_hides_a_company_from_every_user_by_keyed_hash(web, db):
     assert r.status_code == 404 and store.outreach_rows(BOB) == []
     with db.connect() as c:
         rows = c.execute('SELECT * FROM outreach_suppressions').fetchall()
-    assert len(rows) == 1 and set(rows[0]) == {'key', 'ts'} and '00000001' not in str(rows)
+    assert len(rows) == 1 and set(rows[0]) == {'key', 'ts', 'owner_id'} and '00000001' not in str(rows)
     assert rows[0]['key'] == hmac.new(store._suppression_key(), b'company:00000001', hashlib.sha256).hexdigest()
     assert post(web['alice'], '/api/outreach/companies/suppress', {'company_number': 'x; drop'}).status_code == 400
 
 
 def test_do_not_contact_on_a_queued_company_row_suppresses_the_company(web, db):
-    seed(db, [('00000001', 'SEASIDE LETS LTD', 'BOURNEMOUTH', 'BH1 1AA', ['68320'])])
+    seed(db, [('00000001', 'SEASIDE LETS LTD', 'BOURNEMOUTH', 'BH1', ['68320'])])
     rid = post(web['alice'], '/api/outreach/companies/queue', {'company_number': '00000001', 'template': 'Hi', 'sender': SENDER}).json()['id']
     assert post(web['alice'], '/api/outreach/suppress', {'id': rid}).status_code == 200
     assert web['bob'].get('/api/outreach/companies').json()['total'] == 0 and store.outreach_rows(ALICE) == []
 
 
 def test_queue_stores_the_company_number_and_name_and_a_complete_email(web, db):
-    seed(db, [('00000001', 'SEASIDE LETS LTD', 'BOURNEMOUTH', 'BH1 1AA', ['68320'])])
+    seed(db, [('00000001', 'SEASIDE LETS LTD', 'BOURNEMOUTH', 'BH1', ['68320'])])
     r = post(web['alice'], '/api/outreach/companies/queue',
              {'company_number': '00000001', 'name': 'SPOOFED NAME', 'template': 'Hello {company} team, fancy a video?', 'sender': SENDER})
     assert r.status_code == 200 and r.json()['stats']['queued'] == 1
@@ -308,9 +317,209 @@ def test_outreach_page_explains_when_business_emails_need_consent(web, db):
 
 def test_admin_settings_show_the_last_snapshot_and_row_count(web, db):
     assert 'Not loaded yet' in web['admin'].get('/settings').text
-    seed(db, [('00000001', 'ONE LTD', 'LEEDS', 'LS1 1AA', ['68320']), ('00000002', 'TWO LTD', 'LEEDS', 'LS1 1AB', ['68320'])])
+    seed(db, [('00000001', 'ONE LTD', 'LEEDS', 'LS1', ['68320']), ('00000002', 'TWO LTD', 'LEEDS', 'LS1', ['68320'])])
     with db.connect() as c:
         c.execute("INSERT INTO app_meta(key,value) VALUES('companies','{\"snapshot\": \"2026-09-01\", \"ingested_at\": 1790000000}')")
     card = web['admin'].get('/settings').text.split('id="companies-card"', 1)[1].split('</section>', 1)[0]
-    assert '2026-09-01' in card and '2 companies' in card
+    assert '2026-09-01' in card and '2 companies' in card and 'failed' not in card
+    with db.connect() as c:
+        companies._set_meta(c, 'companies_failed', {'snapshot': '2026-10-01', 'failed_at': 1791000000, 'error': 'Columns changed'})
+    card = web['admin'].get('/settings').text.split('id="companies-card"', 1)[1].split('</section>', 1)[0]
+    assert 'The snapshot of 2026-10-01 failed to load' in card and 'Columns changed' in card
     assert web['alice'].get('/settings', follow_redirects=False).status_code == 303
+
+
+# ---------------- review fixes (27 Sep 2026) ----------------
+
+DAY = 86400
+
+
+def owner_of(db, email):
+    with db.connect() as c:
+        return c.execute('SELECT id FROM users WHERE email=%s', (email,)).fetchone()['id']
+
+
+def suppressions(db):
+    with db.connect() as c:
+        return c.execute('SELECT * FROM outreach_suppressions ORDER BY ts').fetchall()
+
+
+def test_do_not_contact_from_search_needs_a_real_company_records_who_and_is_capped_per_day(web, db, monkeypatch):
+    seed(db, [(f'1{n:07d}', f'LETS {n:02d} LTD', 'BOURNEMOUTH', 'BH1', ['68320']) for n in range(4)])
+    assert post(web['alice'], '/api/outreach/companies/suppress', {'company_number': 'ZZ000000'}).status_code == 404
+    assert suppressions(db) == []                                     # made-up numbers are never stored
+    monkeypatch.setattr(store, 'DAILY_SUPPRESSIONS', 2)
+    for n in range(2):
+        assert post(web['alice'], '/api/outreach/companies/suppress', {'company_number': f'1{n:07d}'}).status_code == 200
+    r = post(web['alice'], '/api/outreach/companies/suppress', {'company_number': '10000002'})
+    assert r.status_code == 429 and 'tomorrow' in r.json()['detail']
+    assert web['bob'].get('/api/outreach/companies').json()['total'] == 2
+    assert [s['owner_id'] for s in suppressions(db)] == [owner_of(db, ALICE)] * 2
+    rid = post(web['alice'], '/api/outreach/companies/queue', {'company_number': '10000003', 'template': 'Hi', 'sender': SENDER}).json()['id']
+    assert post(web['alice'], '/api/outreach/suppress', {'id': rid}).status_code == 429  # the tracker path shares the cap
+    assert len(store.outreach_rows(ALICE)) == 1                       # and keeps the row so it can be marked tomorrow
+    assert post(web['bob'], '/api/outreach/companies/suppress', {'company_number': '10000002'}).status_code == 200  # per account
+
+
+def test_the_operator_can_undo_one_accounts_do_not_contact_marks_but_never_real_objections(web, db):
+    from app import admin
+    seed(db, [('00000001', 'ONE LTD', 'LEEDS', 'LS1', ['68320']), ('00000002', 'TWO LTD', 'LEEDS', 'LS1', ['68320'])])
+    assert post(web['alice'], '/api/outreach/companies/suppress', {'company_number': '00000001'}).status_code == 200
+    store.suppress({'company_number': '00000002'})                    # an objection through the privacy form: no account
+    assert web['bob'].get('/api/outreach/companies').json()['total'] == 0
+    assert admin.main(['unsuppress', ALICE]) == 0
+    assert [i['name'] for i in web['bob'].get('/api/outreach/companies').json()['items']] == ['ONE LTD']
+    assert len(suppressions(db)) == 1 and suppressions(db)[0]['owner_id'] is None
+    assert 'unsuppress' in [e['action'] for e in store.admin_events()]
+
+
+def test_who_marked_do_not_contact_is_exported_and_forgotten_on_erasure_and_after_90_days(web, db):
+    from app import admin, retention
+    seed(db, [('00000001', 'ONE LTD', 'LEEDS', 'LS1', ['68320']), ('00000002', 'TWO LTD', 'LEEDS', 'LS1', ['68320'])])
+    post(web['alice'], '/api/outreach/companies/suppress', {'company_number': '00000001'})
+    marks = web['alice'].get('/api/account/export').json()['outreach_suppressions']
+    assert len(marks) == 1 and set(marks[0]) == {'ts'}               # when, never the keyed hash about someone else
+    retention.run(now=time.time() + 91 * DAY)
+    assert [s['owner_id'] for s in suppressions(db)] == [None]        # the objection stays; who marked it goes
+    post(web['alice'], '/api/outreach/companies/suppress', {'company_number': '00000002'})
+    admin.erase(ALICE)
+    assert [s['owner_id'] for s in suppressions(db)] == [None, None]
+    assert web['bob'].get('/api/outreach/companies').json()['total'] == 0
+
+
+def test_do_not_contact_holds_for_companies_loaded_later_and_after_a_new_session_secret(web, db, monkeypatch):
+    store.suppress({'company_number': '00000003'})                    # objected before the company was loaded
+    seed(db, [('00000001', 'ONE LTD', 'LEEDS', 'LS1', ['68320'])])
+    assert web['bob'].get('/api/outreach/companies').json()['total'] == 1
+    seed(db, [('00000003', 'THREE LTD', 'LEEDS', 'LS1', ['68320'])])  # arrives in a later snapshot
+    assert [i['name'] for i in web['bob'].get('/api/outreach/companies').json()['items']] == ['ONE LTD']
+    with db.connect() as c:
+        keyed = {r['company_number']: r['suppression_key'] for r in c.execute('SELECT * FROM companies').fetchall()}
+    assert keyed['00000003'] == store.suppression_keys({'company_number': '00000003'})[0]
+    monkeypatch.setenv('SESSION_SECRET', 'a-rotated-synthetic-session-secret-only')
+    store.suppress({'company_number': '00000001'})                    # a new objection under the new key
+    assert '00000001' not in [i['company_number'] for i in companies.search()['items']]  # rows were re-keyed
+
+
+def test_a_page_past_the_end_shows_the_last_page(web, db):
+    seed(db, [(f'1{n:07d}', f'LETS {n:02d} LTD', 'BOURNEMOUTH', 'BH1', ['68320']) for n in range(30)])
+    got = web['alice'].get('/api/outreach/companies?place=Bournemouth&page=400').json()
+    assert (got['page'], got['pages'], len(got['items']), got['total']) == (2, 2, 5, 30)
+    js = open('app/static/app.js', encoding='utf-8').read()
+    assert 'b2bQuery' in js  # Previous/Next page through the query that produced the results, not the edited boxes
+
+
+def test_a_snapshot_that_fails_is_retried_after_a_day_not_every_hour(db, ch):
+    ch.date = '2026-09-01'
+    ch.snapshots[ch.date] = [[row('00000009', 'SHOP LTD', sic=(OTHER,))], []]  # no property company: fails every time
+    assert 'error' in companies.refresh(now=1790000000)
+    assert companies.refresh(now=1790003600)['skipped'] and companies.refresh(now=1790007200)['skipped']
+    assert len(ch.downloads) == 2                                     # one attempt, not one an hour
+    assert companies.status()['failed']['snapshot'] == '2026-09-01'
+    ch.snapshots[ch.date] = [[row('00000001', 'ONE LTD')], []]
+    assert companies.refresh(now=1790000000 + DAY + 60)['rows'] == 1  # tried again a day later
+    assert 'failed' not in companies.status()
+
+
+def test_an_older_snapshot_on_the_page_is_never_loaded_over_a_newer_one(db, ch):
+    ch.date = '2026-09-01'
+    ch.snapshots[ch.date] = [[row('00000001', 'ONE LTD'), row('00000002', 'TWO LTD')]]
+    companies.refresh(now=1790000000)
+    ch.date = '2026-08-01'
+    ch.snapshots[ch.date] = [[row('00000001', 'ONE LTD')]]
+    assert companies.refresh(now=1791500000)['skipped']
+    assert sorted(table(db)) == ['00000001', '00000002'] and companies.status()['snapshot'] == '2026-09-01'
+
+
+def test_the_monthly_load_runs_beside_job_claims_not_in_front_of_them(db, monkeypatch, tmp_path):
+    from app import jobs, retention, worker
+    monkeypatch.setenv('RENDER_TMP_DIR', str(tmp_path))
+    release, started, loads, claims = threading.Event(), threading.Event(), [], []
+    monkeypatch.setattr(companies, 'refresh', lambda: loads.append(1) or started.set() or release.wait(10))
+    monkeypatch.setattr(retention, 'run', lambda: {})
+    monkeypatch.setattr(jobs, 'claim', lambda *a: claims.append(1))
+    monkeypatch.setattr(worker, '_last_purge', [0.0])
+    try:
+        worker.run_once('w')
+        assert started.wait(5) and claims == [1]                      # a job was claimed while the load still runs
+        worker._last_purge[0] = 0.0
+        worker.run_once('w')                                          # the next hourly tick starts no second load
+        assert claims == [1, 1] and loads == [1]
+    finally:
+        release.set()
+
+
+def test_the_sender_details_live_on_the_account_not_in_the_browser(web, db):
+    from app import admin
+    seed(db, [('00000001', 'SEASIDE LETS LTD', 'BOURNEMOUTH', 'BH1', ['68320'])])
+    assert 'rs-b2b' not in open('app/static/app.js', encoding='utf-8').read()  # nothing about the sender in local storage
+    post(web['alice'], '/api/outreach/companies/queue', {'company_number': '00000001', 'template': 'Hi', 'sender': SENDER})
+    mine, theirs = web['alice'].get('/outreach').text, web['bob'].get('/outreach').text
+    for v in ('value="Priya Shah"', 'value="Reel Studio"', 'value="priya@reelstudio.test"'):
+        assert v in mine and v not in theirs
+    assert 'value="bob@example.test"' in theirs
+    assert 'Priya Shah' in json.dumps(web['alice'].get('/api/account/export').json()['accounts'])
+    alice = owner_of(db, ALICE)
+    admin.erase(ALICE)
+    with db.connect() as c:
+        assert c.execute('SELECT b2b_sender FROM accounts WHERE owner_id=%s', (alice,)).fetchone()['b2b_sender'] is None
+
+
+def test_a_company_can_object_through_the_public_privacy_form(web, db):
+    import re
+    seed(db, [('00000001', 'SEASIDE LETS LTD', 'BOURNEMOUTH', 'BH1', ['68320'])])
+    anon = client_for()
+    form = anon.get('/privacy/request').text
+    assert 'Company number' in form
+    token = re.search(r'name="csrf" value="([0-9a-f]+)"', form).group(1)
+    base = {'csrf': token, 'email': ALICE, 'type': 'objection', 'details': 'Please stop.', 'airbnb_profile': ''}
+    assert anon.post('/privacy/request', data={**base, 'company_number': 'not a number'}).status_code == 400
+    assert anon.post('/privacy/request', data={**base, 'company_number': ' 1 '}).status_code == 200  # leading zeros optional
+    assert web['bob'].get('/api/outreach/companies').json()['total'] == 0
+    with db.connect() as c:
+        assert c.execute('SELECT company_number FROM privacy_requests').fetchone()['company_number'] == '00000001'
+    assert 'Company 00000001' in web['admin'].get('/settings').text
+    assert web['alice'].get('/api/account/export').json()['privacy_requests'][0]['company_number'] == '00000001'
+    anon.__exit__(None, None, None)
+
+
+# ---------------- the real network code, against a mock transport ----------------
+
+@pytest.fixture
+def mock_ch(monkeypatch, tmp_path):
+    """httpx.get and httpx.stream answered by a MockTransport: set .routes[path] = httpx.Response."""
+    class Fake:
+        routes = {}
+    fake = Fake()
+    transport = httpx.MockTransport(lambda req: fake.routes.get(req.url.path) or httpx.Response(404))
+    monkeypatch.setattr(httpx, 'get', lambda url, **kw: httpx.Client(transport=transport).get(url, **kw))
+    monkeypatch.setattr(httpx, 'stream', lambda method, url, **kw: httpx.Client(transport=transport).stream(method, url, **kw))
+    monkeypatch.setattr(companies, '_get_page', REAL_GET_PAGE)
+    monkeypatch.setattr(companies, '_download', REAL_DOWNLOAD)
+    monkeypatch.setenv('RENDER_TMP_DIR', str(tmp_path / 'scratch'))
+    return fake
+
+
+def test_download_streams_to_disk_caps_the_size_and_refuses_errors_and_redirects(mock_ch, tmp_path):
+    body = b'PK' + b'x' * 5000
+    mock_ch.routes['/ok.zip'] = httpx.Response(200, content=body)
+    mock_ch.routes['/moved.zip'] = httpx.Response(302, headers={'Location': companies.BASE + 'ok.zip'})
+    mock_ch.routes['/en_output.html'] = httpx.Response(200, text=page('2026-09-01', 7))
+    companies._download(companies.BASE + 'ok.zip', tmp_path / 'a.zip')
+    assert (tmp_path / 'a.zip').read_bytes() == body
+    with pytest.raises(RuntimeError):
+        companies._download(companies.BASE + 'ok.zip', tmp_path / 'b.zip', limit=1000)
+    for bad in ('missing.zip', 'moved.zip'):
+        with pytest.raises(httpx.HTTPStatusError):
+            companies._download(companies.BASE + bad, tmp_path / 'c.zip')
+    assert companies.latest(companies._get_page())[0] == '2026-09-01'
+
+
+def test_a_part_that_will_not_download_rolls_the_whole_load_back(db, mock_ch, tmp_path):
+    good = tmp_path / 'part1.zip'
+    snapshot_zip(good, [row('00000001', 'ONE LTD')])
+    mock_ch.routes['/en_output.html'] = httpx.Response(200, text=page('2026-09-01', 2))
+    mock_ch.routes['/BasicCompanyData-2026-09-01-part1_2.zip'] = httpx.Response(200, content=good.read_bytes())
+    assert 'error' in companies.refresh(now=1790000000)                # part 2 answers 404
+    assert table(db) == {} and companies.status().get('snapshot') is None
+    assert not (tmp_path / 'scratch' / 'companies').exists()

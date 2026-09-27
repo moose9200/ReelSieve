@@ -197,11 +197,30 @@ def suppression_keys(item):
     return [hmac.new(_suppression_key(), i.encode(), hashlib.sha256).hexdigest() for i in ids]
 
 
-def suppress(item):
-    """Do not contact this prospect again, for any user. Stores hashes only."""
+DAILY_SUPPRESSIONS = 30  # keys one account may add in 24 hours (a host can take two); cohost sends are capped at 5 a day
+
+
+def suppress(item, user=None):
+    """Do not contact this prospect again, for any user. Stores hashes only.
+    user: the account marking it, recorded so misuse can be traced and undone (app/admin.py unsuppress), and limited to
+    DAILY_SUPPRESSIONS a day; returns False, storing nothing, past that. None: an objection through the privacy form."""
     with database.connect() as c:
+        owner = database.user_id(user, c) if user else None
+        if owner and c.execute('SELECT count(*) AS n FROM outreach_suppressions WHERE owner_id=%s AND ts>%s',
+                               (owner, time.time() - 86400)).fetchone()['n'] >= DAILY_SUPPRESSIONS:
+            return False
         for key in suppression_keys(item):
-            c.execute('INSERT INTO outreach_suppressions(key,ts) VALUES(%s,%s) ON CONFLICT (key) DO NOTHING', (key, time.time()))
+            c.execute('INSERT INTO outreach_suppressions(key,ts,owner_id) VALUES(%s,%s,%s) ON CONFLICT (key) DO NOTHING',
+                      (key, time.time(), owner))
+    return True
+
+
+def set_b2b_sender(user, name, business, email):
+    """The name, business name and reply email the account last put on a business email (filled in next time)."""
+    with database.connect() as c:
+        ensure_account(user, conn=c)
+        c.execute('UPDATE accounts SET b2b_sender=%s WHERE owner_id=%s',
+                  (Jsonb({'name': name, 'business': business, 'email': email}), database.user_id(user, c)))
 
 
 def unsuppressed(items):
@@ -258,7 +277,8 @@ def admin_event(action, actor=None, target=None, conn=None, **detail):
 TEAM_CHANGE_LABELS = {'plan': 'Plan or credits changed by our team', 'password_reset': 'Password reset by our team',
                       'order_settle': 'Order marked paid by our team', 'order_cancel': 'Order cancelled by our team',
                       'order_link': 'Payment link added to an order by our team',
-                      'privacy_request_handled': 'Privacy request closed by our team'}
+                      'privacy_request_handled': 'Privacy request closed by our team',
+                      'unsuppress': 'Your "Do not contact" marks removed by our team'}
 
 
 def team_changes(user, limit=10):
@@ -298,8 +318,10 @@ def export(user):
             'drive_oauth_states': rows('SELECT redirect_uri,created,expires_at FROM drive_oauth_states WHERE owner_id=%(o)s'),
             'admin_events': rows('SELECT ts,action,detail,actor_id=%(o)s AS by_you,target_id=%(o)s AS about_you '
                                  'FROM admin_events WHERE actor_id=%(o)s OR target_id=%(o)s ORDER BY ts'),
-            'privacy_requests': rows('SELECT ref,ts,type,name,details,airbnb_profile_id,status,due_at,handled_at FROM privacy_requests '
-                                     'WHERE lower(email)=(SELECT email FROM users WHERE id=%(o)s) ORDER BY ts'),
+            'privacy_requests': rows('SELECT ref,ts,type,name,details,airbnb_profile_id,company_number,status,due_at,handled_at '
+                                     'FROM privacy_requests WHERE lower(email)=(SELECT email FROM users WHERE id=%(o)s) ORDER BY ts'),
+            # when you marked someone "Do not contact"; the keyed hash identifies them, not you, so it stays out
+            'outreach_suppressions': rows('SELECT ts FROM outreach_suppressions WHERE owner_id=%(o)s ORDER BY ts'),
         }
 
 
@@ -316,16 +338,16 @@ def one_month_after(ts):
     return d.replace(year=y, month=m, day=min(d.day, calendar.monthrange(y, m)[1])).timestamp()
 
 
-def add_privacy_request(kind, email, name, details, airbnb_profile_id=None):
+def add_privacy_request(kind, email, name, details, airbnb_profile_id=None, company_number=None):
     """Store a request and return (ref, received ts). The on-screen reference is the acknowledgement."""
     import secrets
     now = time.time()
     for _ in range(6):
         ref = 'PR-' + time.strftime('%y%m%d', time.gmtime(now)) + '-' + secrets.token_hex(3).upper()
         with database.connect() as c:
-            if c.execute('INSERT INTO privacy_requests(ref,ts,type,email,name,details,airbnb_profile_id,due_at) '
-                         'VALUES(%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (ref) DO NOTHING RETURNING ref',
-                         (ref, now, kind, email, name, details, airbnb_profile_id, one_month_after(now))).fetchone():
+            if c.execute('INSERT INTO privacy_requests(ref,ts,type,email,name,details,airbnb_profile_id,company_number,due_at) '
+                         'VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (ref) DO NOTHING RETURNING ref',
+                         (ref, now, kind, email, name, details, airbnb_profile_id, company_number, one_month_after(now))).fetchone():
                 return ref, now
     raise RuntimeError('Could not allocate a request reference')
 

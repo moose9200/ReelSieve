@@ -117,15 +117,15 @@
   <div class="section-head"><h2>Business email</h2><span class="pill pill-skipped">You send each one</span></div>
   <p class="hint" id="b2b-consent">When does a business email need consent? You can email a limited company or LLP without asking first, as long as you say who you are and give an easy way to opt out. Sole traders and ordinary partnerships count as individuals, so email them only if they have agreed to hear from you. Whoever you write to, stop as soon as they ask. If you write to a named person at a company, data protection law covers their details too.</p>
   <div class="grid-3 b2b-sender or-mt">
-    <div class="field"><label for="b2b-sender-name">Your name</label><input type="text" id="b2b-sender-name" autocomplete="name" placeholder="Priya Shah"></div>
-    <div class="field"><label for="b2b-sender-business">Business name (optional)</label><input type="text" id="b2b-sender-business" autocomplete="organization" placeholder="Reel Studio"></div>
-    <div class="field"><label for="b2b-sender-email">Reply email</label><input type="email" id="b2b-sender-email" autocomplete="email" value="{{ request.state.user or '' }}"></div>
+    <div class="field"><label for="b2b-sender-name">Your name</label><input type="text" id="b2b-sender-name" autocomplete="name" placeholder="Priya Shah" value="{{ b2b_sender.name or '' }}"></div>
+    <div class="field"><label for="b2b-sender-business">Business name (optional)</label><input type="text" id="b2b-sender-business" autocomplete="organization" placeholder="Reel Studio" value="{{ b2b_sender.business or '' }}"></div>
+    <div class="field"><label for="b2b-sender-email">Reply email</label><input type="email" id="b2b-sender-email" autocomplete="email" value="{{ b2b_sender.email or request.state.user or '' }}"></div>
   </div>
   <div class="field or-mt">
     <label for="b2b-template">What each company receives</label>
     <textarea id="b2b-template" rows="7" spellcheck="true">{{ b2b_template or '' }}</textarea>
   </div>
-  <p class="hint">Token: <code>{company}</code>. <b>Queue</b> adds the company and its finished email to the tracker, where you copy it into your own email. Every email ends with your name, business and reply email, then an opt-out line: “If you would rather not hear from me again, reply "unsubscribe" or email [your reply email] and I will not contact you again.” ReelSieve always adds that ending, so it cannot be left out by mistake.</p>
+  <p class="hint">Token: <code>{company}</code>. <b>Queue</b> adds the company and its finished email to the tracker, where you copy it into your own email. Every email ends with your name, business and reply email, then an opt-out line: “If you would rather not hear from me again, reply "unsubscribe" or email [your reply email] and I will not contact you again.” ReelSieve always adds that ending, so it cannot be left out by mistake. When you queue, your name, business name and reply email are saved to your account so they are filled in next time. Deleting your account deletes them.</p>
 </section>
 
 <section class="card" id="tracker-card">
