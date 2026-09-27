@@ -13,6 +13,7 @@
     <li>Up to {{ account.max_seconds }} seconds per video</li>
     <li>{{ 'AI camera motion included' if account.ai_motion else 'AI camera motion on paid plans' }}</li>
     <li>Full HD 16:9 or 9:16 video, plus a 720p copy</li>
+    {% if account.bonus_videos %}<li>{{ account.bonus_videos }} bonus video{{ 's' if account.bonus_videos != 1 }} from invites, used first</li>{% endif %}
   </ul>
   <div class="actions">
     <a class="btn btn-primary" href="/upgrade">{% if account.plan == 'free' %}Upgrade{% elif account.remaining is none %}See plans{% else %}Buy more videos{% endif %}</a>
@@ -21,6 +22,20 @@
 </section>
 
 {% include '_gdrive_card.html' %}
+
+<section class="card" id="invite-card">
+  <div class="section-head"><h2>Invite other hosts</h2><span class="pill {{ 'pill-done' if referral.rewarded else 'pill-skipped' }}">{{ referral.rewarded }} rewarded</span></div>
+  <p class="hint">When a host signs up through your link and their first reel reaches their Google Drive, you each get one bonus video. You can earn up to {{ referral.monthly_limit }} a month.</p>
+  <div class="field">
+    <label for="ref-link">Your invite link</label>
+    <div class="copy-row">
+      <input type="text" id="ref-link" readonly value="{{ referral.link }}">
+      <button type="button" class="btn btn-secondary" id="ref-copy">Copy link</button>
+    </div>
+  </div>
+  <p class="hint">Share it where hosts will see it: a post on your social media, your guest guidebook or your website. Please don't send it in emails, texts or direct messages to people who haven't asked to hear from you: unsolicited marketing messages are against UK law (PECR), and the person who sends them is responsible. We never message anyone for you.</p>
+  <p class="hint">Your code travels in the link only. We don't set a cookie or store anything in the browser of someone who opens it.</p>
+</section>
 
 <section class="card">
   <div class="section-head"><h2>Password</h2></div>
@@ -35,7 +50,7 @@
   <div class="section-head"><h2>Your data</h2></div>
   <p class="hint">Your reels and outreach are visible only to you. Finished reels live in your own Google Drive, not on our servers. For free videos we keep a pseudonymised code for your network (a keyed hash of your IP address range, never the address itself) to keep the free tier fair, and delete it after 90 days. See <a href="/privacy">Privacy</a>.</p>
   <div class="actions"><a class="btn btn-secondary" href="/api/account/export" download>Download my data</a></div>
-  <p class="hint">One JSON file with everything we hold about your account: plan, reels, orders, outreach, your Google Drive connection (never its keys) and any admin changes to your account.</p>
+  <p class="hint">One JSON file with everything we hold about your account: plan, reels, orders, outreach, invites, your Google Drive connection (never its keys) and any admin changes to your account.</p>
   {% if team_changes %}
   <h3>Changes our team made to your account</h3>
   <ul class="steps">{% for e in team_changes %}<li>{{ e.ts|day }}: {{ e.label }}</li>{% endfor %}</ul>

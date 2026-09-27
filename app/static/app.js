@@ -478,6 +478,14 @@
       .then(function (d) { out.textContent = "Password changed — signing you in again…"; setTimeout(function () { window.location.href = (d && d.relogin) || "/login"; }, 800); })
       .catch(function (err) { out.textContent = err.message; out.classList.add("is-error"); });
   });
+  // Invite link: copy only. No share-to-email or messaging buttons (ICO: encouraging those messages is instigating them).
+  var refBtn = document.getElementById("ref-copy");
+  if (refBtn) refBtn.addEventListener("click", function () {
+    var f = document.getElementById("ref-link");
+    var done = function () { refBtn.textContent = "Copied"; setTimeout(function () { refBtn.textContent = "Copy link"; }, 1500); };
+    var fallback = function () { f.select(); document.execCommand("copy"); done(); };
+    if (navigator.clipboard) navigator.clipboard.writeText(f.value).then(done, fallback); else fallback();
+  });
   var delBtn = document.getElementById("del-btn");
   if (delBtn) delBtn.addEventListener("click", function () {
     var out = document.getElementById("del-status"), confirmed = document.getElementById("del-confirm").value.trim();
