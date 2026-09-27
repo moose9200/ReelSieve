@@ -308,7 +308,7 @@ def test_every_business_email_says_who_it_is_from_and_how_to_opt_out():
 def test_outreach_page_explains_when_business_emails_need_consent(web, db):
     page = web['alice'].get('/outreach').text
     card = page.split('id="companies-card"', 1)[1].split('</section>', 1)[0]
-    assert 'UK property companies (business to business)' in card and 'no directors' in card.lower()
+    assert 'UK property companies (business to business)' in card and 'no officer or shareholder details' in card
     notice = page.split('id="b2b-consent"', 1)[1].split('</p>', 1)[0]
     for phrase in ('limited company', 'Sole traders', 'agreed', 'opt out', 'say who you are'):
         assert phrase in notice, phrase
@@ -481,6 +481,20 @@ def test_a_company_can_object_through_the_public_privacy_form(web, db):
     assert 'Company 00000001' in web['admin'].get('/settings').text
     assert web['alice'].get('/api/account/export').json()['privacy_requests'][0]['company_number'] == '00000001'
     anon.__exit__(None, None, None)
+
+
+def test_the_privacy_notice_covers_companies_house_data_and_how_to_object(web, db):
+    notice = client_for().get('/privacy').text
+    section = notice.split('<h2>If your company is on the Companies House register</h2>', 1)[1].split('<h2>', 1)[0]
+    for phrase in ('Free Company Data Product', 'legitimate interests', 'monthly', 'company number', 'Object to outreach', 'BH1'):
+        assert phrase.lower() in section.lower(), phrase
+    assert 'Companies House' in notice.split('<h2>', 1)[0]            # in the stated scope
+    assert 'Do not contact' in notice and 'business emails' in notice  # the new account data is listed
+    page = web['alice'].get('/outreach').text
+    assert 'no officer or shareholder details' in page and 'no directors' not in page
+    consent = page.split('id="b2b-consent"', 1)[1].split('</p>', 1)[0]
+    assert 'Gmail' in consent                                         # a personal address belongs to an individual
+    assert 'Business name (required if you are writing for a business)' in page
 
 
 # ---------------- the real network code, against a mock transport ----------------
