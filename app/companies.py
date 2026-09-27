@@ -250,7 +250,7 @@ def _keyed(c):
     """Make sure every company carries its suppression key, the HMAC store.suppression_keys makes of 'company:<number>',
     worked out in Python so search anti-joins outreach_suppressions on an index and the key never reaches the database.
     ingest keys every row it loads, so this normally costs one indexed lookup. It re-keys here only when the rows were
-    keyed with a different key (the worker's SESSION_SECRET differs from the web's, or it was rotated) or not at all."""
+    keyed with a different key (rows keyed before store froze the key in app_meta) or not at all."""
     key = store._suppression_key()
     check = _key_check(key)
     if meta(c, 'companies_key').get('check') == check and \
@@ -265,7 +265,7 @@ def _keyed(c):
                   (todo, [_key_of(key, n) for n in todo]))
     if stale:
         _set_meta(c, 'companies_key', {'check': check})
-        print(json.dumps({'companies': {'rekeyed': len(todo)}}), flush=True)  # the worker and web keys differ? check SESSION_SECRET
+        print(json.dumps({'companies': {'rekeyed': len(todo)}}), flush=True)
 
 
 # Companies someone asked us not to contact are left out before counting and paging. A row not keyed yet (a snapshot

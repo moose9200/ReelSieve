@@ -54,3 +54,46 @@ def test_photos_mode_offers_no_ai_motion_and_says_why(drive, db, owners, monkeyp
     notice = client_for().get('/privacy').text
     assert 'read back from your Drive are sent to Higgsfield' not in notice
     assert 'Photos you upload for a reel are never sent to Higgsfield' in notice
+
+
+# ---------------- N21: rotating SESSION_SECRET never voids an objection ----------------
+
+def _legacy_key(secret):
+    import hashlib
+    import hmac
+    return hmac.new(secret.encode(), b'reelsieve:outreach-suppression:v1', hashlib.sha256).digest()
+
+
+def test_the_do_not_contact_key_is_made_once_as_before_stored_encrypted_and_survives_a_new_session_secret(owners, db, monkeypatch):
+    import hashlib
+    import hmac
+    import os
+    from app import gdrive, store
+    store._suppression_keys.clear()
+    old = _legacy_key(os.environ['SESSION_SECRET'])
+    with db.connect() as c:  # an objection recorded by the code before this fix
+        c.execute('INSERT INTO outreach_suppressions(key,ts) VALUES(%s,1)',
+                  (hmac.new(old, b'company:00000001', hashlib.sha256).hexdigest(),))
+    with client_for():  # start-up freezes the key
+        pass
+    with db.connect() as c:
+        row = c.execute("SELECT value FROM app_meta WHERE key='outreach_suppression_key'").fetchone()
+    assert row and old.hex() not in json.dumps(row['value']) and gdrive._fernet().decrypt(row['value']['enc'].encode()) == old
+    monkeypatch.setenv('SESSION_SECRET', 'a-rotated-synthetic-session-secret-only')
+    store._suppression_keys.clear()  # a new process after the rotation
+    assert store._suppression_key() == old
+    assert store.unsuppressed([{'company_number': '00000001'}, {'company_number': '00000002'}]) == [{'company_number': '00000002'}]
+    store.suppress({'airbnb_profile': 'https://www.airbnb.co.uk/users/show/55'})
+    assert store.unsuppressed([{'airbnb_profile': 'https://www.airbnb.co.uk/users/show/55'}]) == []
+
+
+def test_an_undecryptable_stored_key_stops_the_app_instead_of_making_a_new_one(owners, db, monkeypatch):
+    import pytest
+    from cryptography.fernet import Fernet
+    from app import store
+    store._suppression_keys.clear()
+    store._suppression_key()
+    monkeypatch.setenv('TOKEN_ENCRYPTION_KEY', Fernet.generate_key().decode())  # rotated without keeping the old key
+    store._suppression_keys.clear()
+    with pytest.raises(RuntimeError, match='TOKEN_ENCRYPTION_OLD_KEYS'):
+        store._suppression_key()

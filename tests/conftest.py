@@ -36,6 +36,7 @@ def db(monkeypatch, tmp_path):
     monkeypatch.setenv('DATABASE_URL', dsn)
     monkeypatch.setenv('DATABASE_SCHEMA', schema)
     monkeypatch.setenv('SESSION_SECRET', 'synthetic-test-session-secret-only')
+    monkeypatch.setenv('TOKEN_ENCRYPTION_KEY', Fernet.generate_key().decode())  # the do-not-contact key is stored with it
     # Protect against legacy modules during the initial red test run.
     monkeypatch.setenv('AUTH_PATH', str(tmp_path / 'synthetic-auth.json'))
     monkeypatch.setenv('DB_PATH', str(tmp_path / 'synthetic-store.db'))

@@ -31,7 +31,7 @@ Each test gets its own disposable PostgreSQL schema. Google is an HTTPX mock; re
 |---|---|
 | `DATABASE_URL` | PostgreSQL connection (Railway: the private URL). Required. |
 | `DATABASE_SCHEMA` | Optional schema, e.g. `reelsieve_staging` for an isolated staging service. |
-| `SESSION_SECRET` | Signs sessions and CSRF tokens; also keys network/device hashes. Required. |
+| `SESSION_SECRET` | Signs sessions and CSRF tokens; also keys network hashes. Required. The do-not-contact key was derived from it once and is now stored encrypted in `app_meta`, so rotating it never voids an objection. |
 | `TOKEN_ENCRYPTION_KEY` | Fernet key for Drive credentials, separate from the session secret. Required. `TOKEN_ENCRYPTION_OLD_KEYS` (comma-separated) keeps old keys readable during rotation. |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Web-application OAuth client customers connect their Drive through. |
 | `PUBLIC_BASE_URL` | Public address (OAuth redirect and payment return links). Falls back to `RAILWAY_PUBLIC_DOMAIN`. |

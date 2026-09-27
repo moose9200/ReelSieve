@@ -5,6 +5,7 @@ Network signals are pseudonymised (keyed HMACs of the /24 or /64 network, never 
 videos, where the free-tier guard counts them, and per sign-up/sign-in for the invite self-invite check
 (signin_networks), and cleared after SIGNAL_DAYS (privacy page).
 """
+import os
 import time
 import hmac
 import hashlib
@@ -201,10 +202,31 @@ def outreach_delete(rid, user):
         c.execute('DELETE FROM outreach WHERE id=%s AND owner_id=%s', (rid, database.user_id(user, c)))
 
 
+_suppression_keys = {}  # (database, schema) -> the frozen key, read once per process
+SUPPRESSION_KEY_META = 'outreach_suppression_key'
+
+
 def _suppression_key():
-    # ponytail: derived from SESSION_SECRET like the signal key, so rotating that secret stops old objections
-    # matching. Re-key outreach_suppressions (or pin this key) before any rotation.
-    from app import auth;return hmac.new(auth.secret().encode(),b'reelsieve:outreach-suppression:v1',hashlib.sha256).digest()
+    """The do-not-contact HMAC key. Made once, exactly as it always was (from SESSION_SECRET under its own label), then
+    stored encrypted in app_meta (TOKEN_ENCRYPTION_KEY, like Drive tokens) and always read from there, so rotating
+    SESSION_SECRET never voids an objection. The web process freezes it at start. Rotate TOKEN_ENCRYPTION_KEY only with
+    the old key in TOKEN_ENCRYPTION_OLD_KEYS: a key that cannot be read stops the app rather than start a new list."""
+    where = (os.getenv('DATABASE_URL'), database.schema_name())
+    if where not in _suppression_keys:
+        from cryptography.fernet import InvalidToken
+        from app import auth, gdrive
+        fernet = gdrive._fernet()
+        made = hmac.new(auth.secret().encode(), b'reelsieve:outreach-suppression:v1', hashlib.sha256).digest()
+        with database.connect() as c:
+            c.execute('INSERT INTO app_meta(key,value) VALUES(%s,%s) ON CONFLICT (key) DO NOTHING',
+                      (SUPPRESSION_KEY_META, Jsonb({'enc': fernet.encrypt(made).decode()})))
+            stored = c.execute('SELECT value FROM app_meta WHERE key=%s', (SUPPRESSION_KEY_META,)).fetchone()['value']
+        try:
+            _suppression_keys[where] = fernet.decrypt(stored['enc'].encode())
+        except InvalidToken:
+            raise RuntimeError('The stored do-not-contact key cannot be decrypted: put the previous TOKEN_ENCRYPTION_KEY '
+                               'in TOKEN_ENCRYPTION_OLD_KEYS') from None
+    return _suppression_keys[where]
 
 
 def suppression_keys(item):

@@ -108,6 +108,7 @@ def at_once(user, group):
 async def lifespan(_app):
     validate_config()
     database.initialize()
+    store._suppression_key()  # freeze the do-not-contact key before anything can rotate SESSION_SECRET
     yield
 
 
