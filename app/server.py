@@ -1240,7 +1240,7 @@ EVENT_LABELS = {'plan': 'Plan or credits changed', 'password_reset': 'Password r
                 'erase': 'Account erased', 'order_settle': 'Order marked paid', 'order_cancel': 'Order cancelled',
                 'order_link': 'Pay link set', 'privacy_request_handled': 'Privacy request handled',
                 'invoice_export': 'Invoice CSV downloaded',
-'unsuppress': 'Do-not-contact marks undone'}
+                'unsuppress': 'Do-not-contact marks undone'}
 
 
 def settings_view():
