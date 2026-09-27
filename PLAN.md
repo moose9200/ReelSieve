@@ -69,3 +69,4 @@ with every current feature still working (189 tests stay green, all live routes 
 
 ## Open risks
 - Legal judgement calls (representative, transfer tools, outreach lawful basis) are documented with sources for Hemant; this is not legal advice.
+- 27 Sep 11:55 BST LIVE: web build 9eb607e7ebc0 (= local fingerprint of 2657fa3), worker 65ab9acb. /privacy 200 with controller, Limited Use, ICO link (3/3 strings); /privacy/request 200; HSTS max-age=31536000; 0 Google Fonts refs on /; /api/account/export anon 401, signed-in 200 with 13 sections and no hash/salt; Account shows Download + Delete.
