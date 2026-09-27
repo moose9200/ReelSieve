@@ -436,6 +436,35 @@ def test_v2_review_card_omits_the_date_when_there_is_none():
     assert "if rv.get('date'):" in src
 
 
+# ---------------- privacy: export, erasure, retention cover everything this feature stores ----------------
+
+def test_export_holds_the_typed_facts_ids_and_confirmation_and_erasure_removes_them(drive, db):
+    from app import admin, store
+    photo_job()
+    jobs.admit('alice@example.test', URL, {'attested': True})
+    out = store.export('alice@example.test')
+    params = {j['params'].get('source', 'listing'): j['params'] for j in out['jobs']}
+    assert params['photos']['title'] == 'Harbour Cottage' and params['photos']['quotes'] and len(params['photos']['photos']['ids']) == 6
+    assert params['listing']['attested'] is True and params['listing']['attested_at']
+    assert 'SecretCam' not in json.dumps(out, default=str) and 'room-0.jpg' not in json.dumps(out, default=str)
+    admin.erase('alice@example.test')
+    with db.connect() as c:
+        assert c.execute('SELECT count(*) AS n FROM jobs').fetchone()['n'] == 0
+
+
+def test_typed_guest_quotes_leave_with_the_other_review_data_after_30_days(drive, db):
+    from app import retention
+    old, recent = photo_job(key='old'), photo_job(key='new', files=batch(7))
+    with db.connect() as c:
+        c.execute("UPDATE jobs SET status='done',finished_at=%s WHERE id=%s", (time.time() - 31 * 86400, old['id']))
+        c.execute("UPDATE jobs SET status='done',finished_at=%s WHERE id=%s", (time.time() - 29 * 86400, recent['id']))
+    retention.run()
+    kept, stripped = jobs.get('alice@example.test', recent['id'])['params'], jobs.get('alice@example.test', old['id'])['params']
+    assert kept['quotes'] and 'quotes' not in stripped
+    assert stripped['title'] == 'Harbour Cottage' and stripped['photos']['ids']  # the customer's own reel history stays
+    retention.run()  # idempotent
+
+
 def test_photo_route_stops_reading_past_the_size_limit(drive, db, owners, monkeypatch):
     from app import server
     monkeypatch.setattr(server, 'PHOTO_BODY_MAX', 2000)

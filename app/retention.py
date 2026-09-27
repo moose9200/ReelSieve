@@ -24,11 +24,11 @@ PRIVACY_REQUEST_YEARS = 2      # after the request was handled
 ERASED_UNPAID_ORDER_DAYS = 90  # a payment reported before erasure that never cleared
 
 # A job keeps the customer's own reel history; only other people's data goes. Legacy jobs stored the finished
-# host message as the customer's template too.
+# host message as the customer's template too. Guest quotes typed for an own-photo reel are review data as well.
 STRIP_JOBS = ("UPDATE jobs SET meta=(meta #- '{listing,host}') - 'message' - 'review_used',"
-              "params=CASE WHEN meta->>'legacy'='true' THEN params - 'message' ELSE params END "
+              "params=(CASE WHEN meta->>'legacy'='true' THEN params - 'message' ELSE params END) - 'quotes' "
               "WHERE finished_at<%s AND (meta #> '{listing,host}' IS NOT NULL OR meta ? 'message' OR meta ? 'review_used' "
-              "OR (meta->>'legacy'='true' AND params ? 'message'))")
+              "OR (meta->>'legacy'='true' AND params ? 'message') OR params ? 'quotes')")
 
 
 def run(now=None):
