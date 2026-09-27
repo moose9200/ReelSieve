@@ -30,7 +30,7 @@ def paying(owners, google, monkeypatch, tmp_path):
 
 def test_paid_plan_limits_are_enforced_at_admission(paying, db):
     store.set_plan('alice@example.test', 'starter', 3)
-    job = jobs.admit('alice@example.test', URL + '1', {'ai_motion': True, 'style': 'tutorial'}, 'a')
+    job = jobs.admit('alice@example.test', URL + '1', {'attested': True, 'ai_motion': True, 'style': 'tutorial'}, 'a')
     assert job['params']['max_seconds'] == 90 and job['params']['ai_motion'] is True and job['params']['style'] == 'v3'
     assert plans.account_view('alice@example.test')['credits'] == 2
     cmd = worker.render_command(jobs.claim('w', 30), '/tmp/x')
@@ -38,7 +38,7 @@ def test_paid_plan_limits_are_enforced_at_admission(paying, db):
 
 
 def test_free_plan_gets_both_styles_but_not_ai_motion(paying, db):
-    job = jobs.admit('alice@example.test', URL + '2', {'ai_motion': True, 'style': 'tutorial'}, 'b')
+    job = jobs.admit('alice@example.test', URL + '2', {'attested': True, 'ai_motion': True, 'style': 'tutorial'}, 'b')
     assert job['params']['style'] == 'v3' and job['params']['ai_motion'] is False and job['params']['max_seconds'] == 60
 
 
@@ -46,15 +46,15 @@ def test_paid_pack_grants_its_videos_and_remaking_a_listing_is_free(paying, db):
     order = billing.create_order('alice@example.test', 'starter', 'invoice')
     billing.settle(order['ref'], by='test')
     assert plans.account_view('alice@example.test')['credits'] == plans.PLANS['starter']['videos']
-    jobs.admit('alice@example.test', URL + '3', {}, 'c1')
-    jobs.admit('alice@example.test', URL + '3', {}, 'c2')
+    jobs.admit('alice@example.test', URL + '3', {'attested': True}, 'c1')
+    jobs.admit('alice@example.test', URL + '3', {'attested': True}, 'c2')
     assert plans.account_view('alice@example.test')['credits'] == plans.PLANS['starter']['videos'] - 1
 
 
 def test_enterprise_is_unlimited(paying, db):
     store.set_plan('alice@example.test', 'enterprise', 0)
     for i in range(5):
-        jobs.admit('alice@example.test', URL + str(100 + i), {}, f'e{i}')
+        jobs.admit('alice@example.test', URL + str(100 + i), {'attested': True}, f'e{i}')
     assert plans.account_view('alice@example.test')['remaining'] is None
 
 

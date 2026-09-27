@@ -2,10 +2,11 @@
 {% block title %}New reel{% endblock %}
 {% block content %}
 {% set adm = request and request.state.is_admin %}
+{% set ai_ok = (account and account.ai_motion) and hf_configured %}
 <section class="hero">
   <p class="eyebrow">Any listing → cinematic reel → the host</p>
   <h1>Paste a listing. Send the host a cinematic reel.</h1>
-  <p class="sub">We pull the photos and reviews, build a walkthrough with captions and music{% if account %} up to {{ account.max_seconds }} seconds{% endif %}, and prepare a message to the host. You press Send.</p>
+  <p class="sub">Paste your listing link or upload your own photos. We build a walkthrough with captions and music{% if account %} up to {{ account.max_seconds }} seconds{% endif %} and, for a listing, prepare a message to the host. You press Send.</p>
 </section>
 
 {% if account %}
@@ -15,7 +16,7 @@
   {% if account.remaining is not none and account.remaining <= 0 %}<a class="btn btn-primary btn-sm" href="/upgrade">{{ 'Upgrade' if account.plan == 'free' else 'Buy more videos' }}</a>{% elif account.plan == 'free' %}<a class="btn btn-secondary btn-sm" href="/upgrade">Upgrade</a>{% elif account.remaining is not none and account.remaining <= 1 %}<a class="btn btn-secondary btn-sm" href="/upgrade">Buy more videos</a>{% endif %}
 </section>
 {% endif %}
-<section class="card form-card search-card">
+<section class="card form-card search-card{% if photos_mode %} hidden{% endif %}" id="search-card">
   <p class="eyebrow">Find a listing</p>
   <form id="search-form" novalidate>
     <div class="grid-search">
@@ -60,14 +61,20 @@
 </section>
 
 <section class="card form-card" id="reel-card">
-  <p class="eyebrow">Or paste a link</p>
+  <p class="eyebrow">Make a reel from</p>
+  <div class="mode-switch" role="tablist" aria-label="Make a reel from">
+    <button type="button" class="mode-btn" role="tab" id="mode-link" data-mode="link" aria-controls="reel-form" aria-selected="{{ 'false' if photos_mode else 'true' }}">Listing link</button>
+    <button type="button" class="mode-btn" role="tab" id="mode-photos" data-mode="photos" aria-controls="photos-form" aria-selected="{{ 'true' if photos_mode else 'false' }}">Your own photos</button>
+  </div>
   {% if not gdrive.connected %}
   <p class="hint hint-warn" role="alert" id="drive-required">{% if gdrive.reconnect %}Google access expired — reconnect your Google Drive{% else %}Connect your Google Drive first{% endif %}: finished reels are delivered straight to your Drive and nothing is kept here. <a href="{{ '/settings' if adm else '/account' }}#gdrive-card">{{ 'Reconnect' if gdrive.reconnect else 'Connect' }} Google Drive</a></p>
   {% endif %}
-  <form id="reel-form" method="post" action="/api/jobs" novalidate>
+  <form id="reel-form" method="post" action="/api/jobs" novalidate role="tabpanel" aria-labelledby="mode-link"{% if photos_mode %} class="hidden"{% endif %}>
     <div class="field">
       <label for="url">Airbnb listing URL</label>
-      <input type="url" id="url" name="url" required inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://www.airbnb.co.uk/rooms/…" value="{{ prefill_url }}">
+      <input type="url" id="url" name="url" required inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://www.airbnb.co.uk/rooms/…" value="{{ prefill_url }}" aria-describedby="rights-note">
+      <p class="hint" id="rights-note">Use your own listing, or someone else's only to make a private sample for its host. Do not publish that reel without the host's permission. <a href="/terms">Terms</a></p>
+      <p class="hint">Have photos you took yourself, or are licensed to use? <a href="/app?mode=photos" data-mode="photos">Upload them instead</a>.</p>
     </div>
     <div class="field field-check">
       <label class="check">
@@ -89,12 +96,11 @@
       </select>
     </div>
     <div class="field field-check">
-      {% set ai_ok = (account and account.ai_motion) and hf_configured %}
       <label class="check{% if not ai_ok %} is-disabled{% endif %}">
         <input type="checkbox" id="ai_motion" name="ai_motion"{% if not ai_ok %} disabled{% endif %}>
         <span>AI camera motion — real generated camera moves through each room instead of a pan over a still.</span>
       </label>
-      <p class="hint" id="ai-provider">With AI camera motion on, the listing photos are sent to Higgsfield, our AI video provider, to generate the clips.</p>
+      <p class="hint" id="ai-provider">With AI camera motion on, the listing photos are sent to Higgsfield, our AI video provider, to generate the clips. Higgsfield keeps them and may use them to train its AI models.</p>
       {% if adm %}
       <div class="grid-2 ai-opts{% if not hf_configured %} is-disabled{% endif %}">
         <div class="field"><label for="ai_resolution">Clip resolution</label><select id="ai_resolution" name="ai_resolution"><option value="1080p" selected>1080p — ≈$3.40 per 5 s clip</option><option value="720p">720p — ≈$1.51 per 5 s clip</option></select></div>
@@ -108,6 +114,77 @@
     <div class="actions">
       <button type="submit" class="btn btn-primary" id="submit-btn"{% if not gdrive.connected %} disabled aria-describedby="drive-required"{% endif %}>Generate reel</button>
       <span class="form-status" id="form-status" role="status" aria-live="polite"></span>
+    </div>
+  </form>
+
+  <form id="photos-form" novalidate role="tabpanel" aria-labelledby="mode-photos"{% if not photos_mode %} class="hidden"{% endif %}
+        data-min="{{ limits.MIN_PHOTOS }}" data-max="{{ limits.MAX_PHOTOS }}" data-max-bytes="{{ limits.MAX_BYTES }}" data-max-total="{{ limits.MAX_TOTAL }}">
+    <div class="field">
+      <span class="field-label" id="photos-label">Photos <span class="hint-inline">({{ limits.MIN_PHOTOS }} to {{ limits.MAX_PHOTOS }} · JPEG, PNG or WebP · up to 15 MB each)</span></span>
+      <label class="dropzone" id="dropzone" for="photo-files">
+        <input type="file" id="photo-files" accept="image/jpeg,image/png,image/webp" multiple aria-labelledby="photos-label">
+        <span class="dz-title">Choose photos, or drop them here</span>
+        <span class="dz-hint">Use only photos you took yourself or are licensed to use. Location data and camera details are removed before anything is saved.</span>
+      </label>
+      <p class="form-status" id="photo-count" aria-live="polite"></p>
+      <ul class="thumbs" id="thumbs" aria-label="Chosen photos"></ul>
+      <p class="hint hidden" id="rooms-hint">Tell us what each photo shows so the reel walks through the home in order: outside first, then living spaces, kitchen, bedrooms, bathrooms and outdoor spaces. On "Room: auto" we guess from the file name, such as kitchen-2.jpg.</p>
+    </div>
+    <div class="grid-2">
+      <div class="field"><label for="p-title">Property title</label><input type="text" id="p-title" name="title" maxlength="80" required autocomplete="off" placeholder="Harbour Cottage"></div>
+      <div class="field"><label for="p-location">Location</label><input type="text" id="p-location" name="location" maxlength="80" required autocomplete="off" placeholder="Whitby, UK"></div>
+    </div>
+    <div class="field">
+      <label for="p-highlights">Highlights <span class="hint-inline">(optional)</span></label>
+      <input type="text" id="p-highlights" name="highlights" maxlength="400" autocomplete="off" placeholder="Hot tub, Sea view, Free parking">
+      <p class="hint">Separate them with commas. They appear in the intro and the captions.</p>
+    </div>
+    <fieldset class="field quotes">
+      <legend>Guest quotes <span class="hint-inline">(optional, up to 3)</span></legend>
+      {% for i in range(3) %}
+      <div class="quote-row">
+        <textarea name="quote_text" rows="2" maxlength="300" aria-label="Guest quote {{ i + 1 }}" placeholder="{{ 'Spotless cottage with a lovely view of the harbour.' if i == 0 else '' }}"></textarea>
+        <select name="quote_stars" aria-label="Stars the guest gave for quote {{ i + 1 }}"><option value="" selected>Stars given</option>{% for s in [5, 4, 3, 2, 1] %}<option value="{{ s }}">{{ s }} star{{ 's' if s != 1 }}</option>{% endfor %}</select>
+      </div>
+      {% endfor %}
+      <p class="hint">The reel shows your first quote with the stars the guest gave, never a name. Quote guests who are happy to be quoted, 20 to 300 characters each.</p>
+      <div class="field field-check">
+        <label class="check">
+          <input type="checkbox" id="quotes_real" name="quotes_real">
+          <span>These are real reviews from guests who stayed, quoted word for word with the rating they gave</span>
+        </label>
+      </div>
+    </fieldset>
+    <div class="field">
+      <label for="p-style">Reel style</label>
+      <select id="p-style" name="style">
+        <option value="cinematic" selected>Cinematic 16:9 — intro, review card, outro (default)</option>
+        <option value="tutorial">Tutorial-style 9:16 — full-bleed, continuous camera, kinetic captions</option>
+      </select>
+    </div>
+    <div class="field field-check">
+      <label class="check{% if not ai_ok %} is-disabled{% endif %}">
+        <input type="checkbox" id="p-ai_motion" name="ai_motion"{% if not ai_ok %} disabled{% endif %}>
+        <span>AI camera motion — real generated camera moves through each room instead of a pan over a still.</span>
+      </label>
+      <p class="hint">With AI camera motion on, your photos are sent to Higgsfield, our AI video provider, to generate the clips. Higgsfield keeps them and may use them to train its AI models. Use photos without people in them.</p>
+      {% if account and not account.ai_motion and not adm %}<p class="hint">AI camera motion is not on the {{ account.plan_name }} plan. <a href="/upgrade">Upgrade</a></p>{% endif %}
+    </div>
+    <div class="field field-check">
+      <label class="check">
+        <input type="checkbox" id="delete_inputs" name="delete_inputs" checked>
+        <span>Delete these photos from my Google Drive once the reel is made</span>
+      </label>
+      <p class="hint">While the reel is made, your photos sit in an Inputs folder inside the ReelSieve folder in your Google Drive. With this ticked, we delete those photos once the reel is done and move their folder to your Drive bin. ReelSieve keeps no copy on its servers; with AI camera motion on, Higgsfield keeps the photos it receives.</p>
+    </div>
+    <div class="upload-progress hidden" id="upload-progress">
+      <div class="progress" role="progressbar" aria-label="Upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="upload-bar">
+        <div class="progress-fill" id="upload-fill"></div>
+      </div>
+    </div>
+    <div class="actions">
+      <button type="submit" class="btn btn-primary" id="photos-submit"{% if not gdrive.connected %} disabled aria-describedby="drive-required"{% endif %}>Make reel from my photos</button>
+      <span class="form-status" id="photos-status" role="status" aria-live="polite"></span>
     </div>
   </form>
 </section>
@@ -127,7 +204,7 @@
     {% endfor %}
   </ul>
   {% else %}
-  <p class="empty">No reels yet. Paste a listing above to make the first one.</p>
+  <p class="empty">No reels yet. Paste your listing link or upload your photos above to make the first one.</p>
   {% endif %}
 </section>
 {% endblock %}

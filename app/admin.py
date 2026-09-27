@@ -15,17 +15,46 @@ import time
 from app import auth, database, gdrive, jobs, plans, store
 
 
+PHOTOS_LEFT = ('Some uploaded photos could not be deleted from Google Drive. They are in the Inputs folder inside '
+               'the ReelSieve folder there.')
+
+
+def _drop_photo_inputs(owner):
+    """Photos the customer asked us to delete from their Drive go while the Drive grant still works: once it is revoked
+    (and, on erasure, the job rows are gone) the clean-up sweeper can no longer reach them. Returns a warning or None."""
+    with database.connect() as c:
+        rows = c.execute("SELECT id,params FROM jobs WHERE owner_id=%s AND params->>'source'='photos' "
+                         "AND params->>'delete_inputs'='true' AND COALESCE(meta->>'inputs','')<>'deleted'", (owner,)).fetchall()
+    left = False
+    for job in rows:
+        p = job['params'].get('photos') or {}
+        try:
+            # generation None: whichever connection is current; with drive.file only the app's own files are reachable
+            gdrive.delete_inputs(None, p['folder'], None, p.get('ids') or (), owner_id=owner)
+        except Exception:  # best effort: the account change must go ahead; the caller reports where the photos are
+            left = True
+            continue
+        with database.connect() as c:
+            c.execute("UPDATE jobs SET meta=meta || '{\"inputs\": \"deleted\"}'::jsonb WHERE id=%s", (job['id'],))
+    return PHOTOS_LEFT if left else None
+
+
+def _warnings(*items):
+    return ' '.join(w for w in items if w) or None
+
+
 def deactivate(email, by=None):
     """Deactivate an account, stop its jobs and revoke its Drive grant. Returns a warning or None."""
     auth.delete_user(email, by)
     store.admin_event('deactivate', by, email)
     owner = database.user_id(email)
     jobs.cancel_owner(owner)
+    left = _drop_photo_inputs(owner)
     try:
         gdrive.disconnect_owner(owner)
     except RuntimeError as e:
-        return str(e)
-    return None
+        return _warnings(str(e), left)
+    return left
 
 
 def erase(email, by=None, via=None):
@@ -40,11 +69,11 @@ def erase(email, by=None, via=None):
     via = via or ('console' if by is None else 'self' if auth.norm(by) == auth.norm(email) else 'admin')
     owner = auth.begin_erase(email, by)
     jobs.cancel_owner(owner)
-    warning = None
+    warning = _drop_photo_inputs(owner)
     try:
         gdrive.disconnect_owner(owner)
     except RuntimeError as e:
-        warning = str(e)
+        warning = _warnings(str(e), warning)
     now = time.time()
     with database.connect() as c:
         # Row lock first: concurrent erasures (retention on several workers) queue here instead of deadlocking.

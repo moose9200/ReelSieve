@@ -75,7 +75,7 @@ def claimed(db):
 
 def test_missing_drive_rejected_before_any_charge(owners, google, db):
     with pytest.raises(jobs.AdmissionError) as err:
-        jobs.admit('bob@example.test', URL, {})
+        jobs.admit('bob@example.test', URL, {'attested': True})
     assert err.value.status == 412
     assert usage_rows(db) == []
     with db.connect() as c:
@@ -83,10 +83,10 @@ def test_missing_drive_rejected_before_any_charge(owners, google, db):
 
 
 def test_admission_is_idempotent_and_owner_scoped(env, db):
-    a = jobs.admit('alice@example.test', URL, {'style': 'cinematic'}, 'key-1')
-    assert jobs.admit('alice@example.test', URL, {'style': 'cinematic'}, 'key-1')['id'] == a['id']
+    a = jobs.admit('alice@example.test', URL, {'attested': True, 'style': 'cinematic'}, 'key-1')
+    assert jobs.admit('alice@example.test', URL, {'attested': True, 'style': 'cinematic'}, 'key-1')['id'] == a['id']
     with pytest.raises(jobs.AdmissionError) as err:
-        jobs.admit('alice@example.test', URL, {'style': 'tutorial'}, 'key-1')
+        jobs.admit('alice@example.test', URL, {'attested': True, 'style': 'tutorial'}, 'key-1')
     assert err.value.status == 409
     assert len(usage_rows(db)) == 1
     assert a['url'] == 'https://www.airbnb.co.uk/rooms/12345' and a['params']['max_seconds'] == 60
@@ -99,7 +99,7 @@ def test_concurrent_same_key_admits_once(env, db):
 
     def go():
         try:
-            ids.append(jobs.admit('alice@example.test', URL, {}, 'same')['id'])
+            ids.append(jobs.admit('alice@example.test', URL, {'attested': True}, 'same')['id'])
         except Exception as e:  # pragma: no cover - reported below
             errors.append(e)
     threads = [threading.Thread(target=go) for _ in range(6)]
@@ -110,9 +110,9 @@ def test_concurrent_same_key_admits_once(env, db):
 
 def test_refused_reservation_rolls_back_job(env, db):
     for i in range(2):
-        jobs.admit('alice@example.test', f'https://www.airbnb.co.uk/rooms/{i + 1}', {}, f'k{i}')
+        jobs.admit('alice@example.test', f'https://www.airbnb.co.uk/rooms/{i + 1}', {'attested': True}, f'k{i}')
     with pytest.raises(jobs.AdmissionError) as err:
-        jobs.admit('alice@example.test', 'https://www.airbnb.co.uk/rooms/99', {}, 'k-over')
+        jobs.admit('alice@example.test', 'https://www.airbnb.co.uk/rooms/99', {'attested': True}, 'k-over')
     assert err.value.status == 402
     with db.connect() as c:
         assert c.execute('SELECT count(*) AS n FROM jobs').fetchone()['n'] == 2
@@ -122,11 +122,11 @@ def test_refused_reservation_rolls_back_job(env, db):
                                  'https://www.airbnb.co.uk.evil.test/rooms/1'])
 def test_only_airbnb_listing_links_admitted(env, bad):
     with pytest.raises(jobs.AdmissionError):
-        jobs.admit('alice@example.test', bad, {})
+        jobs.admit('alice@example.test', bad, {'attested': True})
 
 
 def test_claims_are_exclusive(env, db):
-    jobs.admit('alice@example.test', URL, {})
+    jobs.admit('alice@example.test', URL, {'attested': True})
     got = []
     threads = [threading.Thread(target=lambda: got.append(jobs.claim('w', 5))) for _ in range(5)]
     [t.start() for t in threads]
@@ -135,8 +135,8 @@ def test_claims_are_exclusive(env, db):
 
 
 def test_stale_running_job_fails_refunds_and_is_never_rerun(env, db):
-    stale = jobs.admit('alice@example.test', URL, {}, 'a')
-    queued = jobs.admit('alice@example.test', 'https://www.airbnb.co.uk/rooms/777', {}, 'b')
+    stale = jobs.admit('alice@example.test', URL, {'attested': True}, 'a')
+    queued = jobs.admit('alice@example.test', 'https://www.airbnb.co.uk/rooms/777', {'attested': True}, 'b')
     job = jobs.claim('crashed', 5)
     assert job['id'] == stale['id']
     with db.connect() as c:
@@ -151,7 +151,7 @@ def test_stale_running_job_fails_refunds_and_is_never_rerun(env, db):
 
 
 def test_worker_success_delivers_every_variant_privately_and_cleans(env, google, db):
-    job = jobs.admit('alice@example.test', URL, {'ai_resolution': '720p'})
+    job = jobs.admit('alice@example.test', URL, {'attested': True, 'ai_resolution': '720p'})
     worker.process(claimed(db), command(SUCCESS))
     done = jobs.get('alice@example.test', job['id'])
     assert done['status'] == 'done' and done['progress'] == 100 and done['cleanup_at']
@@ -165,7 +165,7 @@ def test_worker_success_delivers_every_variant_privately_and_cleans(env, google,
 
 
 def test_worker_failure_refunds_sanitizes_and_cleans(env, db):
-    job = jobs.admit('alice@example.test', URL, {})
+    job = jobs.admit('alice@example.test', URL, {'attested': True})
     worker.process(claimed(db), command(FAILURE))
     failed = jobs.get('alice@example.test', job['id'])
     assert failed['status'] == 'failed' and failed['error'] == 'Only 3 usable photos found on that page.'
@@ -174,7 +174,7 @@ def test_worker_failure_refunds_sanitizes_and_cleans(env, db):
 
 
 def test_render_that_exits_slowly_after_its_result_is_delivered(env, google, db):
-    job = jobs.admit('alice@example.test', URL, {'ai_resolution': '720p'})
+    job = jobs.admit('alice@example.test', URL, {'attested': True, 'ai_resolution': '720p'})
     worker.process(claimed(db), command(SLOW_EXIT))
     done = jobs.get('alice@example.test', job['id'])
     assert done['status'] == 'done', done['error']
@@ -182,7 +182,7 @@ def test_render_that_exits_slowly_after_its_result_is_delivered(env, google, db)
 
 
 def test_incomplete_upload_is_never_done(env, google, db):
-    job = jobs.admit('alice@example.test', URL, {})
+    job = jobs.admit('alice@example.test', URL, {'attested': True})
     google.bad_receipt = True
     worker.process(claimed(db), command(SUCCESS))
     failed = jobs.get('alice@example.test', job['id'])
@@ -191,7 +191,7 @@ def test_incomplete_upload_is_never_done(env, google, db):
 
 
 def test_reconnect_after_admission_never_delivers_elsewhere(env, google, db):
-    job = jobs.admit('alice@example.test', URL, {})
+    job = jobs.admit('alice@example.test', URL, {'attested': True})
     google.sub = 'someone-else'
     connect(env, google)
     worker.process(claimed(db), command(SUCCESS))
@@ -211,7 +211,7 @@ def _dead(pid):
 
 
 def test_cancel_kills_render_process_group_and_cleans(env, db, tmp_path):
-    job = jobs.admit('alice@example.test', URL, {})
+    job = jobs.admit('alice@example.test', URL, {'attested': True})
     running = claimed(db)
     t = threading.Thread(target=worker.process, args=(running, command(HANG)))
     t.start()
@@ -230,13 +230,13 @@ def test_cancel_kills_render_process_group_and_cleans(env, db, tmp_path):
 
 
 def test_cancel_queued_job_refunds_immediately(env, db):
-    job = jobs.admit('alice@example.test', URL, {})
+    job = jobs.admit('alice@example.test', URL, {'attested': True})
     assert jobs.cancel('alice@example.test', job['id'])['status'] == 'cancelled'
     assert usage_rows(db)[0]['refunded_at'] is not None and jobs.claim('w', 5) is None
 
 
 def test_sweeper_skips_live_leases(env, db, tmp_path):
-    live = jobs.admit('alice@example.test', URL, {})
+    live = jobs.admit('alice@example.test', URL, {'attested': True})
     claimed(db)
     base = tmp_path / 'scratch'
     (base / f"job-{live['id']}").mkdir(parents=True)
@@ -247,7 +247,7 @@ def test_sweeper_skips_live_leases(env, db, tmp_path):
 
 def test_resolution_is_per_job_not_process_environment(env, db, monkeypatch, tmp_path):
     monkeypatch.delenv('AI_RESOLUTION', raising=False)
-    jobs.admit('alice@example.test', URL, {'ai_resolution': '720p', 'ai_motion': True})
+    jobs.admit('alice@example.test', URL, {'attested': True, 'ai_resolution': '720p', 'ai_motion': True})
     cmd = worker.render_command(claimed(db), tmp_path)
     assert '"ai_resolution": "720p"' in cmd[4] and '"ai_motion": false' in cmd[4]  # free plan cannot buy AI motion
     assert 'AI_RESOLUTION' not in os.environ
@@ -270,7 +270,7 @@ def test_fetch_rechecks_redirect_targets(monkeypatch):
 
 
 def test_cancel_is_refused_once_delivery_has_started(env, db):
-    job = jobs.admit('alice@example.test', URL, {})
+    job = jobs.admit('alice@example.test', URL, {'attested': True})
     running = claimed(db)
     assert jobs.start_upload(running['id'], running['lease_token'])
     after = jobs.cancel('alice@example.test', job['id'])
@@ -278,7 +278,7 @@ def test_cancel_is_refused_once_delivery_has_started(env, db):
 
 
 def test_cancel_just_before_delivery_wins(env, db):
-    job = jobs.admit('alice@example.test', URL, {})
+    job = jobs.admit('alice@example.test', URL, {'attested': True})
     running = claimed(db)
     jobs.cancel('alice@example.test', job['id'])
     assert not jobs.start_upload(running['id'], running['lease_token'])
@@ -298,7 +298,7 @@ def test_upload_stops_between_chunks_when_told(env, tmp_path):
 
 def test_shutdown_stops_render_promptly_even_between_heartbeats(env, db, tmp_path, monkeypatch):
     monkeypatch.setattr(worker, 'BEAT', 30)
-    job = jobs.admit('alice@example.test', URL, {})
+    job = jobs.admit('alice@example.test', URL, {'attested': True})
     running = claimed(db)
     t = threading.Thread(target=worker.process, args=(running, command(HANG)))
     t.start()

@@ -213,7 +213,7 @@ def seg_review(k,rv,dur,bgimg):
                 acc+=len(ln)+1
             cw_=d.textlength(lines[li][:shown-acc],font=fq);d.rectangle((cx+82+cw_,cy+dy+136+li*60,cx+85+cw_,cy+dy+176+li*60),fill=GOLD+(255,))
         na=ease(clamp((t-3.3)/0.6));d.text((cx+80,cy+ch+dy-92),'Guest review',font=fn,fill=WHITE+(int(255*na),))
-        d.text((cx+80+d.textlength('Guest review',font=fn)+16,cy+ch+dy-86),f"·  {rv['date']}",font=fd,fill=GOLD+(int(255*na),))
+        if rv.get('date'):d.text((cx+80+d.textlength('Guest review',font=fn)+16,cy+ch+dy-86),f"·  {rv['date']}",font=fd,fill=GOLD+(int(255*na),))
         fr=comp(fr,L);fr=grade(fr);fr=letterbox(fr);yield fr
 def seg_outro(spec,dur):
     P=Plate(spec['image'],dark=0.4);n=int(dur*FPS);ft=serif(110);fs=sans(28);fe=sans(22,True);fb=serif(60);fc=sans(26,True)

@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 
-from app import companies, gdrive, invoices, jobs, retention, store
+from app import companies, gdrive, invoices, jobs, photos, retention, store
 
 LEASE = int(os.getenv('WORKER_LEASE_SECONDS', '90'))
 BEAT = max(1.0, LEASE / 6)
@@ -30,6 +30,7 @@ EXIT_GRACE = 30  # seconds a finished child may take to exit (torch teardown) be
 STEPS = ['Fetching', 'Captured', 'Downloaded', 'Scoring', 'Estimating depth', 'Scored', 'Audit', 'AI motion plan',
          'Seedance', 'Rendering', 'Rendered', 'Uploading']
 VARIANTS = (('primary', 'video'), ('720p', 'video_720'))
+PHOTO_FACTS = ('title', 'location', 'highlights', 'quotes', 'rooms')
 _stop = threading.Event()
 _last_purge = [0.0]
 
@@ -61,10 +62,10 @@ def sweep():
     for d in list(base.iterdir())[:200]:
         if d.name.startswith('job-') and d.name[4:] not in live:
             _remove(d)
-    for job_id in jobs.pending_cleanup():
-        if job_id not in live:
-            d = scratch(job_id)
-            jobs.mark_cleaned(job_id, None if _remove(d) else 'scratch directory could not be deleted')
+    for job in jobs.pending_cleanup():
+        if job['id'] not in live:
+            _drop_inputs(job)  # e.g. a photo reel cancelled before any worker claimed it
+            jobs.mark_cleaned(job['id'], None if _remove(scratch(job['id'])) else 'scratch directory could not be deleted')
 
 
 def _group_alive(pgid):
@@ -100,8 +101,10 @@ def _pump(stream, lines):
 
 def run_child(cmd, job, on_line):
     """Run one render child; heartbeat while it runs; stop it (and its group) when told to."""
+    # OpenCV decodes up to 2^30 pixels by default; nothing a reel uses is near the upload limit (defence in depth).
+    env = {**os.environ, 'OPENCV_IO_MAX_IMAGE_PIXELS': str(photos.MAX_PIXELS)}
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
-                            start_new_session=True, text=True)
+                            start_new_session=True, text=True, env=env)
     lines = queue.Queue()
     threading.Thread(target=_pump, args=(proc.stdout, lines), daemon=True).start()
     result, error, next_beat, eof_at = None, None, 0.0, None
@@ -145,9 +148,49 @@ def run_child(cmd, job, on_line):
 
 def render_command(job, workdir):
     p = job['params']
-    spec = {'url': job['url'], 'ai_motion': bool(p.get('ai_motion')), 'renderer': p.get('style', 'v2'),
+    spec = {'ai_motion': bool(p.get('ai_motion')), 'renderer': p.get('style', 'v2'),
             'max_seconds': p.get('max_seconds'), 'ai_resolution': p.get('ai_resolution', '1080p')}
+    if p.get('source') == 'photos':  # the customer's own photos, fetched into scratch by process(): no link at all
+        spec.update(photos=str(Path(workdir) / 'inputs'), facts={k: p.get(k) for k in PHOTO_FACTS})
+    else:
+        spec['url'] = job['url']
     return [sys.executable, '-m', 'app.worker', 'render', json.dumps(spec), str(workdir)]
+
+
+def _keep_going(lost):
+    return not lost.is_set() and not _stop.is_set()
+
+
+def _fetch_inputs(job, workdir):
+    """A photo reel's inputs, from the owner's Drive (pinned to the admitted connection) into scratch."""
+    jobs.report(job['id'], job['lease_token'], step='Fetching your photos from Google Drive', progress=6,
+                line='Fetching your photos from Google Drive')
+    stop, lost = threading.Event(), threading.Event()
+    threading.Thread(target=_beating, args=(job, stop, lost), daemon=True).start()
+    try:
+        gdrive.download_inputs(job['owner_email'], job['params']['photos']['ids'], Path(workdir) / 'inputs',
+                               job['drive_generation'], keep_going=lambda: _keep_going(lost))
+    except RuntimeError:
+        if _keep_going(lost):
+            raise  # a real failure; otherwise the owner cancelled or the worker is stopping
+    finally:
+        stop.set()
+    if not _keep_going(lost):
+        raise Stopped()
+
+
+def _drop_inputs(job):
+    """The customer asked for their uploaded photos to be deleted from their Drive once the reel is over."""
+    p = job['params'] or {}
+    folder = (p.get('photos') or {}).get('folder')
+    if not folder or not p.get('delete_inputs') or (job.get('meta') or {}).get('inputs') == 'deleted':
+        return
+    try:
+        gdrive.delete_inputs(job['owner_email'], folder, job['drive_generation'], p['photos'].get('ids') or ())
+        state = 'deleted'
+    except Exception:  # clean-up runs in the sweeper: whatever goes wrong must never stop jobs being claimed
+        state = 'delete_failed'  # e.g. Drive disconnected: the photos stay in the customer's own Drive
+    jobs.set_meta(job['owner_email'], job['id'], inputs=state)
 
 
 def _progress(job, line):
@@ -173,6 +216,7 @@ def deliver(job, result):
     jobs.report(job['id'], token, line='Uploading to your Google Drive')
     listing = result.get('listing') or {}
     description = f"{listing.get('title') or ''} · {listing.get('city') or ''} · Listing Reel by Braivex"
+    name = listing.get('url') or listing.get('title') or job['url']  # own-photo reels have no link: named by title
     stop, lost = threading.Event(), threading.Event()
     beat = threading.Thread(target=_beating, args=(job, stop, lost), daemon=True)
     beat.start()
@@ -182,7 +226,7 @@ def deliver(job, result):
     try:
         for variant, key in VARIANTS:
             if result.get(key):
-                gdrive.upload(result[key], listing.get('url') or job['url'], job['owner_email'], description=description,
+                gdrive.upload(result[key], name, job['owner_email'], description=description,
                               job_id=job['id'], variant=variant, generation=job['drive_generation'], keep_going=keep_going)
     finally:
         stop.set()
@@ -209,6 +253,8 @@ def process(job, command=render_command):
     try:
         _remove(d)
         d.mkdir(parents=True)
+        if (job['params'] or {}).get('source') == 'photos':
+            _fetch_inputs(job, d)
         result = run_child(command(job, d), job, lambda line: _progress(job, line))
         jobs.report(job['id'], token, meta=_safe_result(result), line='Reel ready')
         deliver(job, result)
@@ -223,6 +269,7 @@ def process(job, command=render_command):
     except Exception as e:  # anything else is a failed job with a sanitized reason
         jobs.finish(job['id'], token, 'failed', str(e) if isinstance(e, RuntimeError) else 'Rendering failed')
     finally:
+        _drop_inputs(job)
         jobs.mark_cleaned(job['id'], None if _remove(d) else 'scratch directory could not be deleted')
 
 
@@ -277,8 +324,13 @@ def render_child(spec, workdir):
     try:
         from app import pipeline
         spec = json.loads(spec)
-        res = pipeline.run(spec['url'], workdir, None, spec['ai_motion'], lambda m: emit(log=jobs.clean(m)), None,
-                           spec['renderer'], spec['max_seconds'], ai_resolution=spec['ai_resolution'])
+        cb = lambda m: emit(log=jobs.clean(m))  # noqa: E731
+        if spec.get('photos'):
+            res = pipeline.run_photos(spec['photos'], spec['facts'], workdir, spec['ai_motion'], cb, spec['renderer'],
+                                      spec['max_seconds'], spec['ai_resolution'])
+        else:
+            res = pipeline.run(spec['url'], workdir, None, spec['ai_motion'], cb, None,
+                               spec['renderer'], spec['max_seconds'], ai_resolution=spec['ai_resolution'])
         emit(result=res)
     except Exception as e:
         emit(error=jobs.clean(str(e), 300) if isinstance(e, (RuntimeError, ValueError)) else 'Rendering failed')

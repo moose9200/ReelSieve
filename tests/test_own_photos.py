@@ -1,0 +1,499 @@
+"""'Your own photos' reels (the listing-link rights note and later review fixes: test_own_photos_review.py).
+
+Real isolated PostgreSQL, the synthetic Google fake (tests/fakes.py) and stub render children:
+nothing here fetches Airbnb, calls a paid provider or sends a message.
+"""
+import io
+import json
+from pathlib import Path
+import re
+import sys
+import time
+
+from PIL import Image, PngImagePlugin
+import pytest
+
+from app import gdrive, jobs, photos
+from fakes import connect
+from test_saas_routes import client_for, csrf
+
+URL = 'https://www.airbnb.co.uk/rooms/4242'
+
+
+@pytest.fixture
+def drive(owners, google, monkeypatch, tmp_path):
+    monkeypatch.setenv('RENDER_TMP_DIR', str(tmp_path / 'scratch'))
+    connect(owners, google)
+    return google
+
+
+def usage(db):
+    with db.connect() as c:
+        return c.execute('SELECT job_id,kind,credits,debited,refunded_at FROM usage ORDER BY ts').fetchall()
+
+
+# ---------------- uploaded photos: type by content, sizes, count, metadata stripped ----------------
+
+def image(fmt='JPEG', size=(64, 40), colour=(180, 120, 60), exif=True):
+    """A synthetic photo carrying the metadata a phone adds: camera make, GPS position, rotation, a comment."""
+    img = Image.new('RGBA' if fmt == 'PNG' else 'RGB', size, colour)
+    opts = {}
+    if exif:
+        e = Image.Exif()
+        e[0x0112] = 6  # rotate 90 degrees clockwise when shown
+        e[0x010F] = 'SecretCam'
+        gps = e.get_ifd(0x8825)
+        gps[1], gps[2] = 'N', (51.0, 30.0, 12.0)
+        opts['exif'] = e
+        if fmt == 'JPEG':
+            opts['comment'] = b'secret-comment'
+        if fmt == 'PNG':
+            meta = PngImagePlugin.PngInfo()
+            meta.add_text('Author', 'Secret Person')
+            opts['pnginfo'] = meta
+    buf = io.BytesIO()
+    img.save(buf, fmt, **opts)
+    return buf.getvalue()
+
+
+def batch(n=photos.MIN_PHOTOS, fmt='JPEG'):
+    return [(f'room-{i}.jpg', image(fmt)) for i in range(n)]
+
+
+@pytest.mark.parametrize('fmt', ['JPEG', 'PNG', 'WEBP'])
+def test_real_image_type_comes_from_the_bytes_not_the_name(fmt):
+    out = photos.clean(image(fmt), 'holiday.gif')  # misleading extension, real JPEG/PNG/WebP inside
+    assert out[:3] == b'\xff\xd8\xff'  # always stored as a clean JPEG
+
+
+@pytest.mark.parametrize('data', [b'GIF89a' + b'\0' * 64, b'<svg xmlns="http://www.w3.org/2000/svg"/>', b'%PDF-1.7',
+                                  b'\0\0\0\x18ftypheic' + b'\0' * 64, b'just some text'])
+def test_other_file_types_are_refused_whatever_they_are_called(data):
+    with pytest.raises(photos.PhotoError, match='not a JPEG, PNG or WebP'):
+        photos.clean(data, 'kitchen.jpg')
+
+
+def test_a_file_that_only_starts_like_a_jpeg_is_refused():
+    with pytest.raises(photos.PhotoError, match='could not be read'):
+        photos.clean(b'\xff\xd8\xff\xe0' + b'not really an image' * 50, 'kitchen.jpg')
+
+
+@pytest.mark.parametrize('fmt', ['JPEG', 'PNG', 'WEBP'])
+def test_exif_gps_rotation_and_comments_are_stripped_and_rotation_applied(fmt):
+    raw = image(fmt, size=(64, 40))
+    assert b'SecretCam' in raw
+    out = photos.clean(raw, 'x.jpg')
+    for secret in (b'SecretCam', b'secret-comment', b'Secret Person', b'Exif'):
+        assert secret not in out, secret
+    im = Image.open(io.BytesIO(out))
+    assert im.format == 'JPEG' and not im.getexif() and not im.getexif().get_ifd(0x8825)
+    assert not {'comment', 'icc_profile', 'exif', 'xmp'} & set(im.info)
+    assert im.size == (40, 64)  # the rotation the phone asked for is applied before the tag goes
+
+
+def test_very_large_photos_are_scaled_down_and_pixel_bombs_refused(monkeypatch):
+    out = photos.clean(image(size=(3000, 1000), exif=False), 'wide.jpg')
+    assert Image.open(io.BytesIO(out)).size == (photos.MAX_EDGE, 853)
+    monkeypatch.setattr(photos, 'MAX_PIXELS', 1000)
+    with pytest.raises(photos.PhotoError, match='too many pixels'):
+        photos.clean(image(size=(64, 40), exif=False), 'bomb.png')
+
+
+def test_upload_count_and_size_limits(monkeypatch):
+    lo, hi = photos.MIN_PHOTOS, photos.MAX_PHOTOS
+    photos.check_batch(batch(lo))
+    photos.check_batch(batch(hi))
+    for n in (0, lo - 1, hi + 1):
+        with pytest.raises(photos.PhotoError, match=f'{lo} to {hi} photos'):
+            photos.check_batch(batch(n))
+    big = [('huge.jpg', b'\xff\xd8\xff' + b'0' * photos.MAX_BYTES)] + batch(lo - 1)
+    with pytest.raises(photos.PhotoError, match='huge.jpg is larger than 15 MB'):
+        photos.check_batch(big)
+    monkeypatch.setattr(photos, 'MAX_TOTAL', lo * len(image()) - 1)
+    with pytest.raises(photos.PhotoError, match='250 MB'):
+        photos.check_batch(batch(lo))
+
+
+def test_typed_details_are_validated_and_quotes_carry_no_name():
+    good = photos.details({'title': '  Sea View Cottage ', 'location': 'Whitby, UK', 'highlights': 'Hot tub, Sea view\nFree parking, , ',
+                           'quotes': [{'text': ' , Spotless cottage with a lovely view of the harbour.', 'stars': '5', 'name': 'Jane Guest'},
+                                      {'text': '', 'stars': 5}], 'quotes_real': True})
+    assert good == {'title': 'Sea View Cottage', 'location': 'Whitby, UK', 'highlights': ['Hot tub', 'Sea view', 'Free parking'],
+                    'quotes': [{'text': 'Spotless cottage with a lovely view of the harbour.', 'stars': 5}]}
+    fine = {'text': 'A perfectly fine quote here.', 'stars': 5}
+    for bad, msg in [({'location': 'Whitby'}, 'property title'), ({'title': 'Cottage'}, 'location'),
+                     ({'title': 'x' * 81, 'location': 'Whitby'}, 'property title'),
+                     ({'title': 'C', 'location': 'W', 'quotes': [{'text': 'Too short', 'stars': 5}]}, '20'),
+                     ({'title': 'C', 'location': 'W', 'quotes': [{**fine, 'stars': 9}]}, 'stars'),
+                     ({'title': 'C', 'location': 'W', 'quotes': [fine] * 4}, '3 guest quotes')]:
+        with pytest.raises(photos.PhotoError, match=msg):
+            photos.details(bad)
+
+
+def test_room_comes_from_the_choice_or_the_file_name():
+    assert photos.room_of('kitchen', 'IMG_1.jpg') == 'kitchen'
+    assert photos.room_of('auto', 'Living_Room-02.JPG') == 'living'
+    assert photos.room_of('auto', 'master-bedroom.webp') == 'bedroom'
+    assert photos.room_of('nonsense', 'IMG_1234.jpg') == 'other'
+
+
+# ---------------- the customer's Drive holds the inputs; we keep ids only ----------------
+
+def generation(user='alice@example.test'):
+    from app import database
+    with database.connect() as c:
+        return gdrive.usable_generation(c, database.user_id(user, c))
+
+
+def test_inputs_go_to_a_job_folder_in_the_customers_drive_and_come_back_intact(drive, tmp_path):
+    shots = [photos.clean(image(colour=(i * 40, 10, 10)), f'{i}.jpg') for i in range(3)]
+    folder, ids = gdrive.upload_inputs('alice@example.test', 'abc123def456', shots, generation())
+    job_folder = drive.folders[folder]
+    inputs = drive.folders[job_folder['parents'][0]]
+    assert job_folder['name'] == 'abc123def456' and inputs['name'] == 'Inputs'
+    assert inputs['parents'] == [drive.app_folder()]
+    for i, fid in enumerate(ids):
+        meta = drive.metas[fid]
+        assert meta['parents'] == [folder] and meta['mimeType'] == 'image/jpeg' and meta['name'] == f'photo-{i + 1:02d}.jpg'
+        assert meta['appProperties']['job'] == 'abc123def456'
+    # a second reel reuses the one Inputs folder
+    folder2, _ = gdrive.upload_inputs('alice@example.test', 'fff000fff000', shots[:1], generation())
+    assert drive.folders[folder2]['parents'] == job_folder['parents']
+    got = gdrive.download_inputs('alice@example.test', ids, tmp_path / 'in', generation())
+    assert [p.name for p in got] == ['p01.jpg', 'p02.jpg', 'p03.jpg']
+    # checked and re-encoded again on the way back (the customer can replace a file in Drive): same photo, clean JPEG
+    assert [Image.open(p).size for p in got] == [Image.open(io.BytesIO(x)).size for x in shots]
+    assert all(p.read_bytes()[:3] == b'\xff\xd8\xff' for p in got)
+    gdrive.delete_inputs('alice@example.test', folder, generation(), ids)
+    assert drive.folders[folder]['trashed'] and not set(ids) & set(drive.blobs)
+    gdrive.delete_inputs('alice@example.test', folder, generation(), ids)  # already gone: nothing to do
+
+
+def test_a_failed_input_upload_leaves_nothing_behind(drive):
+    shots = [photos.clean(image(), 'a.jpg')] * 3
+    drive.fail_upload_after = 1
+    with pytest.raises(RuntimeError, match='Google Drive'):
+        gdrive.upload_inputs('alice@example.test', 'abc123def456', shots, generation())
+    assert not [f for f in drive.folders.values() if f['name'] == 'abc123def456'] and not drive.blobs
+
+
+def test_inputs_stay_with_the_google_account_the_job_was_admitted_on(drive, tmp_path):
+    with pytest.raises(RuntimeError, match='reconnected'):
+        gdrive.upload_inputs('alice@example.test', 'abc123def456', [b'x'], generation() + 1)
+    with pytest.raises(RuntimeError, match='reconnected'):
+        gdrive.download_inputs('alice@example.test', ['some-id'], tmp_path, generation() + 1)
+
+
+# ---------------- admission: photos go to Drive first, the job keeps ids and typed facts ----------------
+
+FIELDS = {'title': 'Harbour Cottage', 'location': 'Whitby, UK', 'highlights': 'Hot tub, Sea view',
+          'quotes': [{'text': 'Spotless cottage with a lovely view of the harbour.', 'stars': 5}],
+          'rooms': ['exterior', 'living', 'kitchen', 'bedroom', 'bathroom', 'auto'], 'style': 'tutorial', 'quotes_real': True}
+
+
+def photo_job(user='alice@example.test', files=None, key=None, **fields):
+    return jobs.admit_photos(user, {**FIELDS, **fields}, files or batch(), key)
+
+
+def job_folders(google):
+    return [f for f in google.folders.values() if 'job' in f['appProperties']]
+
+
+def test_photo_admission_uploads_to_the_owners_drive_and_the_job_keeps_ids_only(drive, db):
+    job = photo_job()
+    p = job['params']
+    assert p['source'] == 'photos' and job['url'].startswith('photos:') and job['status'] == 'queued'
+    assert drive.folders[p['photos']['folder']]['name'] == job['id']
+    assert len(p['photos']['ids']) == photos.MIN_PHOTOS and all(drive.metas[i]['parents'] == [p['photos']['folder']] for i in p['photos']['ids'])
+    assert (p['title'], p['location'], p['highlights']) == ('Harbour Cottage', 'Whitby, UK', ['Hot tub', 'Sea view'])
+    assert p['quotes'] == [{'text': 'Spotless cottage with a lovely view of the harbour.', 'stars': 5}]
+    assert p['rooms'][:6] == ['exterior', 'living', 'kitchen', 'bedroom', 'bathroom', 'other'] and p['style'] == 'v3'
+    assert p['delete_inputs'] is True and 'attested' not in p and p['quotes_confirmed_at']
+    stored = str(dict(job))
+    assert 'room-0.jpg' not in stored and 'SecretCam' not in stored and len(stored) < 4000  # ids and facts, never photo bytes
+    assert not any(b'SecretCam' in b or b'Exif' in b for b in drive.blobs.values())  # Drive only ever gets clean photos
+    assert [(u['kind'], u['credits']) for u in usage(db)] == [('video', 1)]
+
+
+def test_a_photo_reel_costs_one_video_exactly_like_a_link_reel(drive, db):
+    from app import plans, store
+    store.set_plan('alice@example.test', 'starter', 3)
+    credits = lambda: plans.account_view('alice@example.test')['remaining']  # noqa: E731
+    jobs.admit('alice@example.test', URL, {})
+    assert credits() == 2
+    job = photo_job(key='p1')
+    assert credits() == 1 and [(u['kind'], u['credits'], u['debited']) for u in usage(db)] == [('video', 1, True)] * 2
+    # the same request again (a retried submit) is the same reel: no second charge, no second upload
+    assert photo_job(key='p1')['id'] == job['id'] and credits() == 1 and len(job_folders(drive)) == 1
+    with pytest.raises(jobs.AdmissionError) as err:
+        photo_job(key='p1', title='Another Cottage')
+    assert err.value.status == 409 and len(job_folders(drive)) == 1
+    assert jobs.cancel('alice@example.test', job['id'])['status'] == 'cancelled' and credits() == 2
+    photo_job(key='p2', files=batch(photos.MIN_PHOTOS + 1))
+    photo_job(key='p3', files=batch(photos.MIN_PHOTOS + 2))
+    assert credits() == 0
+    with pytest.raises(jobs.AdmissionError) as err:
+        photo_job(key='p4', files=batch(photos.MIN_PHOTOS + 3))
+    assert err.value.status == 402 and len(job_folders(drive)) == 3  # refused before anything was uploaded
+
+
+def test_photo_reel_needs_drive_and_valid_photos_before_any_charge_or_upload(drive, db):
+    with pytest.raises(jobs.AdmissionError) as err:
+        photo_job('bob@example.test')
+    assert err.value.status == 412
+    lo = photos.MIN_PHOTOS
+    for files, msg in [(batch(lo - 1), f'{lo} to {photos.MAX_PHOTOS}'), (batch(lo - 1) + [('notes.jpg', b'plain text')], 'not a JPEG')]:
+        with pytest.raises(jobs.AdmissionError, match=msg) as err:
+            photo_job(files=files)
+        assert err.value.status == 400
+    with pytest.raises(jobs.AdmissionError, match='property title'):
+        photo_job(title='')
+    assert usage(db) == [] and not drive.folders.get('folder-inputs-x') and not drive.blobs
+
+
+def test_a_failed_drive_upload_charges_nothing(drive, db):
+    drive.fail_upload_after = 2
+    with pytest.raises(jobs.AdmissionError, match='Google Drive') as err:
+        photo_job()
+    assert err.value.status == 502 and usage(db) == [] and not job_folders(drive) and not drive.blobs
+    with db.connect() as c:
+        assert c.execute('SELECT count(*) AS n FROM jobs').fetchone()['n'] == 0
+
+
+def multipart(n=photos.MIN_PHOTOS, **over):
+    data = {'title': FIELDS['title'], 'location': FIELDS['location'], 'highlights': FIELDS['highlights'],
+            'style': 'cinematic', 'quote_text': [FIELDS['quotes'][0]['text'], ''], 'quote_stars': ['5', ''], 'quotes_real': 'true',
+            'room': ['auto'] * n, 'delete_inputs': 'false', **over}
+    return data, [('photos', (f'shot-{i}.png', image('PNG'), 'image/png')) for i in range(n)]
+
+
+def test_photo_route_admits_a_multipart_upload(drive, db, owners):
+    alice = client_for(owners['alice'])
+    data, files = multipart()
+    assert alice.post('/api/jobs/photos', data=data, files=files).status_code == 403  # CSRF like every mutation
+    r = alice.post('/api/jobs/photos', data=data, files=files, headers={**csrf(owners['alice']), 'Idempotency-Key': 'r1'})
+    assert r.status_code == 200, r.text
+    job = jobs.get('alice@example.test', r.json()['id'])
+    assert job['params']['delete_inputs'] is False and len(job['params']['photos']['ids']) == photos.MIN_PHOTOS
+    assert job['params']['quotes'] == FIELDS['quotes'] and job['params']['style'] == 'v2'
+    data, files = multipart(photos.MIN_PHOTOS - 1)
+    r = alice.post('/api/jobs/photos', data=data, files=files, headers=csrf(owners['alice']))
+    assert r.status_code == 400 and f'{photos.MIN_PHOTOS} to {photos.MAX_PHOTOS} photos' in r.json()['detail']
+
+
+# ---------------- worker: fetch from Drive into scratch, render, deliver, delete scratch (and inputs if asked) ----------------
+
+RENDER = r'''
+import json, pathlib, sys
+d = pathlib.Path(sys.argv[1])
+got = sorted(p.name for p in (d / 'inputs').glob('*.jpg'))
+(d / 'reel.mp4').write_bytes(b'primary'); (d / 'reel-720p.mp4').write_bytes(b'small')
+print(json.dumps({'log': 'Rendering from ' + ','.join(got)}), flush=True)
+print(json.dumps({'result': {'video': str(d / 'reel.mp4'), 'video_720': str(d / 'reel-720p.mp4'), 'duration': 30.0,
+      'listing': {'url': None, 'title': 'Harbour Cottage', 'city': 'Whitby, UK', 'photo': None}}}), flush=True)
+'''
+FAIL = r'''
+import json, sys
+print(json.dumps({'error': 'QA guards failed'}), flush=True)
+sys.exit(1)
+'''
+
+
+def stub(script):
+    return lambda job, d: [sys.executable, '-c', script, str(d)]
+
+
+def run_worker(script):
+    from app import worker
+    worker._stop.clear()
+    job = jobs.claim('test-worker', 30)
+    worker.process(job, stub(script))
+    return job
+
+
+def test_worker_fetches_the_photos_from_drive_renders_delivers_and_deletes_every_copy(drive, db):
+    from app import worker
+    job = photo_job()
+    folder = job['params']['photos']['folder']
+    run_worker(RENDER)
+    done = jobs.get('alice@example.test', job['id'])
+    assert done['status'] == 'done', done['error']
+    shown = ','.join(f'p{i + 1:02d}.jpg' for i in range(photos.MIN_PHOTOS))
+    assert any('Rendering from ' + shown in line for line in done['log'])
+    assert gdrive.receipt('alice@example.test', job['id'], 'primary')['name'] == 'Harbour Cottage.mp4'
+    assert not worker.scratch(job['id']).exists() and done['cleanup_at']
+    assert drive.folders[folder]['trashed'] and not drive.blobs  # the customer asked for the uploaded photos to go
+    assert done['meta']['inputs'] == 'deleted'
+
+
+def test_inputs_stay_in_drive_when_the_customer_keeps_them(drive, db):
+    job = photo_job(delete_inputs=False)
+    run_worker(RENDER)
+    done = jobs.get('alice@example.test', job['id'])
+    assert done['status'] == 'done' and job['params']['photos']['folder'] in drive.folders and len(drive.blobs) == photos.MIN_PHOTOS
+    assert 'inputs' not in done['meta']
+
+
+def test_failed_photo_reel_is_refunded_and_its_inputs_still_deleted(drive, db):
+    from app import worker
+    job = photo_job()
+    run_worker(FAIL)
+    failed = jobs.get('alice@example.test', job['id'])
+    assert failed['status'] == 'failed' and failed['error'] == 'QA guards failed' and usage(db)[0]['refunded_at']
+    assert not drive.blobs and not worker.scratch(job['id']).exists()
+
+
+def test_a_photo_removed_from_drive_fails_the_reel_with_a_clear_reason_and_refunds(drive, db):
+    job = photo_job(delete_inputs=False)
+    gone = job['params']['photos']['ids'][2]
+    drive.blobs.pop(gone), drive.metas.pop(gone), drive.files.pop(gone)  # the customer deleted it in Drive
+    run_worker(RENDER)
+    failed = jobs.get('alice@example.test', job['id'])
+    assert failed['status'] == 'failed' and 'removed from your Google Drive' in failed['error'] and usage(db)[0]['refunded_at']
+
+
+def test_cancelled_queued_photo_reel_has_its_inputs_deleted_by_the_sweeper(drive, db):
+    from app import worker
+    job = photo_job()
+    jobs.cancel('alice@example.test', job['id'])
+    assert len(drive.blobs) == photos.MIN_PHOTOS
+    worker.sweep()
+    assert not drive.blobs and jobs.get('alice@example.test', job['id'])['meta']['inputs'] == 'deleted'
+
+
+def test_a_broken_clean_up_never_stops_the_sweeper(drive, db, monkeypatch):
+    from app import worker
+    job = photo_job()
+    jobs.cancel('alice@example.test', job['id'])
+    monkeypatch.setattr(gdrive, 'delete_inputs', lambda *a: {}['unexpected'])  # any exception, not only RuntimeError
+    worker.sweep()
+    after = jobs.get('alice@example.test', job['id'])
+    assert after['meta']['inputs'] == 'delete_failed' and after['cleanup_at']
+
+
+def test_render_command_for_photos_carries_the_folder_and_facts_but_no_link(drive, db, tmp_path):
+    from app import worker
+    photo_job(ai_motion=True)
+    cmd = worker.render_command(jobs.claim('w', 30), tmp_path)
+    spec = json.loads(cmd[4])
+    assert spec['photos'] == str(tmp_path / 'inputs') and 'url' not in spec and spec['ai_motion'] is False  # free plan
+    assert spec['facts']['title'] == 'Harbour Cottage' and spec['facts']['rooms'][0] == 'exterior'
+    assert spec['facts']['quotes'][0]['stars'] == 5
+
+
+# ---------------- pipeline: typed facts + local photos -> the same manifest, guards and renderers ----------------
+
+def test_own_photo_manifest_uses_rooms_quotes_and_highlights_and_never_says_airbnb(tmp_path):
+    from app import pipeline
+    rooms = ['exterior', 'living', 'living', 'kitchen', 'bedroom', 'bedroom', 'bathroom', 'garden', 'spa', 'view', 'other', 'other']
+    names = [f'p{i + 1:02d}.jpg' for i in range(len(rooms))]
+    for n in names:
+        (tmp_path / n).write_bytes(b'x')
+    facts = {'title': 'Harbour Cottage', 'location': 'Whitby, UK', 'highlights': ['Hot tub', 'Sea view', 'Free parking'],
+             'quotes': [{'text': 'Stayed a week. Spotless cottage with a lovely view of the harbour.', 'stars': 5}], 'rooms': rooms}
+    d, revs = pipeline.photo_listing(facts, names)
+    assert [pipeline.classify(p['label']) for p in d['photos']] == rooms
+    m = pipeline.own_photos_manifest(pipeline.build_manifest(d, revs, tmp_path, tmp_path / 'depth'), d)
+    assert pipeline.lint_manifest(m) >= 27
+    text = json.dumps(m)
+    assert 'AIRBNB' not in text.upper() and 'BOOK YOUR STAY' in text and 'None' not in text
+    assert not [s['subtitle'] for s in m['scenes'] if 'sleeps' in s['subtitle'].lower() or 'beds' in s['subtitle'].lower()]
+    assert m['outro']['eyebrow'] == 'HARBOUR COTTAGE'  # the location is already in the outro's subtitle
+    assert m['intro']['title'] == 'Harbour Cottage' and m['intro']['eyebrow'] == 'WHITBY, UK' and 'Hot tub' in m['intro']['subtitle']
+    # the customer's own words as typed (the renderers add the quote marks), with no invented date. The scraped-review
+    # lint that rejects a leading 'Stayed …' trip tag must not fail a quote the customer typed that way.
+    quote = 'Stayed a week. Spotless cottage with a lovely view of the harbour.'
+    assert m['reviews']['items'] == [{'stars': 5, 'date': '', 'text': quote}] and m['reviews']['typed'] is True
+    scraped = json.loads(json.dumps(m))
+    del scraped['reviews']['typed']
+    with pytest.raises(pipeline.ManifestError, match='not sanitised'):
+        pipeline.lint_manifest(scraped)  # the guard still catches an unsanitised scraped review
+    assert m['overlays']['review'] == quote and m['overlays']['review_by'] == 'Guest review' and 'trust' not in m
+    rk = [s['room'] for s in m['scenes']]
+    assert rk == sorted(rk, key=[k for k, _ in pipeline.ROUTE].index) and {'living', 'kitchen', 'bedroom', 'view'} <= set(rk)
+    assert m['intro']['image'].endswith('p01.jpg') and m['outro']['image'].endswith('p09.jpg')  # exterior opens, hot tub closes
+
+
+def test_unlabelled_own_photos_still_make_a_valid_reel(tmp_path):
+    from app import pipeline
+    names = [f'p{i + 1:02d}.jpg' for i in range(12)]
+    for n in names:
+        (tmp_path / n).write_bytes(b'x')
+    d, revs = pipeline.photo_listing({'title': 'Flat', 'location': 'Leeds', 'highlights': [], 'quotes': [], 'rooms': ['other'] * 12}, names)
+    m = pipeline.own_photos_manifest(pipeline.build_manifest(d, revs, tmp_path, tmp_path / 'depth'), d)
+    assert pipeline.lint_manifest(m) >= 27 and 'reviews' not in m
+
+
+def test_v2_review_card_omits_the_date_when_there_is_none():
+    src = (Path(__file__).resolve().parents[1] / 'app' / 'render_v2.py').read_text()
+    assert "if rv.get('date'):" in src
+
+
+# ---------------- pages ----------------
+
+def test_new_reel_page_offers_both_ways_with_listing_link_first(drive, owners):
+    alice = client_for(owners['alice'])
+    page = alice.get('/app').text
+    assert 'id="mode-link"' in page and 'id="mode-photos"' in page and 'Your own photos' in page
+    tag = lambda html, form_id: re.search(rf'<form id="{form_id}"[^>]*>', html).group(0)  # noqa: E731
+    assert 'hidden' in tag(page, 'photos-form') and 'hidden' not in tag(page, 'reel-form')  # listing link stays the default
+    assert 'accept="image/jpeg,image/png,image/webp"' in page and 'multiple' in page
+    assert re.search(r'id="delete_inputs"[^>]*checked', page)
+    assert 'name="quote_text"' in page and page.count('name="quote_text"') == 3 and 'name="quote_name"' not in page
+    assert 'your photos are sent to Higgsfield' in page
+    photos_page = alice.get('/app?mode=photos').text
+    assert 'hidden' not in tag(photos_page, 'photos-form') and 'hidden' in tag(photos_page, 'reel-form')
+    js = alice.get('/static/app.js').text
+    assert '/api/jobs/photos' in js and 'upload.onprogress' in js
+
+
+def test_photo_reel_pages_show_the_title_and_no_host_or_airbnb_links(drive, db, owners):
+    alice = client_for(owners['alice'])
+    job = photo_job()
+    view = alice.get(f"/api/jobs/{job['id']}").json()
+    assert view['source'] == 'photos' and view['listing']['title'] == 'Harbour Cottage' and view['listing']['url'] is None
+    assert view['contact_url'] is None and view['poster'] is None
+    run_worker(RENDER)
+    page = alice.get(f"/jobs/{job['id']}").text
+    assert 'Harbour Cottage' in page and 'id="host-card"' not in page and 'Open listing' not in page
+    assert 'deleted from your Google Drive' in page
+    reels = alice.get('/reels').text
+    assert 'Harbour Cottage' in reels and 'Open on Airbnb' not in reels and '/app?mode=photos' in reels
+
+
+# ---------------- privacy: export, erasure, retention cover everything this feature stores ----------------
+
+def test_export_holds_the_typed_facts_ids_and_confirmation_and_erasure_removes_them(drive, db):
+    from app import admin, store
+    photo_job()
+    jobs.admit('alice@example.test', URL, {})
+    out = store.export('alice@example.test')
+    params = {j['params'].get('source', 'listing'): j['params'] for j in out['jobs']}
+    assert params['photos']['title'] == 'Harbour Cottage' and params['photos']['quotes']
+    assert len(params['photos']['photos']['ids']) == photos.MIN_PHOTOS and params['photos']['quotes_confirmed_at']
+    assert 'listing' in params and 'attested' not in params['listing']
+    assert 'SecretCam' not in json.dumps(out, default=str) and 'room-0.jpg' not in json.dumps(out, default=str)
+    admin.erase('alice@example.test')
+    with db.connect() as c:
+        assert c.execute('SELECT count(*) AS n FROM jobs').fetchone()['n'] == 0
+
+
+def test_typed_guest_quotes_leave_with_the_other_review_data_after_30_days(drive, db):
+    from app import retention
+    old, recent = photo_job(key='old'), photo_job(key='new', files=batch(photos.MIN_PHOTOS + 1))
+    with db.connect() as c:
+        c.execute("UPDATE jobs SET status='done',finished_at=%s WHERE id=%s", (time.time() - 31 * 86400, old['id']))
+        c.execute("UPDATE jobs SET status='done',finished_at=%s WHERE id=%s", (time.time() - 29 * 86400, recent['id']))
+    retention.run()
+    kept, stripped = jobs.get('alice@example.test', recent['id'])['params'], jobs.get('alice@example.test', old['id'])['params']
+    assert kept['quotes'] and 'quotes' not in stripped
+    assert stripped['title'] == 'Harbour Cottage' and stripped['photos']['ids']  # the customer's own reel history stays
+    retention.run()  # idempotent
+
+
+def test_photo_route_stops_reading_past_the_size_limit(drive, db, owners, monkeypatch):
+    from app import server
+    monkeypatch.setattr(server, 'PHOTO_BODY_MAX', 2000)
+    data, files = multipart()
+    r = client_for(owners['alice']).post('/api/jobs/photos', data=data, files=files, headers=csrf(owners['alice']))
+    assert r.status_code == 413 and '250 MB' in r.json()['detail'] and usage(db) == [] and not drive.blobs

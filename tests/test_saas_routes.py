@@ -46,7 +46,7 @@ def web(owners, google, monkeypatch, tmp_path):
 def done_job(owners, google, db):
     """Alice has a finished, delivered reel (render replaced by a tiny child process)."""
     connect(owners, google)
-    job = jobs.admit('alice@example.test', URL, {'message': 'Hi {host_name}, search {search_phrase}'})
+    job = jobs.admit('alice@example.test', URL, {'attested': True, 'message': 'Hi {host_name}, search {search_phrase}'})
     worker.process(jobs.claim('w', 30), lambda j, d: [sys.executable, '-c', SUCCESS, str(d)])
     assert jobs.get('alice@example.test', job['id'])['status'] == 'done'
     return job['id']
@@ -97,7 +97,7 @@ def test_webhook_is_signature_checked_not_csrf(web):
 
 
 def test_missing_drive_blocks_generation_without_charge(web, owners, db):
-    r = web['bob'].post('/api/jobs', json={'url': URL}, headers=csrf(owners['bob']))
+    r = web['bob'].post('/api/jobs', json={'url': URL, 'attested': True}, headers=csrf(owners['bob']))
     assert r.status_code == 412 and 'Google Drive' in r.json()['detail']
     with db.connect() as c:
         assert c.execute('SELECT count(*) AS n FROM usage').fetchone()['n'] == 0
@@ -137,9 +137,9 @@ def test_stream_and_explicit_sharing(web, owners, google, db):
 
 def test_cancel_queued_job_via_route(web, owners, google, db):
     connect(owners, google)
-    r = web['alice'].post('/api/jobs', json={'url': URL}, headers={**csrf(owners['alice']), 'Idempotency-Key': 'k1'})
+    r = web['alice'].post('/api/jobs', json={'url': URL, 'attested': True}, headers={**csrf(owners['alice']), 'Idempotency-Key': 'k1'})
     jid = r.json()['id']
-    again = web['alice'].post('/api/jobs', json={'url': URL}, headers={**csrf(owners['alice']), 'Idempotency-Key': 'k1'})
+    again = web['alice'].post('/api/jobs', json={'url': URL, 'attested': True}, headers={**csrf(owners['alice']), 'Idempotency-Key': 'k1'})
     assert again.json()['id'] == jid
     out = web['alice'].post(f'/api/jobs/{jid}/cancel', headers=csrf(owners['alice'])).json()
     assert out['status'] == 'cancelled' and not out['cancellable']
@@ -201,7 +201,7 @@ def test_outreach_and_orders_are_owner_scoped(web, owners, db):
 
 def test_deactivation_stops_jobs_and_revokes_drive(web, owners, google, db):
     connect(owners, google)
-    job = jobs.admit('alice@example.test', URL, {})
+    job = jobs.admit('alice@example.test', URL, {'attested': True})
     auth.create_user('ops@example.test', 'synthetic-password', 'admin')
     ops_session = auth.issue('ops@example.test')[0]
     admin = client_for(ops_session)

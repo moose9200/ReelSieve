@@ -26,11 +26,13 @@
   {'q': 'Which listing links does ReelSieve accept?', 'a': [
     'ReelSieve accepts Airbnb listing links only, the kind with /rooms/ and a number in the address.',
     'Links from any Airbnb country site work, such as airbnb.com or airbnb.co.uk.',
-    'Links from other booking sites are not supported.']},
+    'Links from other booking sites are not supported.',
+    'You can also skip the link and upload ' ~ limits.MIN_PHOTOS ~ ' to ' ~ limits.MAX_PHOTOS ~ ' of your own photos with a title and location.']},
   {'q': 'What is in each reel?', 'a': [
     "A ReelSieve reel opens with the listing's name and town.",
     'A rating card follows when the listing has reviews, then the rooms in walking order with captions.',
-    'It ends with a real five-star guest review and a closing card.']},
+    'A reel made from a link ends with a real five-star guest review from the listing and a closing card.',
+    'A reel made from your own photos has no rating card and can show one guest quote you provide.']},
   {'q': 'How long is each video?', 'a': [
     'On the Free plan a reel runs for up to ' ~ P.free.max_seconds ~ ' seconds.',
     'Paid plans allow up to ' ~ P.starter.max_seconds ~ ' seconds.',
@@ -266,7 +268,7 @@
         <li class="lp-cell">
           <p class="lp-index">5</p>
           <h3>Review card</h3>
-          {{ lines(["A real five-star guest review, trimmed to a sentence or two, with the guest's name and the month."]) }}
+          {{ lines(["A real five-star guest review, trimmed to a sentence or two, with the month it was written.", "The guest's name is never shown."]) }}
         </li>
         <li class="lp-cell">
           <p class="lp-index">6</p>

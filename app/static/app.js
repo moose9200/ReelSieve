@@ -35,6 +35,7 @@
       });
     });
   }
+  function newKey() { return (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2); }
   // Listing photos come through our own server, so the visitor's browser never contacts Airbnb's CDN.
   function imgSrc(u) { return "/img?u=" + encodeURIComponent(u); }
   function getJSON(url) {
@@ -263,7 +264,7 @@
       if (!url) { status.textContent = "Paste an Airbnb listing URL."; status.classList.add("is-error"); form.url.focus(); return; }
       btn.disabled = true;
       status.textContent = "Starting…";
-      if (!idemKey) idemKey = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2);
+      if (!idemKey) idemKey = newKey();
       postJSON("/api/jobs", { url: url, send_to_host: sendToHost, message: message, ai_motion: aiMotion, style: style, ai_resolution: (form.ai_resolution ? form.ai_resolution.value : "1080p") }, { "Idempotency-Key": idemKey })
         .then(function (data) {
           var id = data && (data.id || data.job_id || (data.job && data.job.id));
@@ -284,6 +285,131 @@
     if (aiLabel && aiHint) aiLabel.addEventListener("click", function () { aiHint.classList.add("hint-warn"); });
   }
 
+  // ---------- index: listing link or your own photos ----------
+  var modeBtns = document.querySelectorAll(".mode-btn[data-mode]");
+  function setMode(mode) {
+    var photosMode = mode === "photos";
+    Array.prototype.forEach.call(modeBtns, function (b) { b.setAttribute("aria-selected", String(b.getAttribute("data-mode") === mode)); });
+    var lf = document.getElementById("reel-form"), pf = document.getElementById("photos-form"), sc = document.getElementById("search-card");
+    if (lf) lf.classList.toggle("hidden", photosMode);
+    if (pf) pf.classList.toggle("hidden", !photosMode);
+    if (sc) sc.classList.toggle("hidden", photosMode);
+  }
+  Array.prototype.forEach.call(document.querySelectorAll("[data-mode]"), function (b) {
+    b.addEventListener("click", function (ev) { ev.preventDefault(); setMode(b.getAttribute("data-mode")); var t = document.getElementById("mode-" + b.getAttribute("data-mode")); if (t) t.focus(); });
+  });
+
+  var pform = document.getElementById("photos-form");
+  if (pform) {
+    var ROOMS = [["auto", "Room: auto"], ["exterior", "Outside / entrance"], ["living", "Living room"], ["kitchen", "Kitchen or dining"],
+                 ["bedroom", "Bedroom"], ["bathroom", "Bathroom"], ["garden", "Garden, patio or balcony"], ["spa", "Hot tub, pool or sauna"],
+                 ["view", "View"], ["other", "Other"]];
+    var OK_TYPES = { "image/jpeg": 1, "image/png": 1, "image/webp": 1 };
+    var MIN = +pform.getAttribute("data-min"), MAX = +pform.getAttribute("data-max"),
+        MAX_BYTES = +pform.getAttribute("data-max-bytes"), MAX_TOTAL = +pform.getAttribute("data-max-total");
+    var picker = document.getElementById("photo-files"), drop = document.getElementById("dropzone"), thumbs = document.getElementById("thumbs"),
+        countEl = document.getElementById("photo-count"), pstatus = document.getElementById("photos-status"), pbtn = document.getElementById("photos-submit"),
+        prog = document.getElementById("upload-progress"), pfill = document.getElementById("upload-fill"), pbar = document.getElementById("upload-bar"),
+        roomsHint = document.getElementById("rooms-hint");
+    var chosen = [], pKey = null;  // [{file, room, url}] in upload order; one idempotency key per intended reel
+    function mb(n) { return (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + " MB"; }
+    function say(el, msg, bad) { el.className = "form-status" + (bad ? " is-error" : ""); el.textContent = msg || ""; }
+    function totalBytes() { return chosen.reduce(function (s, c) { return s + c.file.size; }, 0); }
+    function renderChosen() {
+      thumbs.innerHTML = "";
+      chosen.forEach(function (c, i) {
+        var li = document.createElement("li"); li.className = "thumb";
+        var img = document.createElement("img"); img.src = c.url; img.alt = "Photo " + (i + 1); img.loading = "lazy"; li.appendChild(img);
+        var sel = document.createElement("select"); sel.setAttribute("aria-label", "What photo " + (i + 1) + " shows");
+        ROOMS.forEach(function (r) { var o = document.createElement("option"); o.value = r[0]; o.textContent = r[1]; if (r[0] === c.room) o.selected = true; sel.appendChild(o); });
+        sel.addEventListener("change", function () { c.room = sel.value; pKey = null; });
+        var rm = document.createElement("button"); rm.type = "button"; rm.className = "btn btn-secondary btn-sm thumb-remove"; rm.textContent = "Remove";
+        rm.setAttribute("aria-label", "Remove photo " + (i + 1));
+        rm.addEventListener("click", function () { URL.revokeObjectURL(c.url); chosen.splice(i, 1); pKey = null; renderChosen(); });
+        li.appendChild(sel); li.appendChild(rm); thumbs.appendChild(li);
+      });
+      if (roomsHint) roomsHint.classList.toggle("hidden", !chosen.length);
+      var n = chosen.length, t = totalBytes();
+      if (!n) { say(countEl, ""); return; }
+      var msg = n + " photo" + (n === 1 ? "" : "s") + " · " + mb(t);
+      if (n < MIN) msg += " · add at least " + (MIN - n) + " more";
+      else if (n > MAX) msg += " · remove " + (n - MAX) + " to stay within " + MAX;
+      else if (t > MAX_TOTAL) msg += " · over the 250 MB total";
+      say(countEl, msg, n < MIN || n > MAX || t > MAX_TOTAL);
+    }
+    function addFiles(list) {
+      var refused = [];
+      Array.prototype.forEach.call(list || [], function (f) {
+        if (!OK_TYPES[f.type]) { refused.push(f.name + " is not a JPEG, PNG or WebP image"); return; }
+        if (f.size > MAX_BYTES) { refused.push(f.name + " is larger than 15 MB"); return; }
+        chosen.push({ file: f, room: "auto", url: URL.createObjectURL(f) });
+      });
+      pKey = null; renderChosen();
+      say(pstatus, refused.length ? refused.slice(0, 3).join(". ") + (refused.length > 3 ? " (and " + (refused.length - 3) + " more)" : "") + "." : "", refused.length > 0);
+    }
+    picker.addEventListener("change", function () { addFiles(picker.files); picker.value = ""; });
+    ["dragenter", "dragover"].forEach(function (t) { drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.add("is-over"); }); });
+    ["dragleave", "drop"].forEach(function (t) { drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.remove("is-over"); }); });
+    drop.addEventListener("drop", function (e) { addFiles(e.dataTransfer && e.dataTransfer.files); });
+    pform.addEventListener("input", function () { pKey = null; });
+    pform.addEventListener("change", function () { pKey = null; });
+    function setProgress(p) { var v = Math.round(p); pfill.style.width = v + "%"; pbar.setAttribute("aria-valuenow", v); }
+    pform.addEventListener("submit", function (ev) {
+      ev.preventDefault();
+      var f = pform.elements;
+      var n = chosen.length, title = f.title.value.trim(), where = f.location.value.trim();
+      var problem = n < MIN || n > MAX ? "Choose " + MIN + " to " + MAX + " photos (you have " + n + ")." :
+                    totalBytes() > MAX_TOTAL ? "Your photos add up to more than 250 MB. Choose fewer or smaller photos." :
+                    !title ? "Enter a property title." : !where ? "Enter the location." : null;
+      var quotes = pform.querySelectorAll('textarea[name="quote_text"]'), stars = pform.querySelectorAll('select[name="quote_stars"]');
+      var anyQuote = false;
+      Array.prototype.forEach.call(quotes, function (q, i) {
+        var len = q.value.trim().length;
+        if (!len) return;
+        anyQuote = true;
+        if (!problem && (len < 20 || len > 300)) problem = "Each guest quote needs 20 to 300 characters.";
+        if (!problem && !(stars[i] && stars[i].value)) problem = "Choose the stars the guest gave for each quote.";
+      });
+      var real = document.getElementById("quotes_real");
+      if (!problem && anyQuote && !(real && real.checked)) problem = "Tick the box to confirm the guest quotes are real reviews, quoted word for word.";
+      if (problem) { say(pstatus, problem, true); return; }
+      var fd = new FormData();
+      chosen.forEach(function (c) { fd.append("photos", c.file, c.file.name); fd.append("room", c.room); });
+      ["title", "location", "highlights", "style"].forEach(function (k) { fd.append(k, f[k].value); });
+      Array.prototype.forEach.call(quotes, function (q) { fd.append("quote_text", q.value); });
+      Array.prototype.forEach.call(stars, function (s) { fd.append("quote_stars", s.value); });
+      fd.append("quotes_real", String(!!(real && real.checked)));
+      var ai = document.getElementById("p-ai_motion"), res = document.getElementById("ai_resolution");
+      fd.append("ai_motion", String(!!(ai && ai.checked && !ai.disabled)));
+      fd.append("ai_resolution", res ? res.value : "1080p");
+      fd.append("delete_inputs", String(document.getElementById("delete_inputs").checked));
+      if (!pKey) pKey = newKey();
+      pbtn.disabled = true; prog.classList.remove("hidden"); setProgress(0);
+      say(pstatus, "Uploading your photos… 0%");
+      var xhr = new XMLHttpRequest();
+      xhr.open("POST", "/api/jobs/photos");
+      xhr.setRequestHeader("Accept", "application/json");
+      xhr.setRequestHeader("X-CSRF-Token", csrfMeta ? csrfMeta.content : "");
+      xhr.setRequestHeader("Idempotency-Key", pKey);
+      xhr.upload.onprogress = function (e) {
+        if (!e.lengthComputable) return;
+        var p = 90 * e.loaded / e.total; setProgress(p); say(pstatus, "Uploading your photos… " + Math.round(100 * e.loaded / e.total) + "%");
+      };
+      xhr.upload.onload = function () { setProgress(92); say(pstatus, "Checking your photos, removing location data and saving them to your Google Drive…"); };
+      function fail(msg, code) {
+        pbtn.disabled = false; prog.classList.add("hidden"); say(pstatus, msg, true);
+        if (code === 402) { var up = document.createElement("a"); up.href = "/upgrade"; up.textContent = "See plans"; pstatus.appendChild(document.createTextNode(" ")); pstatus.appendChild(up); }
+      }
+      xhr.onload = function () {
+        var data = null; try { data = JSON.parse(xhr.responseText); } catch (e) {}
+        if (xhr.status === 200 && data && data.id) { setProgress(100); say(pstatus, "Starting your reel…"); window.location.href = "/jobs/" + encodeURIComponent(data.id); return; }
+        fail((data && typeof data.detail === "string" && data.detail) || "The upload failed (" + xhr.status + "). Try again.", xhr.status);
+      };
+      xhr.onerror = function () { fail("The upload stopped. Check your connection and try again."); };
+      xhr.send(fd);
+    });
+  }
+
   // ---------- job: poll, delivery, sharing, cancel, host message ----------
   var jobEl = document.getElementById("job");
   if (jobEl) {
@@ -294,7 +420,7 @@
         video = el("video"), dl = el("download-btn"), hostPill = el("host-pill"), reelLink = el("reel-link"),
         hostMsg = el("host-message"), hostStatus = el("host-status"), contactLink = el("contact-link"),
         title = el("listing-title"), loc = el("listing-location"), meta = el("listing-meta");
-    var timer = null, lastLogLen = -1, msgTouched = false;
+    var timer = null, lastLogLen = -1, msgTouched = false, extraPolls = 0;
     var jobUrl = "/api/jobs/" + encodeURIComponent(jobId);
     if (hostMsg) hostMsg.addEventListener("input", function () { msgTouched = true; });
 
@@ -368,7 +494,13 @@
         if (hostCard) hostCard.classList.remove("hidden");
         renderHost(job);
       }
-      if (st === "done" || st === "failed" || st === "cancelled") stop();
+      var inp = el("inputs-state");
+      if (inp && job.inputs === "deleted") inp.textContent = "Your uploaded photos were deleted from your Google Drive, as you asked.";
+      if (inp && job.inputs === "delete_failed") inp.textContent = "We could not delete your uploaded photos from Google Drive. They are in the Inputs folder inside your ReelSieve folder; delete them there if you like.";
+      // a photo reel's Drive clean-up lands just after it finishes: keep polling briefly until it is reported
+      var terminal = st === "done" || st === "failed" || st === "cancelled";
+      var cleaning = terminal && job.source === "photos" && job.delete_inputs && !job.inputs && extraPolls++ < 15;
+      if (terminal && !cleaning) stop();
     }
     function poll() {
       getJSON(jobUrl).then(render).catch(function () {});
