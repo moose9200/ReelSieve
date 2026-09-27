@@ -42,6 +42,7 @@ Each test gets its own disposable PostgreSQL schema. Google is an HTTPX mock; re
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | Card payments on hosted Stripe Checkout. Both must be set; otherwise the plans page falls back to invoice / payment link. Webhook endpoint `<PUBLIC_BASE_URL>/api/billing/webhook/stripe`, events `checkout.session.completed` and `checkout.session.async_payment_succeeded`. |
 | `GDRIVE_FOLDER`, `DEFAULT_MESSAGE` | Drive folder name; default host message. |
 | `LEGACY_MIGRATION_ENABLED`, `LEGACY_SOURCE_DIR` | One-time import of the old volume (see below). |
+| `INVOICE_BACKUP_BUCKET`, `INVOICE_BACKUP_REGION`, `INVOICE_BACKUP_ACCESS_KEY_ID`, `INVOICE_BACKUP_SECRET_ACCESS_KEY` (optional `INVOICE_BACKUP_ENDPOINT`, `INVOICE_BACKUP_ENDPOINT_IN_INDIA`) | Worker service only: daily India backup of paid orders (see below). Off until bucket and both keys are set. |
 
 Settings in the app are read-only; change values in the hosting environment and redeploy.
 
@@ -49,6 +50,17 @@ Settings in the app are read-only; change values in the hosting environment and 
 Google Cloud Console → Credentials → OAuth client (Web application). Authorised redirect URI: `<PUBLIC_BASE_URL>/oauth/google/callback` (Settings shows the exact value). Scopes: `drive.file`, `openid`, `email`. The consent screen must be published for external users before customers outside the test-user list can connect.
 
 Security properties: OAuth state is one-time, expires in 10 minutes and only completes in the session that started it; the granted Drive scope and Google identity are checked before a connection is stored; credentials are encrypted and bound to their owner; disconnect disables access first and reports a failed revocation instead of hiding it.
+
+## India invoice backup (Income-tax Rules 2026 r.46(8))
+The worker uploads every paid order as one CSV per UTC day to `invoices/YYYY/MM/YYYY-MM-DD.csv` (`invoices/<schema>/…` for a non-`public` `DATABASE_SCHEMA`). Before each upload it reads the bucket's lifecycle rules and refuses to upload unless an enabled, prefix-only rule deletes the file within 90 days (the privacy notice promises this); the PUT carries `If-None-Match: *`, so a stored day is never replaced. Settings shows the state from the run records.
+
+1. S3 bucket in `ap-south-1` (Mumbai) or `ap-south-2` (Hyderabad), no dots in the name, versioning **off**.
+2. Lifecycle rule: `{"Rules":[{"ID":"expire-invoices","Filter":{"Prefix":"invoices/"},"Status":"Enabled","Expiration":{"Days":90}}]}`.
+3. IAM user with only this policy (the `s3:if-none-match` condition key is from AWS "Enforce conditional writes"):
+   `{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"s3:PutObject","Resource":"arn:aws:s3:::BUCKET/invoices/*","Condition":{"Null":{"s3:if-none-match":"false"}}},{"Effect":"Allow","Action":"s3:GetLifecycleConfiguration","Resource":"arn:aws:s3:::BUCKET"}]}`
+4. Set the `INVOICE_BACKUP_*` variables on the **worker** service. A non-AWS S3 store also needs `INVOICE_BACKUP_ENDPOINT` and `INVOICE_BACKUP_ENDPOINT_IN_INDIA=1` (your confirmation that its servers are in India; the app cannot check it). An AWS endpoint must name the India region, e.g. `https://s3.ap-south-1.amazonaws.com`.
+
+Refunds are made in the payment provider and are not in the CSV; keep the provider's refund reports with the books in India too.
 
 ## Sending to the host (by design, never automatic)
 Job page → "Message host on Airbnb" copies the message and opens `airbnb.co.uk/contact_host/<id>/send_message` in the customer's own browser; they paste and press **Send message**. ReelSieve never drives an Airbnb session, and outreach rows are drafts the customer sends themselves.
