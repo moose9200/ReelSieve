@@ -808,7 +808,7 @@ def test_privacy_notice_says_how_we_fetch_and_how_hosts_stop_reels(web):
     page = web['anon'].get('/privacy').text
     listing = page.split('<h2>Listing content and your videos</h2>', 1)[1].split('<h2>', 1)[0]
     hosts = page.split('<h2>If you are an Airbnb host or guest</h2>', 1)[1].split('<h2>', 1)[0]
-    for phrase in ('logged out', 'limited rate', 'we pause at once', 'we stop until a person has checked', 'Remove my listing from ReelSieve'):
+    for phrase in ('logged out', 'limited rate', 'we pause all fetching at once', 'we stop until a person has checked', 'Remove my listing from ReelSieve'):
         assert phrase in listing, phrase
     assert 'Remove my listing from ReelSieve' in hosts and 'href="/privacy/request"' in hosts
     assert "Videos show the text, star rating and month of a guest review, but not the reviewer's name." in listing

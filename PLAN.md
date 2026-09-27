@@ -103,4 +103,4 @@ Target: every finding below has a failing-first test (or a pinned notice fact) a
 - [x] S2 photo upload: Drive + credit checks before a slot or the body; 10-minute hard deadline; one slot per network; configurable. Evidence: 4 tests red on 3105f8e (412/402 only after a slot; no deadline; no network limit), green after
 - [x] S4 upload parts parsed straight into the files list; MAX_PIXELS about 26 MP; 60 MP refused. Evidence: 2 tests red on 3105f8e (8 spooled writes; MAX_PIXELS 60M), green after
 - [x] N8 job page and default host message: no YouTube; share privately after the host replies. Evidence: 2 tests red on 3105f8e, green after
-- [ ] N3-N20 notice and copy fixes, pinned in tests/test_privacy_basics.py
+- [x] N3-N20 notice and copy fixes, pinned in tests/test_privacy_basics.py. Evidence: 6 new tests red against the pre-edit templates (stash check), green after; Higgsfield policy fetched 27 Sep 2026 (last updated 26 Jul 2026) and quoted from its section 5.9

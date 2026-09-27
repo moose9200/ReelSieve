@@ -43,7 +43,7 @@
     'Both are one-off payments in US dollars, and the credits never expire.']},
   {'q': 'Where does the finished video go?', 'a': [
     'ReelSieve saves the reel and a 720p copy to the Google Drive you connect.',
-    "It uses Google's drive.file permission, which lets it see only the files it creates.",
+    "It uses Google's drive.file permission, which lets it see only the files it creates, plus your Google account's email address and ID to show which account is connected.",
     'The reel stays private until you share it, and ReelSieve keeps no copy.']},
   {'q': 'Does ReelSieve message the host for me?', 'a': [
     'No.',
@@ -55,7 +55,7 @@
     'A photo check runs first and skips the paid step if the photos are too weak.',
     'Without it, each photo gets a gentle depth-based move.']},
   {'q': 'Who owns the videos?', 'a': [
-    'You keep full rights to the videos ReelSieve makes for you.',
+    "You own what ReelSieve adds to your videos; the listing's photos and reviews stay their owners'.",
     "You are responsible for having the right to use the listing's photos, as the terms of use explain."]},
   {'q': 'What happens if a render fails?', 'a': [
     'If a render fails, ReelSieve puts the credit back in your account.',
@@ -332,7 +332,7 @@
         <h2 id="drive-title">Your reels live in your Google Drive.</h2>
         {{ lines([
           'ReelSieve saves each finished reel to the Google Drive you connect.',
-          "It asks for Google's drive.file permission only, so it can see just the files it creates.",
+          "It asks for Google's drive.file permission, so it can see just the files it creates, plus your Google account's email address and ID to show which account is connected.",
           'Every reel is private until you choose to make a share link.',
           'ReelSieve keeps no copy after delivery.']) }}
         <p class="lp-more"><a href="/privacy">Read what ReelSieve stores and for how long</a></p>

@@ -591,9 +591,18 @@ def landing(request: Request):
         'sample_poster': os.getenv('SAMPLE_POSTER_URL') or None, 'limits': photos})
 
 
+def _notice_facts():
+    """What the privacy notice says about payments and the India backup, read from the configuration it describes."""
+    from urllib.parse import urlsplit
+    links = sorted({urlsplit(billing.checkout_link(p)).hostname for p in ('starter', 'commercial') if billing.checkout_link(p)})
+    backup = invoices.config() or {}
+    return {'payments': {'stripe': billing.stripe_enabled(), 'links': links},
+            'backup_aws': not backup.get('endpoint') or '.amazonaws.com' in backup['endpoint']}  # AWS unless a non-AWS endpoint is set
+
+
 @app.get('/privacy', response_class=HTMLResponse)
 def privacy(request: Request):
-    return tpl.TemplateResponse(request, 'legal.html', {'kind': 'privacy'})
+    return tpl.TemplateResponse(request, 'legal.html', {'kind': 'privacy', **_notice_facts()})
 
 
 @app.get('/terms', response_class=HTMLResponse)

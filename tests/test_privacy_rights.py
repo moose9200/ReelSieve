@@ -267,7 +267,7 @@ def test_account_page_offers_download_and_delete_and_settings_offers_erase(web):
     page = web['alice'].get('/account').text
     assert 'href="/api/account/export"' in page and 'Download my data' in page
     assert all(f'id="{i}"' in page for i in ('del-password', 'del-confirm', 'del-btn')) and 'Delete my account' in page
-    assert 'kept for 8 years' in page and 'subject=Delete' not in page  # no more "email us and we delete it within a day"
+    assert 'paid orders for 8 years' in page and 'subject=Delete' not in page  # no more "email us and we delete it within a day"
     js = web['alice'].get('/static/app.js').text
     assert '/api/account/delete' in js and '/api/users/erase' in js
     assert 'Erase deletes' in web['admin'].get('/settings').text
