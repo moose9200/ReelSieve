@@ -91,3 +91,16 @@ Owner-only (payment/identity): ICO registration (GBP 52), UK representative, Str
 - The accountant is now a named recipient of paid-order records; where they are and which transfer tool covers them (UK GDPR Chapter V) is Unknown - Hemant to confirm and, if needed, add it to the notice's transfer section.
 - Refunds are not recorded in orders (billing.py: "refund it in your provider instead"), so the CSV overstates receipts after a refund; recording refunds via the provider webhook is a separate feature.
 - 27 Sep 11:55 BST LIVE: web build 9eb607e7ebc0 (= local fingerprint of 2657fa3), worker 65ab9acb. /privacy 200 with controller, Limited Use, ICO link (3/3 strings); /privacy/request 200; HSTS max-age=31536000; 0 Google Fonts refs on /; /api/account/export anon 401, signed-in 200 with 13 sections and no hash/salt; Account shows Download + Delete.
+
+## Final pre-deploy review fixes (branch fix/final-review, 27 Sep 2026)
+Target: every finding below has a failing-first test (or a pinned notice fact) and the full suite stays green (baseline 509 passed, 2 skipped).
+- [x] N1 own-photo reels never go to Higgsfield (admit_photos + worker force ai_motion off; photos-mode option disabled; notice sentence gone). Evidence: 3 tests in test_final_review.py red on 3105f8e, green after
+- [ ] N21 do-not-contact key frozen: derived once as before, stored encrypted in app_meta, old hashes still match
+- [ ] S1 privacy form: rate limit per network; form suppressions tagged with the request ref, shown in Settings, undoable (admin event)
+- [ ] S3 erasure keeps a keyed hash of the email on do-not-contact marks so `admin unsuppress <email>` still works
+- [ ] N2 host objection hides the host card and drafted message on the job page (hostId captured, stripped at 30 days)
+- [ ] N5 Disconnect deletes pending Inputs first; _drop_inputs uses the current connection; failed deletes retried hourly for 7 days, then shown on the job page
+- [ ] S2 photo upload: Drive + credit checks before a slot or the body; 10-minute hard deadline; one slot per network; configurable
+- [ ] S4 upload parts parsed straight into the files list; MAX_PIXELS about 26 MP; 60 MP refused
+- [ ] N8 job page and default host message: no YouTube; share privately after the host replies
+- [ ] N3-N20 notice and copy fixes, pinned in tests/test_privacy_basics.py

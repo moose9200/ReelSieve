@@ -309,7 +309,8 @@ def test_privacy_notice_covers_uploaded_photos_typed_details_drive_use_and_higgs
     assert 'Photos you upload' in page and 'Inputs folder' in page and 'scratch copies' in page
     assert 'Title, location, highlights and guest quotes you type' in page and '30 days' in page
     assert 'reads them back' in page and 'deletes them' in page  # drive.file: now also inputs, not only finished videos
-    assert 'listing photos or the photos you upload' in page and 'may use them to improve its AI models' in page
+    assert "receives a listing's photos only if you switch on AI camera motion for a listing-link reel" in page
+    assert 'Photos you upload for a reel are never sent to Higgsfield' in page and 'train and improve its AI models' in page
     assert 'If a customer quotes your review' in page  # guests whose words a customer types in
 
 

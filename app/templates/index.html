@@ -164,19 +164,18 @@
       </select>
     </div>
     <div class="field field-check">
-      <label class="check{% if not ai_ok %} is-disabled{% endif %}">
-        <input type="checkbox" id="p-ai_motion" name="ai_motion"{% if not ai_ok %} disabled{% endif %}>
-        <span>AI camera motion — real generated camera moves through each room instead of a pan over a still.</span>
+      <label class="check is-disabled">
+        <input type="checkbox" id="p-ai_motion" name="ai_motion" disabled aria-describedby="p-ai-note">
+        <span>AI camera motion</span>
       </label>
-      <p class="hint">With AI camera motion on, your photos are sent to Higgsfield, our AI video provider, to generate the clips. Higgsfield keeps them and may use them to train its AI models. Use photos without people in them.</p>
-      {% if account and not account.ai_motion and not adm %}<p class="hint">AI camera motion is not on the {{ account.plan_name }} plan. <a href="/upgrade">Upgrade</a></p>{% endif %}
+      <p class="hint" id="p-ai-note">AI camera motion is only for listing-link reels.</p>
     </div>
     <div class="field field-check">
       <label class="check">
         <input type="checkbox" id="delete_inputs" name="delete_inputs" checked>
         <span>Delete these photos from my Google Drive once the reel is made</span>
       </label>
-      <p class="hint">While the reel is made, your photos sit in an Inputs folder inside the ReelSieve folder in your Google Drive. With this ticked, we delete those photos once the reel is done and move their folder to your Drive bin. ReelSieve keeps no copy on its servers; with AI camera motion on, Higgsfield keeps the photos it receives.</p>
+      <p class="hint">While the reel is made, your photos sit in an Inputs folder inside the ReelSieve folder in your Google Drive. With this ticked, we delete those photos once the reel is done and move their folder to your Drive bin. ReelSieve keeps no copy on its servers.</p>
     </div>
     <div class="upload-progress hidden" id="upload-progress">
       <div class="progress" role="progressbar" aria-label="Upload progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="upload-bar">

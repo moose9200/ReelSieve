@@ -148,9 +148,10 @@ def run_child(cmd, job, on_line):
 
 def render_command(job, workdir):
     p = job['params']
-    spec = {'ai_motion': bool(p.get('ai_motion')), 'renderer': p.get('style', 'v2'),
+    own = p.get('source') == 'photos'  # the customer's own photos, fetched into scratch by process(): no link at all
+    spec = {'ai_motion': bool(p.get('ai_motion')) and not own, 'renderer': p.get('style', 'v2'),  # never Drive data to Higgsfield
             'max_seconds': p.get('max_seconds'), 'ai_resolution': p.get('ai_resolution', '1080p')}
-    if p.get('source') == 'photos':  # the customer's own photos, fetched into scratch by process(): no link at all
+    if own:
         spec.update(photos=str(Path(workdir) / 'inputs'), facts={k: p.get(k) for k in PHOTO_FACTS})
     else:
         spec['url'] = job['url']

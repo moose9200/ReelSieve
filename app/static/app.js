@@ -383,9 +383,8 @@
       Array.prototype.forEach.call(quotes, function (q) { fd.append("quote_text", q.value); });
       Array.prototype.forEach.call(stars, function (s) { fd.append("quote_stars", s.value); });
       fd.append("quotes_real", String(!!(real && real.checked)));
-      var ai = document.getElementById("p-ai_motion"), res = document.getElementById("ai_resolution");
-      fd.append("ai_motion", String(!!(ai && ai.checked && !ai.disabled)));
-      fd.append("ai_resolution", res ? res.value : "1080p");
+      var res = document.getElementById("ai_resolution");
+      fd.append("ai_resolution", res ? res.value : "1080p");  // no ai_motion: own-photo reels never get it (server enforces)
       fd.append("delete_inputs", String(document.getElementById("delete_inputs").checked));
       if (!pKey) pKey = newKey();
       pbtn.disabled = true; prog.classList.remove("hidden"); setProgress(0);

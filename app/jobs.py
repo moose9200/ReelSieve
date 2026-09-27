@@ -94,7 +94,9 @@ def admit_photos(user, fields, files, idempotency_key=None, ip=None):
         raise AdmissionError(str(e)) from None
     # The photo set stands in for the listing: remaking a reel from the same photos is free, like remaking a listing.
     url = 'photos:' + hashlib.sha256(''.join(sorted(hashlib.sha256(d).hexdigest() for _, d in files)).encode()).hexdigest()[:32]
-    requested = {**_style(fields), 'source': 'photos', 'send_to_host': False, **facts, 'rooms': rooms,
+    # ai_motion off whatever the client sends: these photos come back from the customer's Drive, and Google's Limited Use
+    # rules forbid passing Drive data to a provider that trains AI models on it (Higgsfield does).
+    requested = {**_style(fields), 'ai_motion': False, 'source': 'photos', 'send_to_host': False, **facts, 'rooms': rooms,
                  'delete_inputs': fields.get('delete_inputs', True) is not False}
     key = str(idempotency_key or '')[:120] or secrets.token_hex(16)
     with database.connect() as c:
