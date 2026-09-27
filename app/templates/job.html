@@ -72,7 +72,7 @@
   {% if job.source != 'photos' and not job.host_suppressed %}
   <div class="card host-card{% if job.status != 'done' %} hidden{% endif %}" id="host-card">
     <div class="section-head"><h2>Send to the host on Airbnb</h2></div>
-    <p class="hint" id="share-step">Share the reel with the host privately, for example as an unlisted link, and only after they reply. Do not publish a reel of someone else's listing without the host's permission.</p>
+    <div class="field"><p class="hint" id="share-step">Share the reel with the host privately, for example as an unlisted link, and only after they reply. Do not publish a reel of someone else's listing without the host's permission.</p></div>
     <div class="field">
       <label for="host-message">Message</label>
       <textarea id="host-message" rows="5">{{ job.message_final or job.message or '' }}</textarea>
