@@ -99,9 +99,8 @@
     {% elif airbnb_state.stopped %}Airbnb fetching paused until {{ airbnb_state.until|when }}.
     {% elif b.cleared_at %}an admin resumed Airbnb fetching at {{ b.cleared_at|when }}.
     {% else %}Airbnb fetching resumed at {{ airbnb_state.until|when }}.{% endif %}
-    {% else %}No Airbnb block recorded.{% endif %}
-    {% if airbnb_state.stopped %}<button type="button" class="btn btn-secondary btn-sm" id="airbnb-resume">Resume Airbnb fetching</button>{% endif %}</p>
-  <p class="form-status" id="airbnb-status" role="status" aria-live="polite"></p>
+    {% else %}No Airbnb block recorded.{% endif %}</p>
+  {% if airbnb_state.stopped %}<div class="actions"><button type="button" class="btn btn-secondary btn-sm" id="airbnb-resume">Resume Airbnb fetching</button><span class="form-status" id="airbnb-status" role="status" aria-live="polite"></span></div>{% endif %}
   <ul class="config-list">
     {% for s in settings %}
     <li class="config-row">
