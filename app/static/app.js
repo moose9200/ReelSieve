@@ -262,12 +262,10 @@
       var style = form.style ? form.style.value : "cinematic";
       status.className = "form-status";
       if (!url) { status.textContent = "Paste an Airbnb listing URL."; status.classList.add("is-error"); form.url.focus(); return; }
-      var attested = !!(form.attested && form.attested.checked);
-      if (!attested) { status.textContent = "Tick the box to confirm this is your listing, or that you have the owner's permission."; status.classList.add("is-error"); form.attested.focus(); return; }
       btn.disabled = true;
       status.textContent = "Starting…";
       if (!idemKey) idemKey = newKey();
-      postJSON("/api/jobs", { url: url, attested: attested, send_to_host: sendToHost, message: message, ai_motion: aiMotion, style: style, ai_resolution: (form.ai_resolution ? form.ai_resolution.value : "1080p") }, { "Idempotency-Key": idemKey })
+      postJSON("/api/jobs", { url: url, send_to_host: sendToHost, message: message, ai_motion: aiMotion, style: style, ai_resolution: (form.ai_resolution ? form.ai_resolution.value : "1080p") }, { "Idempotency-Key": idemKey })
         .then(function (data) {
           var id = data && (data.id || data.job_id || (data.job && data.job.id));
           if (!id) throw new Error("Server did not return a job id.");
@@ -363,14 +361,24 @@
       var problem = n < MIN || n > MAX ? "Choose " + MIN + " to " + MAX + " photos (you have " + n + ")." :
                     totalBytes() > MAX_TOTAL ? "Your photos add up to more than 250 MB. Choose fewer or smaller photos." :
                     !title ? "Enter a property title." : !where ? "Enter the location." : null;
-      var quotes = pform.querySelectorAll('textarea[name="quote_text"]');
-      Array.prototype.forEach.call(quotes, function (q) { var len = q.value.trim().length; if (!problem && len && (len < 20 || len > 300)) problem = "Each guest quote needs 20 to 300 characters."; });
+      var quotes = pform.querySelectorAll('textarea[name="quote_text"]'), stars = pform.querySelectorAll('select[name="quote_stars"]');
+      var anyQuote = false;
+      Array.prototype.forEach.call(quotes, function (q, i) {
+        var len = q.value.trim().length;
+        if (!len) return;
+        anyQuote = true;
+        if (!problem && (len < 20 || len > 300)) problem = "Each guest quote needs 20 to 300 characters.";
+        if (!problem && !(stars[i] && stars[i].value)) problem = "Choose the stars the guest gave for each quote.";
+      });
+      var real = document.getElementById("quotes_real");
+      if (!problem && anyQuote && !(real && real.checked)) problem = "Tick the box to confirm the guest quotes are real reviews, quoted word for word.";
       if (problem) { say(pstatus, problem, true); return; }
       var fd = new FormData();
       chosen.forEach(function (c) { fd.append("photos", c.file, c.file.name); fd.append("room", c.room); });
       ["title", "location", "highlights", "style"].forEach(function (k) { fd.append(k, f[k].value); });
       Array.prototype.forEach.call(quotes, function (q) { fd.append("quote_text", q.value); });
-      Array.prototype.forEach.call(pform.querySelectorAll('select[name="quote_stars"]'), function (s) { fd.append("quote_stars", s.value); });
+      Array.prototype.forEach.call(stars, function (s) { fd.append("quote_stars", s.value); });
+      fd.append("quotes_real", String(!!(real && real.checked)));
       var ai = document.getElementById("p-ai_motion"), res = document.getElementById("ai_resolution");
       fd.append("ai_motion", String(!!(ai && ai.checked && !ai.disabled)));
       fd.append("ai_resolution", res ? res.value : "1080p");
@@ -490,8 +498,9 @@
       if (inp && job.inputs === "deleted") inp.textContent = "Your uploaded photos were deleted from your Google Drive, as you asked.";
       if (inp && job.inputs === "delete_failed") inp.textContent = "We could not delete your uploaded photos from Google Drive. They are in the Inputs folder inside your ReelSieve folder; delete them there if you like.";
       // a photo reel's Drive clean-up lands just after it finishes: keep polling briefly until it is reported
-      var cleaning = job.source === "photos" && job.delete_inputs && !job.inputs && extraPolls++ < 15;
-      if ((st === "done" || st === "failed" || st === "cancelled") && !cleaning) stop();
+      var terminal = st === "done" || st === "failed" || st === "cancelled";
+      var cleaning = terminal && job.source === "photos" && job.delete_inputs && !job.inputs && extraPolls++ < 15;
+      if (terminal && !cleaning) stop();
     }
     function poll() {
       getJSON(jobUrl).then(render).catch(function () {});

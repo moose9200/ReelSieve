@@ -1,4 +1,4 @@
-"""'Your own photos' reels and the ownership confirmation for listing links.
+"""'Your own photos' reels (the listing-link rights note and later review fixes: test_own_photos_review.py).
 
 Real isolated PostgreSQL, the synthetic Google fake (tests/fakes.py) and stub render children:
 nothing here fetches Airbnb, calls a paid provider or sends a message.
@@ -32,35 +32,6 @@ def usage(db):
         return c.execute('SELECT job_id,kind,credits,debited,refunded_at FROM usage ORDER BY ts').fetchall()
 
 
-# ---------------- listing links: ownership confirmation ----------------
-
-def test_listing_link_job_needs_the_ownership_confirmation(drive, db):
-    with pytest.raises(jobs.AdmissionError) as err:
-        jobs.admit('alice@example.test', URL, {})
-    assert err.value.status == 400 and 'my listing' in str(err.value) and "owner's permission" in str(err.value)
-    assert usage(db) == []
-
-
-def test_confirmed_listing_link_job_stores_the_confirmation_and_its_time(drive, db):
-    before = time.time()
-    job = jobs.admit('alice@example.test', URL, {'attested': True})
-    assert job['params']['attested'] is True and before <= job['params']['attested_at'] <= time.time()
-    # the time is not part of the request: a retry with the same key is still the same reel
-    again = jobs.admit('alice@example.test', URL, {'attested': True}, job['idempotency_key'])
-    assert again['id'] == job['id']
-
-
-def test_listing_link_route_refuses_without_confirmation_and_the_page_asks_for_it(drive, db, owners):
-    alice = client_for(owners['alice'])
-    r = alice.post('/api/jobs', json={'url': URL}, headers=csrf(owners['alice']))
-    assert r.status_code == 400 and "owner's permission" in r.json()['detail'] and usage(db) == []
-    r = alice.post('/api/jobs', json={'url': URL, 'attested': True}, headers=csrf(owners['alice']))
-    assert r.status_code == 200 and jobs.get('alice@example.test', r.json()['id'])['params']['attested'] is True
-    page = alice.get('/app').text
-    assert 'id="attested"' in page and 'This is my listing, or I have the owner\'s permission to use its photos' in page
-    assert 'attested: ' in alice.get('/static/app.js').text
-
-
 # ---------------- uploaded photos: type by content, sizes, count, metadata stripped ----------------
 
 def image(fmt='JPEG', size=(64, 40), colour=(180, 120, 60), exif=True):
@@ -85,7 +56,7 @@ def image(fmt='JPEG', size=(64, 40), colour=(180, 120, 60), exif=True):
     return buf.getvalue()
 
 
-def batch(n=6, fmt='JPEG'):
+def batch(n=photos.MIN_PHOTOS, fmt='JPEG'):
     return [(f'room-{i}.jpg', image(fmt)) for i in range(n)]
 
 
@@ -129,23 +100,24 @@ def test_very_large_photos_are_scaled_down_and_pixel_bombs_refused(monkeypatch):
 
 
 def test_upload_count_and_size_limits(monkeypatch):
-    photos.check_batch(batch(6))
-    photos.check_batch(batch(40))
-    for n in (0, 5, 41):
-        with pytest.raises(photos.PhotoError, match='6 to 40 photos'):
+    lo, hi = photos.MIN_PHOTOS, photos.MAX_PHOTOS
+    photos.check_batch(batch(lo))
+    photos.check_batch(batch(hi))
+    for n in (0, lo - 1, hi + 1):
+        with pytest.raises(photos.PhotoError, match=f'{lo} to {hi} photos'):
             photos.check_batch(batch(n))
-    big = [('huge.jpg', b'\xff\xd8\xff' + b'0' * photos.MAX_BYTES)] + batch(5)
+    big = [('huge.jpg', b'\xff\xd8\xff' + b'0' * photos.MAX_BYTES)] + batch(lo - 1)
     with pytest.raises(photos.PhotoError, match='huge.jpg is larger than 15 MB'):
         photos.check_batch(big)
-    monkeypatch.setattr(photos, 'MAX_TOTAL', 6 * len(image()) - 1)
+    monkeypatch.setattr(photos, 'MAX_TOTAL', lo * len(image()) - 1)
     with pytest.raises(photos.PhotoError, match='250 MB'):
-        photos.check_batch(batch(6))
+        photos.check_batch(batch(lo))
 
 
 def test_typed_details_are_validated_and_quotes_carry_no_name():
     good = photos.details({'title': '  Sea View Cottage ', 'location': 'Whitby, UK', 'highlights': 'Hot tub, Sea view\nFree parking, , ',
                            'quotes': [{'text': ' , Spotless cottage with a lovely view of the harbour.', 'stars': '5', 'name': 'Jane Guest'},
-                                      {'text': '', 'stars': 5}]})
+                                      {'text': '', 'stars': 5}], 'quotes_real': True})
     assert good == {'title': 'Sea View Cottage', 'location': 'Whitby, UK', 'highlights': ['Hot tub', 'Sea view', 'Free parking'],
                     'quotes': [{'text': 'Spotless cottage with a lovely view of the harbour.', 'stars': 5}]}
     fine = {'text': 'A perfectly fine quote here.', 'stars': 5}
@@ -188,10 +160,13 @@ def test_inputs_go_to_a_job_folder_in_the_customers_drive_and_come_back_intact(d
     folder2, _ = gdrive.upload_inputs('alice@example.test', 'fff000fff000', shots[:1], generation())
     assert drive.folders[folder2]['parents'] == job_folder['parents']
     got = gdrive.download_inputs('alice@example.test', ids, tmp_path / 'in', generation())
-    assert [p.name for p in got] == ['p01.jpg', 'p02.jpg', 'p03.jpg'] and [p.read_bytes() for p in got] == shots
-    gdrive.delete_inputs('alice@example.test', folder, generation())
-    assert folder not in drive.folders and not set(ids) & set(drive.blobs)
-    gdrive.delete_inputs('alice@example.test', folder, generation())  # already gone: nothing to do
+    assert [p.name for p in got] == ['p01.jpg', 'p02.jpg', 'p03.jpg']
+    # checked and re-encoded again on the way back (the customer can replace a file in Drive): same photo, clean JPEG
+    assert [Image.open(p).size for p in got] == [Image.open(io.BytesIO(x)).size for x in shots]
+    assert all(p.read_bytes()[:3] == b'\xff\xd8\xff' for p in got)
+    gdrive.delete_inputs('alice@example.test', folder, generation(), ids)
+    assert drive.folders[folder]['trashed'] and not set(ids) & set(drive.blobs)
+    gdrive.delete_inputs('alice@example.test', folder, generation(), ids)  # already gone: nothing to do
 
 
 def test_a_failed_input_upload_leaves_nothing_behind(drive):
@@ -213,11 +188,11 @@ def test_inputs_stay_with_the_google_account_the_job_was_admitted_on(drive, tmp_
 
 FIELDS = {'title': 'Harbour Cottage', 'location': 'Whitby, UK', 'highlights': 'Hot tub, Sea view',
           'quotes': [{'text': 'Spotless cottage with a lovely view of the harbour.', 'stars': 5}],
-          'rooms': ['exterior', 'living', 'kitchen', 'bedroom', 'bathroom', 'auto'], 'style': 'tutorial'}
+          'rooms': ['exterior', 'living', 'kitchen', 'bedroom', 'bathroom', 'auto'], 'style': 'tutorial', 'quotes_real': True}
 
 
 def photo_job(user='alice@example.test', files=None, key=None, **fields):
-    return jobs.admit_photos(user, {**FIELDS, **fields}, files or batch(6), key)
+    return jobs.admit_photos(user, {**FIELDS, **fields}, files or batch(), key)
 
 
 def job_folders(google):
@@ -229,11 +204,11 @@ def test_photo_admission_uploads_to_the_owners_drive_and_the_job_keeps_ids_only(
     p = job['params']
     assert p['source'] == 'photos' and job['url'].startswith('photos:') and job['status'] == 'queued'
     assert drive.folders[p['photos']['folder']]['name'] == job['id']
-    assert len(p['photos']['ids']) == 6 and all(drive.metas[i]['parents'] == [p['photos']['folder']] for i in p['photos']['ids'])
+    assert len(p['photos']['ids']) == photos.MIN_PHOTOS and all(drive.metas[i]['parents'] == [p['photos']['folder']] for i in p['photos']['ids'])
     assert (p['title'], p['location'], p['highlights']) == ('Harbour Cottage', 'Whitby, UK', ['Hot tub', 'Sea view'])
     assert p['quotes'] == [{'text': 'Spotless cottage with a lovely view of the harbour.', 'stars': 5}]
-    assert p['rooms'] == ['exterior', 'living', 'kitchen', 'bedroom', 'bathroom', 'other'] and p['style'] == 'v3'
-    assert p['delete_inputs'] is True and 'attested' not in p
+    assert p['rooms'][:6] == ['exterior', 'living', 'kitchen', 'bedroom', 'bathroom', 'other'] and p['style'] == 'v3'
+    assert p['delete_inputs'] is True and 'attested' not in p and p['quotes_confirmed_at']
     stored = str(dict(job))
     assert 'room-0.jpg' not in stored and 'SecretCam' not in stored and len(stored) < 4000  # ids and facts, never photo bytes
     assert not any(b'SecretCam' in b or b'Exif' in b for b in drive.blobs.values())  # Drive only ever gets clean photos
@@ -244,7 +219,7 @@ def test_a_photo_reel_costs_one_video_exactly_like_a_link_reel(drive, db):
     from app import plans, store
     store.set_plan('alice@example.test', 'starter', 3)
     credits = lambda: plans.account_view('alice@example.test')['remaining']  # noqa: E731
-    jobs.admit('alice@example.test', URL, {'attested': True})
+    jobs.admit('alice@example.test', URL, {})
     assert credits() == 2
     job = photo_job(key='p1')
     assert credits() == 1 and [(u['kind'], u['credits'], u['debited']) for u in usage(db)] == [('video', 1, True)] * 2
@@ -254,11 +229,11 @@ def test_a_photo_reel_costs_one_video_exactly_like_a_link_reel(drive, db):
         photo_job(key='p1', title='Another Cottage')
     assert err.value.status == 409 and len(job_folders(drive)) == 1
     assert jobs.cancel('alice@example.test', job['id'])['status'] == 'cancelled' and credits() == 2
-    photo_job(key='p2', files=batch(7))
-    photo_job(key='p3', files=batch(8))
+    photo_job(key='p2', files=batch(photos.MIN_PHOTOS + 1))
+    photo_job(key='p3', files=batch(photos.MIN_PHOTOS + 2))
     assert credits() == 0
     with pytest.raises(jobs.AdmissionError) as err:
-        photo_job(key='p4', files=batch(9))
+        photo_job(key='p4', files=batch(photos.MIN_PHOTOS + 3))
     assert err.value.status == 402 and len(job_folders(drive)) == 3  # refused before anything was uploaded
 
 
@@ -266,7 +241,8 @@ def test_photo_reel_needs_drive_and_valid_photos_before_any_charge_or_upload(dri
     with pytest.raises(jobs.AdmissionError) as err:
         photo_job('bob@example.test')
     assert err.value.status == 412
-    for files, msg in [(batch(5), '6 to 40'), (batch(5) + [('notes.jpg', b'plain text')], 'not a JPEG')]:
+    lo = photos.MIN_PHOTOS
+    for files, msg in [(batch(lo - 1), f'{lo} to {photos.MAX_PHOTOS}'), (batch(lo - 1) + [('notes.jpg', b'plain text')], 'not a JPEG')]:
         with pytest.raises(jobs.AdmissionError, match=msg) as err:
             photo_job(files=files)
         assert err.value.status == 400
@@ -284,9 +260,9 @@ def test_a_failed_drive_upload_charges_nothing(drive, db):
         assert c.execute('SELECT count(*) AS n FROM jobs').fetchone()['n'] == 0
 
 
-def multipart(n=6, **over):
+def multipart(n=photos.MIN_PHOTOS, **over):
     data = {'title': FIELDS['title'], 'location': FIELDS['location'], 'highlights': FIELDS['highlights'],
-            'style': 'cinematic', 'quote_text': [FIELDS['quotes'][0]['text'], ''], 'quote_stars': ['5', '5'],
+            'style': 'cinematic', 'quote_text': [FIELDS['quotes'][0]['text'], ''], 'quote_stars': ['5', ''], 'quotes_real': 'true',
             'room': ['auto'] * n, 'delete_inputs': 'false', **over}
     return data, [('photos', (f'shot-{i}.png', image('PNG'), 'image/png')) for i in range(n)]
 
@@ -298,11 +274,11 @@ def test_photo_route_admits_a_multipart_upload(drive, db, owners):
     r = alice.post('/api/jobs/photos', data=data, files=files, headers={**csrf(owners['alice']), 'Idempotency-Key': 'r1'})
     assert r.status_code == 200, r.text
     job = jobs.get('alice@example.test', r.json()['id'])
-    assert job['params']['delete_inputs'] is False and len(job['params']['photos']['ids']) == 6
+    assert job['params']['delete_inputs'] is False and len(job['params']['photos']['ids']) == photos.MIN_PHOTOS
     assert job['params']['quotes'] == FIELDS['quotes'] and job['params']['style'] == 'v2'
-    data, files = multipart(5)
+    data, files = multipart(photos.MIN_PHOTOS - 1)
     r = alice.post('/api/jobs/photos', data=data, files=files, headers=csrf(owners['alice']))
-    assert r.status_code == 400 and '6 to 40 photos' in r.json()['detail']
+    assert r.status_code == 400 and f'{photos.MIN_PHOTOS} to {photos.MAX_PHOTOS} photos' in r.json()['detail']
 
 
 # ---------------- worker: fetch from Drive into scratch, render, deliver, delete scratch (and inputs if asked) ----------------
@@ -342,10 +318,11 @@ def test_worker_fetches_the_photos_from_drive_renders_delivers_and_deletes_every
     run_worker(RENDER)
     done = jobs.get('alice@example.test', job['id'])
     assert done['status'] == 'done', done['error']
-    assert any('Rendering from p01.jpg,p02.jpg,p03.jpg,p04.jpg,p05.jpg,p06.jpg' in line for line in done['log'])
+    shown = ','.join(f'p{i + 1:02d}.jpg' for i in range(photos.MIN_PHOTOS))
+    assert any('Rendering from ' + shown in line for line in done['log'])
     assert gdrive.receipt('alice@example.test', job['id'], 'primary')['name'] == 'Harbour Cottage.mp4'
     assert not worker.scratch(job['id']).exists() and done['cleanup_at']
-    assert folder not in drive.folders and not drive.blobs  # the customer asked for the uploaded photos to go
+    assert drive.folders[folder]['trashed'] and not drive.blobs  # the customer asked for the uploaded photos to go
     assert done['meta']['inputs'] == 'deleted'
 
 
@@ -353,7 +330,7 @@ def test_inputs_stay_in_drive_when_the_customer_keeps_them(drive, db):
     job = photo_job(delete_inputs=False)
     run_worker(RENDER)
     done = jobs.get('alice@example.test', job['id'])
-    assert done['status'] == 'done' and job['params']['photos']['folder'] in drive.folders and len(drive.blobs) == 6
+    assert done['status'] == 'done' and job['params']['photos']['folder'] in drive.folders and len(drive.blobs) == photos.MIN_PHOTOS
     assert 'inputs' not in done['meta']
 
 
@@ -379,7 +356,7 @@ def test_cancelled_queued_photo_reel_has_its_inputs_deleted_by_the_sweeper(drive
     from app import worker
     job = photo_job()
     jobs.cancel('alice@example.test', job['id'])
-    assert len(drive.blobs) == 6
+    assert len(drive.blobs) == photos.MIN_PHOTOS
     worker.sweep()
     assert not drive.blobs and jobs.get('alice@example.test', job['id'])['meta']['inputs'] == 'deleted'
 
@@ -489,11 +466,12 @@ def test_photo_reel_pages_show_the_title_and_no_host_or_airbnb_links(drive, db, 
 def test_export_holds_the_typed_facts_ids_and_confirmation_and_erasure_removes_them(drive, db):
     from app import admin, store
     photo_job()
-    jobs.admit('alice@example.test', URL, {'attested': True})
+    jobs.admit('alice@example.test', URL, {})
     out = store.export('alice@example.test')
     params = {j['params'].get('source', 'listing'): j['params'] for j in out['jobs']}
-    assert params['photos']['title'] == 'Harbour Cottage' and params['photos']['quotes'] and len(params['photos']['photos']['ids']) == 6
-    assert params['listing']['attested'] is True and params['listing']['attested_at']
+    assert params['photos']['title'] == 'Harbour Cottage' and params['photos']['quotes']
+    assert len(params['photos']['photos']['ids']) == photos.MIN_PHOTOS and params['photos']['quotes_confirmed_at']
+    assert 'listing' in params and 'attested' not in params['listing']
     assert 'SecretCam' not in json.dumps(out, default=str) and 'room-0.jpg' not in json.dumps(out, default=str)
     admin.erase('alice@example.test')
     with db.connect() as c:
@@ -502,7 +480,7 @@ def test_export_holds_the_typed_facts_ids_and_confirmation_and_erasure_removes_t
 
 def test_typed_guest_quotes_leave_with_the_other_review_data_after_30_days(drive, db):
     from app import retention
-    old, recent = photo_job(key='old'), photo_job(key='new', files=batch(7))
+    old, recent = photo_job(key='old'), photo_job(key='new', files=batch(photos.MIN_PHOTOS + 1))
     with db.connect() as c:
         c.execute("UPDATE jobs SET status='done',finished_at=%s WHERE id=%s", (time.time() - 31 * 86400, old['id']))
         c.execute("UPDATE jobs SET status='done',finished_at=%s WHERE id=%s", (time.time() - 29 * 86400, recent['id']))
