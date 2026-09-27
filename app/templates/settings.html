@@ -67,11 +67,13 @@
 <section class="card" id="config-card">
   <div class="section-head"><h2>Configuration</h2><span class="pill pill-skipped">Read-only</span></div>
   <p class="hint">Change these in the hosting environment's variables and redeploy. Google OAuth redirect URI to register: <code>{{ redirect_uri }}</code>. Payment webhook: <code>{{ webhook_base }}/api/billing/webhook/skydo</code>. Stripe webhook endpoint: <code>{{ webhook_base }}/api/billing/webhook/stripe</code>, events <code>checkout.session.completed</code> and <code>checkout.session.async_payment_succeeded</code>.</p>
+  <p class="hint">{% if airbnb_block %}Last Airbnb block: {{ airbnb_block.ts|when }}, {{ airbnb_block.host }} answered {{ airbnb_block.status }}{% if airbnb_block.reason == 'challenge' %} with a challenge page{% endif %}; Airbnb fetching paused until {{ airbnb_block.until|when }}.{% else %}No Airbnb block recorded.{% endif %}</p>
   <ul class="config-list">
     {% for s in settings %}
     <li class="config-row">
       <code>{{ s.key }}</code>
-      <span class="pill pill-sm {{ 'pill-done' if s.configured else 'pill-neg' }}">{{ 'Set' if s.configured else 'Not set' }}</span>
+      {% set label = s.state or ('Set' if s.configured else 'Not set') %}
+      <span class="pill pill-sm {{ 'pill-done' if label in ('Set', 'On') else 'pill-neg' }}">{{ label }}</span>
       {% if s.value and not s.secret %}<span class="hint">{{ s.value[:120] }}</span>{% endif %}
       <p class="hint">{{ s.hint }}</p>
     </li>

@@ -6,6 +6,8 @@ from urllib.parse import urljoin, urlsplit
 
 import httpx
 
+from app import airbnb
+
 MAX_BYTES = 25 * 1024 * 1024
 
 
@@ -34,7 +36,9 @@ def get(url, headers=None, timeout=45, max_bytes=MAX_BYTES, redirects=5, hosts=N
             if hosts is not None and (urlsplit(url).scheme != 'https' or urlsplit(url).hostname not in hosts):
                 raise ValueError('That host is not allowed')
             check(url)
+            airbnb.gate(url)  # Airbnb hosts only: kill switch, cool-down, shared rate limit
             with client.stream('GET', url) as r:
+                airbnb.check(url, r.status_code)  # a block raises airbnb.Unavailable (not ValueError): callers must not swallow it
                 if r.is_redirect:
                     url = urljoin(url, r.headers.get('location', ''))
                     continue
@@ -45,5 +49,6 @@ def get(url, headers=None, timeout=45, max_bytes=MAX_BYTES, redirects=5, hosts=N
                     body += chunk
                     if len(body) > max_bytes:
                         raise ValueError('That page is too large to read')
+                airbnb.check(url, r.status_code, bytes(body), r.headers.get('content-type', ''))
                 return url, bytes(body)
     raise ValueError('Too many redirects')

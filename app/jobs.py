@@ -15,7 +15,7 @@ import uuid
 
 from psycopg.types.json import Jsonb
 
-from app import database, gdrive, plans, store
+from app import airbnb, database, gdrive, plans, store
 
 ACTIVE = ('queued', 'running', 'uploading')
 TERMINAL = ('done', 'failed', 'cancelled')
@@ -71,6 +71,8 @@ def admit(user, url, requested, idempotency_key=None, ip=None):
             if existing['request_hash'] != digest:
                 raise AdmissionError('That request key was already used for a different reel', 409)
             return get(user, existing['id'])
+        if not airbnb.enabled():  # kill switch: refused before anything is charged
+            raise AdmissionError(airbnb.DISABLED, 503)
         generation = gdrive.usable_generation(c, owner)
         if generation is None:
             raise AdmissionError('Connect your Google Drive in Account first — finished reels are delivered there', 412)

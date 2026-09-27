@@ -39,7 +39,11 @@
   function imgSrc(u) { return "/img?u=" + encodeURIComponent(u); }
   function getJSON(url) {
     return fetch(url, { headers: { "Accept": "application/json" } }).then(function (r) {
-      if (!r.ok) throw new Error("HTTP " + r.status); return r.json();
+      if (r.ok) return r.json();
+      // Show the server's own reason (for example "Airbnb is not serving this page to us right now").
+      return r.json().catch(function () { return {}; }).then(function (d) {
+        throw new Error((d && typeof d.detail === "string" && d.detail) || ("HTTP " + r.status));
+      });
     });
   }
 

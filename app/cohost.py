@@ -9,6 +9,7 @@ and sends it themselves. Airbnb's Terms forbid unsolicited commercial messages â
 make it relevant, stop if asked."""
 import re,html,time,random
 import httpx
+from app import airbnb
 from app import search as listing_search
 UA=listing_search.UA
 BASE='https://www.airbnb.co.uk'
@@ -17,8 +18,9 @@ def _slug(city):
 def _try_network(city):
     out=[]
     for u in (f'{BASE}/host/{_slug(city)}/co-hosts',f'https://www.airbnb.com/host/{_slug(city)}/co-hosts'):
-        try:r=httpx.get(u,headers=UA,follow_redirects=True,timeout=25)
-        except Exception:continue
+        # A network error gets one retry on airbnb.com; a block raises airbnb.Unavailable and stops here (no other route).
+        try:r=airbnb.get(u,headers=UA,timeout=25)
+        except httpx.HTTPError:continue
         if r.status_code!=200 or 'co-host' not in r.text.lower():continue
         t=r.text
         for m in re.finditer(r'href="(/users/show/(\d+)[^"]*)"[^>]*>\s*([^<]{2,40})',t):
@@ -29,8 +31,8 @@ def _try_network(city):
     return list(dedup.values())[:20]
 def _listing_host(lid):
     try:
-        t=httpx.get(f'{BASE}/rooms/{lid}',headers=UA,follow_redirects=True,timeout=30).text
-    except Exception:return None
+        t=airbnb.get(f'{BASE}/rooms/{lid}',headers=UA,timeout=30).text
+    except httpx.HTTPError:return None
     u=html.unescape(t)
     name=(re.search(r'Hosted by ([A-Z][\w\'â€™-]{1,30})',u) or [None,''])[1]
     m=re.search(r'"listingsCount"\s*:\s*(\d+)',t) or re.search(r'(\d+)\s+listings?',u)

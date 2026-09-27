@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app import admin, auth, billing, cohost, database, fetch, gdrive, hostmsg, jobs, linkedin, plans, retention, store
+from app import admin, airbnb, auth, billing, cohost, database, fetch, gdrive, hostmsg, jobs, linkedin, plans, retention, store
 from app import search as listing_search
 
 HERE = Path(__file__).resolve().parent
@@ -50,7 +50,12 @@ SETTINGS = [('HF_KEY', True, 'Higgsfield API key — enables AI camera motion (b
             ('STRIPE_SECRET_KEY', True, 'Stripe secret or restricted key (Checkout Sessions: write); card checkout needs this and the webhook secret'),
             ('STRIPE_WEBHOOK_SECRET', True, 'Signing secret (whsec_…) of the Stripe webhook endpoint for checkout.session.completed'),
             ('BILLING_NOTE', False, 'Line shown to customers who choose invoice'),
-            ('DEFAULT_MESSAGE', False, 'Default host message template')]
+            ('DEFAULT_MESSAGE', False, 'Default host message template'),
+            ('AIRBNB_FETCH_ENABLED', False, 'Airbnb fetching: 1 on, 0 off. Off refuses new listing-link reels and pauses Find a listing and co-host search'),
+            ('AIRBNB_BLOCK_COOLDOWN_MIN', False, 'Minutes all Airbnb fetching pauses after Airbnb blocks a request'),
+            ('AIRBNB_PAGE_RPS', False, 'Airbnb page requests per second, one budget for the web and every worker'),
+            ('AIRBNB_IMAGE_RPS', False, 'Airbnb photo requests per second, one budget for the web and every worker')]
+SETTING_DEFAULTS = {'AIRBNB_FETCH_ENABLED': '1', 'AIRBNB_BLOCK_COOLDOWN_MIN': '30', 'AIRBNB_PAGE_RPS': '1', 'AIRBNB_IMAGE_RPS': '10'}
 
 
 def validate_config():
@@ -87,6 +92,8 @@ def site_url():
 
 
 tpl.env.globals['site_url'] = site_url
+tpl.env.globals['airbnb_enabled'] = airbnb.enabled
+tpl.env.globals['airbnb_disabled'] = airbnb.DISABLED
 tpl.env.filters['day'] = lambda ts: time.strftime('%d %b %Y', time.gmtime(ts or 0))
 tpl.env.filters['when'] = lambda ts: time.strftime('%d %b %Y %H:%M UTC', time.gmtime(ts or 0))
 
@@ -940,6 +947,8 @@ def image_proxy(u: str = ''):
         # WebP, not AVIF: the CDN answers AVIF when asked, which Safari before 16 cannot show.
         _, body = fetch.get(u, headers={'User-Agent': listing_search.UA['User-Agent'], 'Accept': 'image/webp,image/jpeg,image/png'},
                             timeout=20, max_bytes=IMG_MAX, hosts=IMG_HOSTS)
+    except airbnb.Unavailable as e:
+        raise HTTPException(503, str(e))
     except ValueError:
         raise HTTPException(400, 'Not an allowed image')
     except httpx.HTTPError:
@@ -993,21 +1002,33 @@ def api_places(q: str = ''):
     return res
 
 
+def _airbnb_on():
+    """Kill switch: features that read Airbnb refuse with the same notice the page shows."""
+    if not airbnb.enabled():
+        raise HTTPException(503, airbnb.DISABLED)
+
+
 @app.get('/api/search')
 def api_search(location: str, checkin: str = '', checkout: str = '', adults: int = 2, offset: int = 0, pages: int = 3):
     """In-app listing picker: public Airbnb search results (no login)."""
+    _airbnb_on()
     if not location.strip():
         raise HTTPException(400, 'Enter a location')
     try:
         return listing_search.search(location[:120], checkin or None, checkout or None, adults, offset, min(max(pages, 1), 5))
+    except airbnb.Unavailable as e:
+        raise HTTPException(503, str(e))
     except Exception:
         raise HTTPException(502, 'Search failed — try again')
 
 
 @app.get('/api/search/more')
 def api_search_more(location: str, page: int, checkin: str = '', checkout: str = '', adults: int = 2):
+    _airbnb_on()
     try:
         return listing_search.search_page(location[:120], checkin or None, checkout or None, adults, page)
+    except airbnb.Unavailable as e:
+        raise HTTPException(503, str(e))
     except Exception:
         raise HTTPException(502, 'Load more failed — try again')
 
@@ -1085,10 +1106,13 @@ def outreach_page(request: Request):
 
 @app.get('/api/outreach/cohosts')
 def api_cohosts(city: str = ''):
+    _airbnb_on()
     if not city.strip():
         raise HTTPException(400, 'Enter a city')
     try:
         res = cohost.discover(city.strip()[:120])
+    except airbnb.Unavailable as e:
+        raise HTTPException(503, str(e))
     except Exception:
         raise HTTPException(502, 'Lookup failed — try again')
     return {**res, 'items': store.unsuppressed(res.get('items') or [])}  # people who objected never reappear
@@ -1096,10 +1120,13 @@ def api_cohosts(city: str = ''):
 
 @app.get('/api/outreach/linkedin')
 def api_linkedin(city: str = '', role: str = 'property manager'):
+    _airbnb_on()
     if not city.strip():
         raise HTTPException(400, 'Enter a city')
     try:
         res = linkedin.build(city.strip()[:120], (role.strip() or 'property manager')[:80])
+    except airbnb.Unavailable as e:
+        raise HTTPException(503, str(e))
     except Exception:
         raise HTTPException(502, 'Lookup failed — try again')
     return {**res, 'items': store.unsuppressed(res.get('items') or [])}
@@ -1172,8 +1199,13 @@ EVENT_LABELS = {'plan': 'Plan or credits changed', 'password_reset': 'Password r
 
 def settings_view():
     """Cloud-managed configuration, read-only: secrets show only whether they are set."""
-    return [{'key': k, 'configured': bool((os.getenv(k) or '').strip()), 'secret': secret, 'hint': hint,
-             'value': '' if secret else (os.getenv(k) or '')} for k, secret, hint in SETTINGS]
+    out = []
+    for k, secret, hint in SETTINGS:
+        v, default = (os.getenv(k) or '').strip(), SETTING_DEFAULTS.get(k)
+        out.append({'key': k, 'configured': bool(v or default), 'secret': secret, 'hint': hint,
+                    'value': '' if secret else (v or (default + ' (default)' if default else '')),
+                    'state': ('On' if airbnb.enabled() else 'Off') if k == 'AIRBNB_FETCH_ENABLED' else None})
+    return out
 
 
 @app.get('/settings', response_class=HTMLResponse)
@@ -1184,6 +1216,7 @@ def settings(request: Request, saved: int = 0, flash: str = ''):
         'settings': settings_view(), 'gdrive': gdrive.status(request.state.user), 'saved': bool(saved), 'flash': flash[:400],
         'events': store.admin_events(50), 'event_labels': EVENT_LABELS,
         'requests': store.open_privacy_requests(), 'request_types': store.PRIVACY_REQUEST_TYPES, 'now': time.time(),
+        'airbnb_block': airbnb.last_block(),
         'redirect_uri': _redirect_uri(request), 'webhook_base': (public_base() or str(request.base_url).rstrip('/'))})
 
 

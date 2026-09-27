@@ -1,4 +1,5 @@
-"""LinkedIn prospect links: never present a search as a profile, and carry the exact Airbnb host profile. No network."""
+"""LinkedIn prospect links: never present a search as a profile, and carry the exact Airbnb host profile.
+Airbnb is the synthetic fake (tests/fakes.py); no real network."""
 import csv
 import io
 import json
@@ -11,26 +12,21 @@ LISTING_HTML = ('<html>Hosted by Leo<script>{"pdpContext":{"isSuperHost":"true",
                 '"listingsCount":4}</script></html>')
 
 
-class FakeResponse:
-    def __init__(self, text):
-        self.text = text
-
-
-def test_listing_host_reads_the_host_id_already_on_the_listing_page(monkeypatch):
-    monkeypatch.setattr(cohost.httpx, 'get', lambda *a, **k: FakeResponse(LISTING_HTML))
+def test_listing_host_reads_the_host_id_already_on_the_listing_page(airbnb_net):
+    airbnb_net.pages['/rooms/'] = LISTING_HTML
     h = cohost._listing_host('42')
     assert h['name'] == 'Leo' and h['host_id'] == '987654321'
 
 
-def test_listing_host_without_an_id_has_no_profile(monkeypatch):
-    monkeypatch.setattr(cohost.httpx, 'get', lambda *a, **k: FakeResponse('<html>Hosted by Leo</html>'))
+def test_listing_host_without_an_id_has_no_profile(airbnb_net):
+    airbnb_net.pages['/rooms/'] = '<html>Hosted by Leo</html>'
     assert cohost._listing_host('42')['host_id'] is None
 
 
-def test_operators_carry_the_exact_airbnb_profile(monkeypatch):
+def test_operators_carry_the_exact_airbnb_profile(airbnb_net, monkeypatch):
     monkeypatch.setattr(cohost.listing_search, 'search', lambda *a, **k: {'items': [
         {'id': '42', 'url': 'https://www.airbnb.co.uk/rooms/42', 'name': 'Sea view', 'rating': 4.9, 'reviews': 10}]})
-    monkeypatch.setattr(cohost.httpx, 'get', lambda *a, **k: FakeResponse(LISTING_HTML))
+    airbnb_net.pages['/rooms/'] = LISTING_HTML
     [op] = cohost._operators('Poole')
     assert op['profile_url'] == 'https://www.airbnb.co.uk/users/show/987654321'
 

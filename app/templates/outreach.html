@@ -21,6 +21,7 @@
 <section class="card" id="cohost-card">
   <p class="eyebrow">AIRBNB CO-HOST NETWORK</p>
   <div class="section-head"><h2>Find co-hosts</h2><span class="pill pill-skipped">You send each one</span></div>
+  {% if not airbnb_enabled() %}<p class="hint hint-warn" role="status">{{ airbnb_disabled }}</p>{% endif %}
   <p class="hint">Hosts come from Airbnb's Co-Host Network page for the city when Airbnb shows it, otherwise from the hosts behind the city's best-reviewed listings. Find them by city, personalise, add them to the tracker, then open each one and send the message from your own Airbnb account. ReelSieve never sends for you — keep it to about {{ cap }} a day so it stays human.</p>
   <p class="hint">Marked sent today: <span id="sent-today">{{ sent_today }}</span>.</p>
 
@@ -29,7 +30,7 @@
       <label for="co-city">City</label>
       <input type="text" id="co-city" placeholder="Bournemouth, United Kingdom" list="city-list" autocomplete="off" spellcheck="false">
     </div>
-    <button type="button" class="btn btn-primary" id="co-find">Find co-hosts</button>
+    <button type="button" class="btn btn-primary" id="co-find"{% if not airbnb_enabled() %} disabled{% endif %}>Find co-hosts</button>
   </div>
   <datalist id="city-list">
     {%- for c in cities or [] %}<option value="{{ c }}"></option>{% endfor -%}
@@ -57,6 +58,7 @@
 <section class="card" id="li-card">
   <p class="eyebrow">LINKEDIN</p>
   <div class="section-head"><h2>LinkedIn prospects</h2><span class="pill pill-skipped">Manual send</span></div>
+  {% if not airbnb_enabled() %}<p class="hint hint-warn" role="status">{{ airbnb_disabled }}</p>{% endif %}
   <p class="hint">LinkedIn's terms forbid automated sending, so ReelSieve prepares the list and the words — you paste and send. Copy each message, or export the list as CSV.</p>
   <p class="hint">Airbnb shows hosts by first name only, so ReelSieve can't know anyone's exact LinkedIn profile. <b>Search LinkedIn</b> opens a people search for that name in that city; check who you pick against their <b>Airbnb profile</b> before you connect.</p>
 
@@ -69,7 +71,7 @@
       <label for="li-role">Role</label>
       <input type="text" id="li-role" placeholder="short let property manager" value="property manager" autocomplete="off" spellcheck="false">
     </div>
-    <button type="button" class="btn btn-primary" id="li-build">Build prospect list</button>
+    <button type="button" class="btn btn-primary" id="li-build"{% if not airbnb_enabled() %} disabled{% endif %}>Build prospect list</button>
     <a class="btn btn-secondary" id="li-export" href="/api/outreach/export.csv" download>Export CSV</a>
   </div>
 
