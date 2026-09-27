@@ -25,9 +25,21 @@
   <p class="form-status" id="ord-status" role="status" aria-live="polite"></p>
 </section>
 
+<section class="card" id="backup-card">
+  {% set pill = {'on': ('pill-done', 'On'), 'failing': ('pill-neg', 'Failing'), 'stopped': ('pill-neg', 'Stopped'), 'off': ('pill-neg', 'Off')}[backup.state] %}
+  <div class="section-head"><h2>Invoice backup (India)</h2><span class="pill {{ pill[0] }}">{{ pill[1] }}</span></div>
+  <p class="hint">Indian tax law (Income-tax Rules 2026, rule 46(8)) needs a daily backup of the books on servers in India. Once a day the worker service uploads every paid order as a CSV to the INVOICE_BACKUP_BUCKET bucket. {% if backup.state == 'off' %}It starts when INVOICE_BACKUP_BUCKET, INVOICE_BACKUP_ACCESS_KEY_ID and INVOICE_BACKUP_SECRET_ACCESS_KEY are set on the worker service (Configuration below shows this web service only). {% endif %}Each file holds every paid order still inside the 8-year record period. Before each upload the worker checks that a lifecycle rule on the bucket deletes files under invoices/ within 90 days (keep bucket versioning off), and it never replaces a file already stored. Refunds are made in the payment provider and are not in this file, so keep the provider's refund reports with your books in India too. The download is the same file, for the accountant.</p>
+  {% if backup.state == 'stopped' %}<p class="hint" role="alert"><strong>No backup has been tried for more than 26 hours.</strong> Check that the worker service is running and still has its INVOICE_BACKUP_* variables.</p>{% endif %}
+  <ul class="config-list">
+    <li class="config-row"><span>Last successful backup</span>{% if backup.last_ok %}<span class="pill pill-sm pill-plain pill-done">{{ backup.last_ok.ts|when }}</span><p class="hint">{{ backup.last_ok.row_count }} paid order{{ '' if backup.last_ok.row_count == 1 else 's' }} · <code>{{ backup.last_ok.key }}</code>{% if backup.last_ok.host %} on <code>{{ backup.last_ok.host }}</code>{% endif %}{% if backup.last_ok.expiry_days %} · deleted by the bucket after {{ backup.last_ok.expiry_days }} days{% endif %}</p>{% else %}<p class="hint">No backup has run yet.</p>{% endif %}</li>
+    {% if backup.last_error %}{% set resolved = backup.last_ok and backup.last_ok.ts > backup.last_error.ts %}<li class="config-row"><span>Last error</span><span class="pill pill-sm pill-plain {{ 'pill-skipped' if resolved else 'pill-neg' }}">{{ backup.last_error.ts|when }}</span><p class="hint">{{ backup.last_error.error }}{% if resolved %} · resolved by the later successful backup{% endif %}</p></li>{% endif %}
+  </ul>
+  <div class="actions"><a class="btn btn-secondary" href="/api/invoices/export.csv" download>Download invoices CSV</a></div>
+</section>
+
 <section class="card" id="users-card">
   <div class="section-head"><h2>Users</h2><span class="pill pill-skipped">Admin</span></div>
-  <p class="hint">People who can sign in. Removing someone deactivates their login, stops their reels in progress and disconnects their Google Drive; their orders and history are kept.</p>
+  <p class="hint">People who can sign in. Remove deactivates their login, stops their reels in progress and disconnects their Google Drive; their history is kept for 30 days, then erased automatically. Erase deletes their personal data now; paid orders are kept for tax records.</p>
   <ul class="user-list" id="user-list"></ul>
   <div class="grid-3">
     <div class="field"><label for="nu-email">Email</label><input type="email" id="nu-email" placeholder="name@company.com" autocomplete="off"></div>
@@ -37,16 +49,105 @@
   <div class="actions"><button type="button" class="btn btn-primary" id="nu-btn">Add user</button><span class="form-status" id="nu-status" role="status" aria-live="polite"></span></div>
 </section>
 
+<section class="card" id="requests-card">
+  <div class="section-head"><h2>Privacy requests</h2><span class="pill {{ 'pill-running' if requests else 'pill-done' }}">{{ requests|length }} open</span></div>
+  <p class="hint">From the public form at <a href="/privacy/request">/privacy/request</a>. Reply by email within one month of receipt, then mark it handled. Objections to outreach with an Airbnb profile or company number are added to the do-not-contact list at once and tagged with the request: if a request was not genuine, undo its entries. Listing removals are blocked at once while they wait for your check: confirm or remove each under Blocked listings when you reply.</p>
+  {% macro marks_of(ref) %}{% set m = form_marks.get(ref) %}{% if m %}<span class="pill pill-sm pill-skipped">{{ m.n }} do-not-contact {{ 'entry' if m.n == 1 else 'entries' }}</span><button type="button" class="btn btn-secondary btn-sm req-unsuppress" data-ref="{{ ref }}">Undo do-not-contact</button>{% endif %}{% endmacro %}
+  {% if requests %}
+  <ul class="user-list" id="req-list">
+    {% for r in requests %}
+    <li class="user-row" data-request="{{ r.ref }}"><span class="u-mail">{{ r.ref }} · {{ request_types.get(r.type, r.type) }} · {{ r.email }}{% if r.name %} ({{ r.name }}){% endif %}{% if r.airbnb_profile_id %} · Airbnb user {{ r.airbnb_profile_id }}{% endif %}{% if r.company_number %} · Company {{ r.company_number }}{% endif %}{% if r.listing_id %} · Listing {{ r.listing_id }}{% endif %}</span><span class="pill pill-sm {{ 'pill-neg' if r.due_at < now else 'pill-skipped' }}">Due {{ r.due_at|day }}</span><span class="u-actions">{{ marks_of(r.ref) }}<button type="button" class="btn btn-secondary btn-sm req-done" data-ref="{{ r.ref }}">Mark handled</button></span><p class="hint">Received {{ r.ts|when }}. {{ r.details }}</p></li>
+    {% endfor %}
+  </ul>
+  {% else %}<p class="hint">No open requests.</p>{% endif %}
+  {% set open_refs = requests|map(attribute='ref')|list %}
+  {% set closed = form_marks|reject('in', open_refs)|list %}
+  {% if closed %}
+  <h3>Do-not-contact entries from closed requests</h3>
+  <ul class="user-list" id="req-marks">
+    {% for ref in closed %}
+    <li class="user-row" data-request="{{ ref }}"><span class="u-mail">{{ ref }} · added {{ form_marks[ref].ts|day }}</span><span class="u-actions">{{ marks_of(ref) }}</span></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  <p class="form-status" id="req-status" role="status" aria-live="polite"></p>
+</section>
+
+<section class="card" id="referrals-card">
+  <div class="section-head"><h2>Referrals</h2><span class="pill pill-skipped">Read-only</span></div>
+  <p class="hint">Invite links on the Account page. Both accounts get one bonus video when the invited account's first reel is delivered; at most {{ referral_limit }} rewards per inviter a month. Nothing is sent to anyone.</p>
+  <ul class="steps">
+    <li>Signed up through a link: {{ referral_totals.signups }}</li>
+    <li>Rewarded: {{ referral_totals.rewarded }} · waiting for a first reel: {{ referral_totals.pending }}</li>
+    {% for label, n in referral_totals.not_rewarded.items() %}<li>Not rewarded, {{ label|lower }}: {{ n }}</li>{% endfor %}
+    <li>Bonus videos used: {{ referral_totals.bonus_used }} · unused: {{ referral_totals.bonus_unused }}</li>
+  </ul>
+</section>
+
+<section class="card" id="blocked-card">
+  <div class="section-head"><h2>Blocked listings</h2><span class="pill pill-skipped">{{ blocked|length }}</span></div>
+  <p class="hint">Nobody can make a reel of these listings, and they never appear in Find a listing, co-host or Outreach results. Hosts add theirs with "Remove my listing from ReelSieve" on the privacy request form; nothing proves the listing is theirs, so each waits for your check and lapses at its reply deadline unless you confirm it.</p>
+  {% set pending = blocked|selectattr('expires_at')|list %}
+  {% if pending %}
+  <p class="eyebrow">Waiting for a check</p>
+  <ul class="user-list" id="pending-list">
+    {% for b in pending %}
+    <li class="user-row" data-blocked="{{ b.listing_id }}"><span class="u-mail">Listing {{ b.listing_id }} · {{ b.reason }}</span><span class="pill pill-sm {{ 'pill-neg' if b.expires_at - now < 7 * 86400 else 'pill-skipped' }}">Lapses {{ b.expires_at|day }}</span><span class="u-actions"><button type="button" class="btn btn-primary btn-sm blocked-confirm" data-listing="{{ b.listing_id }}">Confirm</button><button type="button" class="btn btn-secondary btn-sm blocked-remove" data-listing="{{ b.listing_id }}">Remove</button></span></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+  {% if blocked|rejectattr('expires_at')|list %}
+  <ul class="user-list" id="blocked-list">
+    {% for b in blocked|rejectattr('expires_at') %}
+    <li class="user-row" data-blocked="{{ b.listing_id }}"><span class="u-mail">Listing {{ b.listing_id }} · {{ b.reason }}</span><span class="hint">Since {{ b.ts|day }}</span><span class="u-actions"><button type="button" class="btn btn-secondary btn-sm blocked-remove" data-listing="{{ b.listing_id }}">Remove</button></span></li>
+    {% endfor %}
+  </ul>
+  {% elif not pending %}<p class="hint">No blocked listings.</p>{% endif %}
+  <div class="grid-2">
+    <div class="field"><label for="bl-listing">Airbnb listing link or number</label><input type="text" id="bl-listing" placeholder="https://www.airbnb.co.uk/rooms/…" autocomplete="off" spellcheck="false"></div>
+    <div class="field"><label for="bl-reason">Reason</label><input type="text" id="bl-reason" placeholder="Airbnb takedown request" maxlength="300" autocomplete="off"></div>
+  </div>
+  <div class="actions"><button type="button" class="btn btn-primary" id="bl-add">Block listing</button><span class="form-status" id="bl-status" role="status" aria-live="polite"></span></div>
+</section>
+
+<section class="card" id="events-card">
+  <div class="section-head"><h2>Admin activity</h2><span class="pill pill-skipped">Read-only</span></div>
+  <p class="hint">The last 50 changes made to other people's accounts and orders, newest first. Kept for 2 years.</p>
+  {% if events %}
+  <ul class="user-list">
+    {% for e in events %}
+    <li class="user-row" data-event><span class="u-mail">{{ e.ts|when }} · {{ event_labels.get(e.action, e.action) }}{% if e.detail.ref %} · {{ e.detail.ref }}{% endif %}{% if e.detail.listing %} · listing {{ e.detail.listing }}{% endif %}{% if e.detail.plan %} · {{ e.detail.plan|capitalize }}, {{ e.detail.credits }} credits{% endif %}</span><span class="hint">{{ e.target or '—' }} · by {{ e.actor or e.detail.via or 'operator console' }}</span></li>
+    {% endfor %}
+  </ul>
+  {% else %}<p class="hint">No admin activity yet.</p>{% endif %}
+</section>
+
+<section class="card" id="companies-card">
+  <div class="section-head"><h2>Companies House data</h2><span class="pill {{ 'pill-done' if companies.snapshot else 'pill-neg' }}">{{ ('Snapshot ' ~ companies.snapshot) if companies.snapshot else 'Not loaded yet' }}</span></div>
+  <p class="hint">UK property companies for Outreach, from the Companies House Free Company Data Product. The worker checks every hour and loads each new monthly snapshot once; each load replaces the company rows and removes companies no longer on the register. Company details only: no officer or shareholder details, and only the first half of the postcode.</p>
+  {% if companies.snapshot %}<p class="hint">Last snapshot {{ companies.snapshot }}, loaded {{ companies.ingested_at|when }}. Held now: {{ '{:,}'.format(companies.rows) }} companies.</p>{% endif %}
+  {% if companies.failed %}<p class="hint hint-warn">The snapshot of {{ companies.failed.snapshot }} failed to load {{ companies.failed.failed_at|when }}: {{ companies.failed.error }}. The worker tries it again a day later.</p>{% endif %}
+</section>
+
 {% include '_gdrive_card.html' %}
 
 <section class="card" id="config-card">
   <div class="section-head"><h2>Configuration</h2><span class="pill pill-skipped">Read-only</span></div>
   <p class="hint">Change these in the hosting environment's variables and redeploy. Google OAuth redirect URI to register: <code>{{ redirect_uri }}</code>. Payment webhook: <code>{{ webhook_base }}/api/billing/webhook/skydo</code>. Stripe webhook endpoint: <code>{{ webhook_base }}/api/billing/webhook/stripe</code>, events <code>checkout.session.completed</code> and <code>checkout.session.async_payment_succeeded</code>.</p>
+  {% set b = airbnb_state.last %}
+  <p class="hint" id="airbnb-block">{% if b %}Last Airbnb block: {{ b.ts|when }}, {{ b.host }} answered {{ b.status }}{% if b.reason == 'challenge' %} with a challenge page{% endif %};
+    {% if airbnb_state.hard %}Airbnb fetching is stopped until an admin resumes it{% if b.status != 451 %}: Airbnb refused us again after a pause{% endif %}.
+    {% elif airbnb_state.stopped %}Airbnb fetching paused until {{ airbnb_state.until|when }}.
+    {% elif b.cleared_at %}an admin resumed Airbnb fetching at {{ b.cleared_at|when }}.
+    {% else %}Airbnb fetching resumed at {{ airbnb_state.until|when }}.{% endif %}
+    {% else %}No Airbnb block recorded.{% endif %}</p>
+  {% if airbnb_state.stopped %}<div class="actions"><button type="button" class="btn btn-secondary btn-sm" id="airbnb-resume">Resume Airbnb fetching</button><span class="form-status" id="airbnb-status" role="status" aria-live="polite"></span></div>{% endif %}
   <ul class="config-list">
     {% for s in settings %}
     <li class="config-row">
       <code>{{ s.key }}</code>
-      <span class="pill pill-sm {{ 'pill-done' if s.configured else 'pill-neg' }}">{{ 'Set' if s.configured else 'Not set' }}</span>
+      {% set label = s.state or ('Set' if s.configured else 'Not set') %}
+      <span class="pill pill-sm {{ 'pill-done' if label in ('Set', 'On', 'Default') else 'pill-neg' }}">{{ label }}</span>
       {% if s.value and not s.secret %}<span class="hint">{{ s.value[:120] }}</span>{% endif %}
       <p class="hint">{{ s.hint }}</p>
     </li>

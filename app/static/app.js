@@ -35,9 +35,16 @@
       });
     });
   }
+  function newKey() { return (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2); }
+  // Listing photos come through our own server, so the visitor's browser never contacts Airbnb's CDN.
+  function imgSrc(u) { return "/img?u=" + encodeURIComponent(u); }
   function getJSON(url) {
     return fetch(url, { headers: { "Accept": "application/json" } }).then(function (r) {
-      if (!r.ok) throw new Error("HTTP " + r.status); return r.json();
+      if (r.ok) return r.json();
+      // Show the server's own reason (for example "Airbnb is not serving this page to us right now").
+      return r.json().catch(function () { return {}; }).then(function (d) {
+        throw new Error((d && typeof d.detail === "string" && d.detail) || ("HTTP " + r.status));
+      });
     });
   }
 
@@ -78,7 +85,7 @@
       data.items.forEach(function (it) {
         var el = document.createElement("article"); el.className = "result"; el.setAttribute("data-id", it.id);
         var rating = it.rating != null ? "★ " + it.rating + (it.reviews != null ? " (" + it.reviews + ")" : "") : "New";
-        el.innerHTML = (it.photo ? '<img loading="lazy" src="' + esc(it.photo) + '?im_w=720" alt="">' : "") +
+        el.innerHTML = (it.photo ? '<img loading="lazy" src="' + esc(imgSrc(it.photo + "?im_w=720")) + '" alt="">' : "") +
           '<div class="rb"><div class="rn">' + esc(it.name || it.title) + "</div>" +
           '<div class="rt">' + esc(it.title) + "</div>" + (it.summary ? '<div class="rs">' + esc(it.summary) + "</div>" : "") +
           (it.badges && it.badges.length ? '<div><span class="badge">' + esc(it.badges[0]) + "</span></div>" : "") +
@@ -261,7 +268,7 @@
       if (!url) { status.textContent = "Paste an Airbnb listing URL."; status.classList.add("is-error"); form.url.focus(); return; }
       btn.disabled = true;
       status.textContent = "Starting…";
-      if (!idemKey) idemKey = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + Math.random().toString(16).slice(2);
+      if (!idemKey) idemKey = newKey();
       postJSON("/api/jobs", { url: url, send_to_host: sendToHost, message: message, ai_motion: aiMotion, style: style, ai_resolution: (form.ai_resolution ? form.ai_resolution.value : "1080p") }, { "Idempotency-Key": idemKey })
         .then(function (data) {
           var id = data && (data.id || data.job_id || (data.job && data.job.id));
@@ -282,6 +289,130 @@
     if (aiLabel && aiHint) aiLabel.addEventListener("click", function () { aiHint.classList.add("hint-warn"); });
   }
 
+  // ---------- index: listing link or your own photos ----------
+  var modeBtns = document.querySelectorAll(".mode-btn[data-mode]");
+  function setMode(mode) {
+    var photosMode = mode === "photos";
+    Array.prototype.forEach.call(modeBtns, function (b) { b.setAttribute("aria-selected", String(b.getAttribute("data-mode") === mode)); });
+    var lf = document.getElementById("reel-form"), pf = document.getElementById("photos-form"), sc = document.getElementById("search-card");
+    if (lf) lf.classList.toggle("hidden", photosMode);
+    if (pf) pf.classList.toggle("hidden", !photosMode);
+    if (sc) sc.classList.toggle("hidden", photosMode);
+  }
+  Array.prototype.forEach.call(document.querySelectorAll("[data-mode]"), function (b) {
+    b.addEventListener("click", function (ev) { ev.preventDefault(); setMode(b.getAttribute("data-mode")); var t = document.getElementById("mode-" + b.getAttribute("data-mode")); if (t) t.focus(); });
+  });
+
+  var pform = document.getElementById("photos-form");
+  if (pform) {
+    var ROOMS = [["auto", "Room: auto"], ["exterior", "Outside / entrance"], ["living", "Living room"], ["kitchen", "Kitchen or dining"],
+                 ["bedroom", "Bedroom"], ["bathroom", "Bathroom"], ["garden", "Garden, patio or balcony"], ["spa", "Hot tub, pool or sauna"],
+                 ["view", "View"], ["other", "Other"]];
+    var OK_TYPES = { "image/jpeg": 1, "image/png": 1, "image/webp": 1 };
+    var MIN = +pform.getAttribute("data-min"), MAX = +pform.getAttribute("data-max"),
+        MAX_BYTES = +pform.getAttribute("data-max-bytes"), MAX_TOTAL = +pform.getAttribute("data-max-total");
+    var picker = document.getElementById("photo-files"), drop = document.getElementById("dropzone"), thumbs = document.getElementById("thumbs"),
+        countEl = document.getElementById("photo-count"), pstatus = document.getElementById("photos-status"), pbtn = document.getElementById("photos-submit"),
+        prog = document.getElementById("upload-progress"), pfill = document.getElementById("upload-fill"), pbar = document.getElementById("upload-bar"),
+        roomsHint = document.getElementById("rooms-hint");
+    var chosen = [], pKey = null;  // [{file, room, url}] in upload order; one idempotency key per intended reel
+    function mb(n) { return (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + " MB"; }
+    function say(el, msg, bad) { el.className = "form-status" + (bad ? " is-error" : ""); el.textContent = msg || ""; }
+    function totalBytes() { return chosen.reduce(function (s, c) { return s + c.file.size; }, 0); }
+    function renderChosen() {
+      thumbs.innerHTML = "";
+      chosen.forEach(function (c, i) {
+        var li = document.createElement("li"); li.className = "thumb";
+        var img = document.createElement("img"); img.src = c.url; img.alt = "Photo " + (i + 1); img.loading = "lazy"; li.appendChild(img);
+        var sel = document.createElement("select"); sel.setAttribute("aria-label", "What photo " + (i + 1) + " shows");
+        ROOMS.forEach(function (r) { var o = document.createElement("option"); o.value = r[0]; o.textContent = r[1]; if (r[0] === c.room) o.selected = true; sel.appendChild(o); });
+        sel.addEventListener("change", function () { c.room = sel.value; pKey = null; });
+        var rm = document.createElement("button"); rm.type = "button"; rm.className = "btn btn-secondary btn-sm thumb-remove"; rm.textContent = "Remove";
+        rm.setAttribute("aria-label", "Remove photo " + (i + 1));
+        rm.addEventListener("click", function () { URL.revokeObjectURL(c.url); chosen.splice(i, 1); pKey = null; renderChosen(); });
+        li.appendChild(sel); li.appendChild(rm); thumbs.appendChild(li);
+      });
+      if (roomsHint) roomsHint.classList.toggle("hidden", !chosen.length);
+      var n = chosen.length, t = totalBytes();
+      if (!n) { say(countEl, ""); return; }
+      var msg = n + " photo" + (n === 1 ? "" : "s") + " · " + mb(t);
+      if (n < MIN) msg += " · add at least " + (MIN - n) + " more";
+      else if (n > MAX) msg += " · remove " + (n - MAX) + " to stay within " + MAX;
+      else if (t > MAX_TOTAL) msg += " · over the 250 MB total";
+      say(countEl, msg, n < MIN || n > MAX || t > MAX_TOTAL);
+    }
+    function addFiles(list) {
+      var refused = [];
+      Array.prototype.forEach.call(list || [], function (f) {
+        if (!OK_TYPES[f.type]) { refused.push(f.name + " is not a JPEG, PNG or WebP image"); return; }
+        if (f.size > MAX_BYTES) { refused.push(f.name + " is larger than 15 MB"); return; }
+        chosen.push({ file: f, room: "auto", url: URL.createObjectURL(f) });
+      });
+      pKey = null; renderChosen();
+      say(pstatus, refused.length ? refused.slice(0, 3).join(". ") + (refused.length > 3 ? " (and " + (refused.length - 3) + " more)" : "") + "." : "", refused.length > 0);
+    }
+    picker.addEventListener("change", function () { addFiles(picker.files); picker.value = ""; });
+    ["dragenter", "dragover"].forEach(function (t) { drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.add("is-over"); }); });
+    ["dragleave", "drop"].forEach(function (t) { drop.addEventListener(t, function (e) { e.preventDefault(); drop.classList.remove("is-over"); }); });
+    drop.addEventListener("drop", function (e) { addFiles(e.dataTransfer && e.dataTransfer.files); });
+    pform.addEventListener("input", function () { pKey = null; });
+    pform.addEventListener("change", function () { pKey = null; });
+    function setProgress(p) { var v = Math.round(p); pfill.style.width = v + "%"; pbar.setAttribute("aria-valuenow", v); }
+    pform.addEventListener("submit", function (ev) {
+      ev.preventDefault();
+      var f = pform.elements;
+      var n = chosen.length, title = f.title.value.trim(), where = f.location.value.trim();
+      var problem = n < MIN || n > MAX ? "Choose " + MIN + " to " + MAX + " photos (you have " + n + ")." :
+                    totalBytes() > MAX_TOTAL ? "Your photos add up to more than 250 MB. Choose fewer or smaller photos." :
+                    !title ? "Enter a property title." : !where ? "Enter the location." : null;
+      var quotes = pform.querySelectorAll('textarea[name="quote_text"]'), stars = pform.querySelectorAll('select[name="quote_stars"]');
+      var anyQuote = false;
+      Array.prototype.forEach.call(quotes, function (q, i) {
+        var len = q.value.trim().length;
+        if (!len) return;
+        anyQuote = true;
+        if (!problem && (len < 20 || len > 300)) problem = "Each guest quote needs 20 to 300 characters.";
+        if (!problem && !(stars[i] && stars[i].value)) problem = "Choose the stars the guest gave for each quote.";
+      });
+      var real = document.getElementById("quotes_real");
+      if (!problem && anyQuote && !(real && real.checked)) problem = "Tick the box to confirm the guest quotes are real reviews, quoted word for word.";
+      if (problem) { say(pstatus, problem, true); return; }
+      var fd = new FormData();
+      chosen.forEach(function (c) { fd.append("photos", c.file, c.file.name); fd.append("room", c.room); });
+      ["title", "location", "highlights", "style"].forEach(function (k) { fd.append(k, f[k].value); });
+      Array.prototype.forEach.call(quotes, function (q) { fd.append("quote_text", q.value); });
+      Array.prototype.forEach.call(stars, function (s) { fd.append("quote_stars", s.value); });
+      fd.append("quotes_real", String(!!(real && real.checked)));
+      var res = document.getElementById("ai_resolution");
+      fd.append("ai_resolution", res ? res.value : "1080p");  // no ai_motion: own-photo reels never get it (server enforces)
+      fd.append("delete_inputs", String(document.getElementById("delete_inputs").checked));
+      if (!pKey) pKey = newKey();
+      pbtn.disabled = true; prog.classList.remove("hidden"); setProgress(0);
+      say(pstatus, "Uploading your photos… 0%");
+      var xhr = new XMLHttpRequest();
+      xhr.open("POST", "/api/jobs/photos");
+      xhr.setRequestHeader("Accept", "application/json");
+      xhr.setRequestHeader("X-CSRF-Token", csrfMeta ? csrfMeta.content : "");
+      xhr.setRequestHeader("Idempotency-Key", pKey);
+      xhr.upload.onprogress = function (e) {
+        if (!e.lengthComputable) return;
+        var p = 90 * e.loaded / e.total; setProgress(p); say(pstatus, "Uploading your photos… " + Math.round(100 * e.loaded / e.total) + "%");
+      };
+      xhr.upload.onload = function () { setProgress(92); say(pstatus, "Checking your photos, removing location data and saving them to your Google Drive…"); };
+      function fail(msg, code) {
+        pbtn.disabled = false; prog.classList.add("hidden"); say(pstatus, msg, true);
+        if (code === 402) { var up = document.createElement("a"); up.href = "/upgrade"; up.textContent = "See plans"; pstatus.appendChild(document.createTextNode(" ")); pstatus.appendChild(up); }
+      }
+      xhr.onload = function () {
+        var data = null; try { data = JSON.parse(xhr.responseText); } catch (e) {}
+        if (xhr.status === 200 && data && data.id) { setProgress(100); say(pstatus, "Starting your reel…"); window.location.href = "/jobs/" + encodeURIComponent(data.id); return; }
+        fail((data && typeof data.detail === "string" && data.detail) || "The upload failed (" + xhr.status + "). Try again.", xhr.status);
+      };
+      xhr.onerror = function () { fail("The upload stopped. Check your connection and try again."); };
+      xhr.send(fd);
+    });
+  }
+
   // ---------- job: poll, delivery, sharing, cancel, host message ----------
   var jobEl = document.getElementById("job");
   if (jobEl) {
@@ -292,7 +423,7 @@
         video = el("video"), dl = el("download-btn"), hostPill = el("host-pill"), reelLink = el("reel-link"),
         hostMsg = el("host-message"), hostStatus = el("host-status"), contactLink = el("contact-link"),
         title = el("listing-title"), loc = el("listing-location"), meta = el("listing-meta");
-    var timer = null, lastLogLen = -1, msgTouched = false;
+    var timer = null, lastLogLen = -1, msgTouched = false, extraPolls = 0;
     var jobUrl = "/api/jobs/" + encodeURIComponent(jobId);
     if (hostMsg) hostMsg.addEventListener("input", function () { msgTouched = true; });
 
@@ -326,7 +457,6 @@
         hostPill.textContent = hostText(job);
       }
       if (hostMsg && !msgTouched && (job.message_final || job.message)) hostMsg.value = job.message_final || job.message;
-      var yt = el("yt-title"); if (yt && job.youtube_title) yt.value = job.youtube_title;
       if (contactLink && job.contact_url) contactLink.href = job.contact_url;
       if (hostStatus && job.host_error && !hostStatus.textContent) hostStatus.textContent = job.host_error;
     }
@@ -363,10 +493,17 @@
       if (st === "done") {
         renderDelivery(job);
         videoCard.classList.remove("hidden");
-        if (hostCard) hostCard.classList.remove("hidden");
-        renderHost(job);
+        if (hostCard && job.host_suppressed) { hostCard.parentNode.removeChild(hostCard); hostCard = null; }  // they objected
+        if (hostCard) { hostCard.classList.remove("hidden"); renderHost(job); }
       }
-      if (st === "done" || st === "failed" || st === "cancelled") stop();
+      var inp = el("inputs-state");
+      if (inp && job.inputs === "deleted") inp.textContent = "Your uploaded photos were deleted from your Google Drive, as you asked.";
+      if (inp && job.inputs === "delete_failed") inp.textContent = "We could not delete your uploaded photos from Google Drive yet. We will keep trying for 7 days; if you disconnected Google Drive, connect it again.";
+      if (inp && job.inputs === "left") inp.textContent = "We could not delete your uploaded photos from Google Drive. They are in the Inputs folder inside your ReelSieve folder; delete them there.";
+      // a photo reel's Drive clean-up lands just after it finishes: keep polling briefly until it is reported
+      var terminal = st === "done" || st === "failed" || st === "cancelled";
+      var cleaning = terminal && job.source === "photos" && job.delete_inputs && !job.inputs && extraPolls++ < 15;
+      if (terminal && !cleaning) stop();
     }
     function poll() {
       getJSON(jobUrl).then(render).catch(function () {});
@@ -399,8 +536,6 @@
     if (el("share-no")) el("share-no").addEventListener("click", function () { el("share-confirm").classList.add("hidden"); shareBtn.focus(); });
     if (el("unshare-btn")) el("unshare-btn").addEventListener("click", function () { share(false); });
 
-    var ytBtn = el("copy-yt-btn");
-    if (ytBtn) ytBtn.addEventListener("click", function () { var f = el("yt-title"); if (!f || !f.value) return; var done = function () { ytBtn.textContent = "Copied"; setTimeout(function () { ytBtn.textContent = "Copy"; }, 1500); }; if (navigator.clipboard) navigator.clipboard.writeText(f.value).then(done, done); else { f.select(); document.execCommand("copy"); done(); } });
     var copyBtn = el("copy-link-btn");
     if (copyBtn) copyBtn.addEventListener("click", function () {
       if (!reelLink || !reelLink.value) return;
@@ -452,7 +587,11 @@
         acts.appendChild(rp);
         if (u.user !== d.me) { var rm = document.createElement("button"); rm.type = "button"; rm.className = "btn btn-secondary btn-sm"; rm.textContent = "Remove";
           rm.addEventListener("click", function () { if (!confirm("Remove " + u.user + "?")) return; postJSON("/api/users/delete", { user: u.user }).then(function (dd) { getJSON("/api/users").then(renderUsers); nuStatus.textContent = dd.warning ? u.user + " removed. " + dd.warning : u.user + " removed; their Drive access was revoked."; }).catch(function (e) { nuStatus.textContent = e.message; }); });
-          acts.appendChild(rm); }
+          acts.appendChild(rm);
+          // Erase is not Remove: personal data goes now; paid orders stay for the tax record period.
+          var er = document.createElement("button"); er.type = "button"; er.className = "btn btn-danger btn-sm"; er.textContent = "Erase";
+          er.addEventListener("click", function () { var typed = prompt("Erase " + u.user + " for good? Their reels list, outreach and account details are deleted; paid orders are kept for tax records.\nType ERASE to confirm:"); if (typed !== "ERASE") return; postJSON("/api/users/erase", { user: u.user }).then(function (dd) { getJSON("/api/users").then(renderUsers); nuStatus.textContent = u.user + " erased." + (dd.warning ? " " + dd.warning : ""); }).catch(function (e) { nuStatus.textContent = e.message; }); });
+          acts.appendChild(er); }
         li.appendChild(pl);
         userList.appendChild(li);
       });
@@ -471,6 +610,27 @@
     postJSON("/api/account/password", { current: document.getElementById("pw-current").value, new: document.getElementById("pw-new").value })
       .then(function (d) { out.textContent = "Password changed — signing you in again…"; setTimeout(function () { window.location.href = (d && d.relogin) || "/login"; }, 800); })
       .catch(function (err) { out.textContent = err.message; out.classList.add("is-error"); });
+  });
+  // Invite link: copy only. No share-to-email or messaging buttons (ICO: encouraging those messages is instigating them).
+  var refBtn = document.getElementById("ref-copy");
+  if (refBtn) refBtn.addEventListener("click", function () {
+    var f = document.getElementById("ref-link");
+    var done = function () { refBtn.textContent = "Copied"; setTimeout(function () { refBtn.textContent = "Copy link"; }, 1500); };
+    var fallback = function () { f.select(); document.execCommand("copy"); done(); };
+    if (navigator.clipboard) navigator.clipboard.writeText(f.value).then(done, fallback); else fallback();
+  });
+  var delBtn = document.getElementById("del-btn");
+  if (delBtn) delBtn.addEventListener("click", function () {
+    var out = document.getElementById("del-status"), confirmed = document.getElementById("del-confirm").value.trim();
+    out.className = "form-status";
+    if (confirmed !== "DELETE") { out.textContent = "Type DELETE to confirm."; out.classList.add("is-error"); return; }
+    delBtn.disabled = true; out.textContent = "Deleting your account…";
+    postJSON("/api/account/delete", { password: document.getElementById("del-password").value, confirm: confirmed })
+      .then(function (d) {
+        out.textContent = "Account deleted." + (d.warning ? " " + d.warning : "");
+        setTimeout(function () { window.location.href = d.redirect || "/login"; }, d.warning ? 5000 : 800);
+      })
+      .catch(function (err) { out.textContent = err.message; out.classList.add("is-error"); delBtn.disabled = false; });
   });
   // Google consent opens in a new tab; when the person comes back here, show the new Drive status.
   var gdForm = document.getElementById("gdrive-form");
@@ -576,6 +736,8 @@
           id: it.id != null ? it.id : null,
           name: it.name || "",
           url: it.url || "",
+          airbnb_profile: it.profile_url || "",
+          listing_url: it.listing_url || "",
           city: city,
           message: orTokens(tpl, { name: it.name || "", city: city, listing_title: it.listing_title || it.title || "" })
         };
@@ -595,7 +757,7 @@
         row.className = "or-row";
         row.innerHTML =
           '<label class="or-check"><input type="checkbox" class="or-pick" data-i="' + i + '" checked aria-label="Include ' + orEsc(it.name || "this co-host") + '"></label>' +
-          (it.avatar ? '<img class="or-avatar" loading="lazy" alt="" src="' + orEsc(it.avatar) + '">' : "") +
+          (it.avatar ? '<img class="or-avatar" loading="lazy" alt="" src="' + orEsc(imgSrc(it.avatar)) + '">' : "") +
           '<div class="or-row-body"><span class="or-name">' + orEsc(it.name || "Co-host") + "</span>" +
           (it.listings != null ? '<span class="or-badge">' + orEsc(it.listings) + " listings</span>" : "") +
           (it.tagline ? '<span class="or-sub">' + orEsc(it.tagline) + "</span>" : "") + "</div>" +
@@ -704,7 +866,7 @@
           b.disabled = true;
           orPost("/api/outreach/queue", {
             channel: "linkedin",
-            items: [{ id: it.id != null ? it.id : null, name: it.name || "", url: it.url || "", city: liCity(it), message: liNote(it), airbnb_profile: it.airbnb_profile || "" }]
+            items: [{ id: it.id != null ? it.id : null, name: it.name || "", url: it.url || "", city: liCity(it), message: liNote(it), airbnb_profile: it.airbnb_profile || "", listing_url: it.listing_url || "" }]
           })
             .then(function (d) { orStats(d && d.stats); b.textContent = "Queued"; orSay(liStatus, (it.name || "Prospect") + " added to the tracker — reload to see the row."); })
             .catch(function (err) { orSay(liStatus, err.message, true); b.disabled = false; });
@@ -726,6 +888,77 @@
         .catch(function (err) { orSay(liStatus, err.message, true); })
         .then(function () { liBuild.disabled = false; });
     });
+
+    // --- D. UK property companies (Companies House register, business to business) ---
+    var b2bFind = document.getElementById("b2b-find"), b2bPlace = document.getElementById("b2b-place"), b2bCat = document.getElementById("b2b-category");
+    var b2bResults = document.getElementById("b2b-results"), b2bStatus = document.getElementById("b2b-status"), b2bPager = document.getElementById("b2b-pager");
+    var b2bPrev = document.getElementById("b2b-prev"), b2bNext = document.getElementById("b2b-next"), b2bPageEl = document.getElementById("b2b-page");
+    var b2bTpl = document.getElementById("b2b-template"), b2bPage = 1, b2bPages = 1;
+    var b2bQuery = { place: "", category: "" }; // the search that produced the results on screen: Previous/Next page through it
+    // the sender's details are kept on the account when they queue (the page fills them in), never in this browser
+    var b2bSender = { name: "b2b-sender-name", business: "b2b-sender-business", email: "b2b-sender-email" };
+    function b2bSenderNow() {
+      var out = {};
+      Object.keys(b2bSender).forEach(function (k) { var el = document.getElementById(b2bSender[k]); out[k] = el ? el.value.trim() : ""; });
+      return out;
+    }
+    function b2bRender(d) {
+      var items = (d && d.items) || [];
+      b2bResults.innerHTML = "";
+      if (!items.length) b2bResults.innerHTML = '<p class="empty">No companies match. Try the postcode area (for example BH), or all categories.</p>';
+      items.forEach(function (it) {
+        var row = document.createElement("div");
+        row.className = "or-row";
+        row.innerHTML =
+          '<div class="or-row-body"><span class="or-name">' + orEsc(it.name) + "</span>" +
+          '<span class="or-sub">' + orEsc([it.town, it.category].filter(Boolean).join(" · ")) + "</span></div>" +
+          '<div class="or-row-actions">' +
+          '<a class="btn btn-secondary btn-sm" href="' + orEsc(it.record_url) + '" target="_blank" rel="noopener">Companies House record ↗</a>' +
+          '<a class="btn btn-secondary btn-sm" href="' + orEsc(it.search_url) + '" target="_blank" rel="noopener">Find website ↗</a>' +
+          '<button type="button" class="btn btn-primary btn-sm b2b-queue">Queue</button>' +
+          '<button type="button" class="btn btn-danger btn-sm b2b-suppress" title="They asked not to be contacted: hides this company from every ReelSieve user">Do not contact</button></div>';
+        row.querySelector(".b2b-queue").addEventListener("click", function (e) {
+          var b = e.currentTarget;
+          b.disabled = true;
+          orPost("/api/outreach/companies/queue", { company_number: it.company_number, template: b2bTpl ? b2bTpl.value : "", sender: b2bSenderNow() })
+            .then(function (r) { orStats(r && r.stats); b.textContent = "Queued"; orSay(b2bStatus, it.name + " added to the tracker with its email — reload to see the row."); })
+            .catch(function (err) { orSay(b2bStatus, err.message, true); b.disabled = false; });
+        });
+        row.querySelector(".b2b-suppress").addEventListener("click", function (e) {
+          if (!window.confirm(it.name + " asked not to be contacted? It will not appear for any ReelSieve user again.")) return;
+          var b = e.currentTarget;
+          b.disabled = true;
+          orPost("/api/outreach/companies/suppress", { company_number: it.company_number })
+            .then(function () { if (row.parentNode) row.parentNode.removeChild(row); orSay(b2bStatus, it.name + " will not be shown again."); })
+            .catch(function (err) { orSay(b2bStatus, err.message, true); b.disabled = false; });
+        });
+        b2bResults.appendChild(row);
+      });
+      b2bPage = (d && d.page) || 1; b2bPages = (d && d.pages) || 1;
+      if (b2bPager) b2bPager.classList.toggle("hidden", b2bPages < 2);
+      if (b2bPageEl) b2bPageEl.textContent = "Page " + b2bPage + " of " + b2bPages;
+      if (b2bPrev) b2bPrev.disabled = b2bPage <= 1;
+      if (b2bNext) b2bNext.disabled = b2bPage >= b2bPages;
+    }
+    function b2bLoad(page, q) {
+      q = q || b2bQuery; // a new search passes the boxes; paging reuses the search on screen even if the boxes changed
+      if (b2bFind) b2bFind.disabled = true;
+      orSay(b2bStatus, "Searching the register…");
+      getJSON("/api/outreach/companies?place=" + encodeURIComponent(q.place) + "&category=" + encodeURIComponent(q.category) + "&page=" + page)
+        .then(function (d) {
+          b2bQuery = q;
+          b2bRender(d);
+          var n = (d && d.total) || 0;
+          orSay(b2bStatus, n.toLocaleString("en-GB") + (n === 1 ? " company" : " companies") + (q.place ? " in " + q.place : " across the UK"));
+        })
+        .catch(function (err) { orSay(b2bStatus, err.message, true); })
+        .then(function () { if (b2bFind) b2bFind.disabled = false; });
+    }
+    function b2bSearch() { b2bLoad(1, { place: ((b2bPlace && b2bPlace.value) || "").trim(), category: b2bCat ? b2bCat.value : "" }); }
+    if (b2bFind) b2bFind.addEventListener("click", b2bSearch);
+    if (b2bPlace) b2bPlace.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); b2bSearch(); } });
+    if (b2bPrev) b2bPrev.addEventListener("click", function () { if (b2bPage > 1) b2bLoad(b2bPage - 1); });
+    if (b2bNext) b2bNext.addEventListener("click", function () { if (b2bPage < b2bPages) b2bLoad(b2bPage + 1); });
 
     // --- C. Tracker ---
     // rows carry scraped URLs: never let a non-http(s) scheme stay clickable
@@ -777,6 +1010,17 @@
       });
     });
 
+    // Do not contact: an objection is honoured for every ReelSieve user, and the row goes.
+    Array.prototype.forEach.call(document.querySelectorAll(".tr-suppress"), function (b) {
+      b.addEventListener("click", function () {
+        if (!window.confirm("They asked not to be contacted? This removes them from your tracker and from every ReelSieve user's results.")) return;
+        b.disabled = true;
+        orPost("/api/outreach/suppress", { id: orNum(b.getAttribute("data-id")) })
+          .then(function (d) { orStats(d && d.stats); var row = b.closest ? b.closest("tr") : null; if (row) row.parentNode.removeChild(row); trFilter(); })
+          .catch(function (err) { window.alert(err.message); b.disabled = false; });
+      });
+    });
+
     Array.prototype.forEach.call(document.querySelectorAll(".tr-note"), function (b) {
       b.addEventListener("click", function () {
         var note = window.prompt("Note for this prospect:", b.getAttribute("data-note") || "");
@@ -808,6 +1052,72 @@
     });
   }
 
+  // ---------- admin: privacy requests ----------
+  Array.prototype.forEach.call(document.querySelectorAll(".req-done"), function (b) {
+    b.addEventListener("click", function () {
+      var out = document.getElementById("req-status"), ref = b.getAttribute("data-ref");
+      if (!confirm("Mark " + ref + " handled? Do this once you have replied.")) return;
+      b.disabled = true; out.className = "form-status";
+      postJSON("/api/privacy-requests/handled", { ref: ref })
+        .then(function () { var li = b.closest("li"); if (li) li.parentNode.removeChild(li); out.textContent = ref + " marked handled."; })
+        .catch(function (e) { out.textContent = e.message; out.classList.add("is-error"); b.disabled = false; });
+    });
+  });
+
+  Array.prototype.forEach.call(document.querySelectorAll(".req-unsuppress"), function (b) {
+    b.addEventListener("click", function () {
+      var out = document.getElementById("req-status"), ref = b.getAttribute("data-ref");
+      if (!confirm("Undo the do-not-contact entries from " + ref + "? Do this only if the request was not genuine.")) return;
+      b.disabled = true; out.className = "form-status";
+      postJSON("/api/privacy-requests/unsuppress", { ref: ref })
+        .then(function () { window.location.reload(); })
+        .catch(function (e) { out.textContent = e.message; out.classList.add("is-error"); b.disabled = false; });
+    });
+  });
+
+  // ---------- admin: blocked listings ----------
+  var blAdd = document.getElementById("bl-add");
+  if (blAdd) blAdd.addEventListener("click", function () {
+    var out = document.getElementById("bl-status"), listing = (document.getElementById("bl-listing").value || "").trim();
+    out.className = "form-status";
+    if (!listing) { out.textContent = "Paste a listing link or number."; out.classList.add("is-error"); return; }
+    blAdd.disabled = true;
+    postJSON("/api/blocked-listings", { listing: listing, reason: document.getElementById("bl-reason").value || "" })
+      .then(function () { window.location.reload(); })
+      .catch(function (e) { out.textContent = e.message; out.classList.add("is-error"); blAdd.disabled = false; });
+  });
+  Array.prototype.forEach.call(document.querySelectorAll(".blocked-remove"), function (b) {
+    b.addEventListener("click", function () {
+      var out = document.getElementById("bl-status"), id = b.getAttribute("data-listing");
+      if (!confirm("Unblock listing " + id + "? ReelSieve users could make reels of it again.")) return;
+      b.disabled = true; out.className = "form-status";
+      postJSON("/api/blocked-listings/remove", { listing_id: id })
+        .then(function () { var li = b.closest("li"); if (li) li.parentNode.removeChild(li); out.textContent = "Listing " + id + " unblocked."; })
+        .catch(function (e) { out.textContent = e.message; out.classList.add("is-error"); b.disabled = false; });
+    });
+  });
+
+  Array.prototype.forEach.call(document.querySelectorAll(".blocked-confirm"), function (b) {
+    b.addEventListener("click", function () {
+      var out = document.getElementById("bl-status"), id = b.getAttribute("data-listing");
+      b.disabled = true; out.className = "form-status";
+      postJSON("/api/blocked-listings/confirm", { listing_id: id })
+        .then(function () { window.location.reload(); })
+        .catch(function (e) { out.textContent = e.message; out.classList.add("is-error"); b.disabled = false; });
+    });
+  });
+
+  // ---------- admin: resume Airbnb fetching after a block ----------
+  var abResume = document.getElementById("airbnb-resume");
+  if (abResume) abResume.addEventListener("click", function () {
+    var out = document.getElementById("airbnb-status");
+    if (!confirm("Resume Airbnb fetching? Do this only once you know why Airbnb refused us.")) return;
+    abResume.disabled = true; out.className = "form-status";
+    postJSON("/api/airbnb/resume", {})
+      .then(function () { window.location.reload(); })
+      .catch(function (e) { out.textContent = e.message; out.classList.add("is-error"); abResume.disabled = false; });
+  });
+
   // ---------- admin: orders ----------
   var ordList = document.getElementById("ord-list");
   if (ordList) {
@@ -827,7 +1137,7 @@
           var pay = document.createElement("button"); pay.type = "button"; pay.className = "btn btn-primary btn-sm"; pay.textContent = "Mark paid";
           pay.addEventListener("click", function () {
             if (!confirm("Mark " + o.ref + " paid and grant " + o.plan + " credits to " + o.user + "?")) return;
-            postJSON("/api/billing/settle", { ref: o.ref }).then(function (r) { ordStatus.textContent = o.ref + " settled — " + r.account.plan_name + ", " + r.account.remaining + " credits."; load(); })
+            postJSON("/api/billing/settle", { ref: o.ref }).then(function (r) { ordStatus.textContent = o.ref + " settled — " + r.account.plan_name + ", " + r.account.credits + " credits."; load(); })
               .catch(function (e) { ordStatus.textContent = e.message; });
           });
           var can = document.createElement("button"); can.type = "button"; can.className = "btn btn-secondary btn-sm"; can.textContent = "Cancel";

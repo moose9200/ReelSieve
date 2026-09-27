@@ -3,7 +3,8 @@
 zoom-through transitions that carry the camera into the next photo, kinetic centred captions with one accent word.
 No letterbox, no dark gradient bars, no cards. Optional Higgsfield/Kling/Seedance clip per scene replaces the synthetic move.
 usage: render_v3.py manifest.json out.mp4 [--workers 6]
-manifest: {aspect:'9:16'|'16:9', depth_dir, scene_seconds, scenes:[{image,caption,accent?,clip?}], overlays:{title,subtitle,trust,review,cta,by}}"""
+manifest: {aspect:'9:16'|'16:9', depth_dir, scene_seconds, scenes:[{image,caption,accent?,clip?}], overlays:{title,subtitle,trust,review,review_by,cta,by}}
+review_by is 'Guest review, <Month YYYY>' (pipeline.build_manifest): the reel never names a guest."""
 import json,sys,os,math,subprocess,wave,struct,argparse,glob,concurrent.futures as cf
 import numpy as np,cv2,platform
 def VCODEC(bitrate):

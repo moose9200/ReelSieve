@@ -15,13 +15,14 @@ import uuid
 
 from psycopg.types.json import Jsonb
 
-from app import database, gdrive, plans, store
+from app import airbnb, database, gdrive, photos, plans, referrals, store
 
 ACTIVE = ('queued', 'running', 'uploading')
 TERMINAL = ('done', 'failed', 'cancelled')
 LOG_LINES = 80
 AIRBNB = re.compile(r'^https?://(?:[a-z0-9-]+\.)?airbnb\.[a-z.]{2,12}/rooms/(?:plus/)?(\d{1,20})(?:[/?#].*)?$', re.I)
 JOB_ID = re.compile(r'^[0-9a-f]{6,32}$')
+REMOVED = "This listing has been removed from ReelSieve, so we can't make a reel of it."
 
 
 class AdmissionError(Exception):
@@ -37,30 +38,132 @@ def clean(text, limit=200):
     return re.sub(r'\s+', ' ', t).strip()[:limit]
 
 
-def canonical_listing(url):
+def listing_id(url):
+    """The numeric id of an Airbnb /rooms/<id> link, else None."""
     m = AIRBNB.match((url or '').strip())
-    if not m:
+    return m.group(1) if m else None
+
+
+def canonical_listing(url):
+    lid = listing_id(url)
+    if not lid:
         raise AdmissionError('Paste an Airbnb listing link (airbnb.…/rooms/<number>)')
-    return 'https://www.airbnb.co.uk/rooms/' + m.group(1)
+    return 'https://www.airbnb.co.uk/rooms/' + lid
 
 
 def _request_hash(url, params):
     return hashlib.sha256(json.dumps({'url': url, **params}, sort_keys=True).encode()).hexdigest()
 
 
-def admit(user, url, requested, idempotency_key=None, ip=None, fp=None):
-    """Create a job for the signed-in owner. Same key + same input returns the original job."""
-    url = canonical_listing(url)
-    requested = {
+def _style(requested):
+    return {
         'ai_motion': bool(requested.get('ai_motion')),
         'style': 'v3' if requested.get('style') in ('tutorial', 'v3') else 'v2',
         'ai_resolution': '720p' if requested.get('ai_resolution') == '720p' else '1080p',
-        'send_to_host': bool(requested.get('send_to_host', True)),
-        'message': str(requested.get('message') or '')[:2000],
     }
+
+
+def admit(user, url, requested, idempotency_key=None, ip=None):
+    """Create a job for the signed-in owner. Same key + same input returns the original job.
+    What a listing link may be used for is a note on the form and in the Terms (owner decision, PLAN.md Phase 2):
+    no tick box, so nobody is asked to claim a permission a pitch to a host cannot have."""
+    url = canonical_listing(url)
+    requested = {**_style(requested), 'send_to_host': bool(requested.get('send_to_host', True)),
+                 'message': str(requested.get('message') or '')[:2000]}
+    return _admit(user, url, requested, idempotency_key, ip)
+
+
+REUSED = 'That request key was already used for a different reel'
+DRIVE_FIRST = 'Connect your Google Drive in Account first — finished reels are delivered there'
+
+
+def admit_photos(user, fields, files, idempotency_key=None, ip=None):
+    """A reel from the customer's own photos, [(file name, bytes)]; nothing is fetched from Airbnb.
+
+    The photos are checked and cleaned here, saved in the customer's own Drive (<app folder>/Inputs/<job id>),
+    and only then is the job admitted exactly like a link reel: same credit, idempotency, refunds and
+    cancellation. The job keeps the Drive file ids and the typed facts, never the photos or their file names.
+    Cheap checks that can refuse (count, sizes, facts, Drive, credit) run before any photo is decoded; anything that
+    still refuses after the upload deletes it again."""
+    try:
+        photos.check_batch(files)
+        facts = photos.details(fields)
+        chosen = list(fields.get('rooms') or [])
+        rooms = [photos.room_of(chosen[i] if i < len(chosen) else 'auto', name) for i, (name, _) in enumerate(files)]
+    except photos.PhotoError as e:
+        raise AdmissionError(str(e)) from None
+    # The photo set stands in for the listing: remaking a reel from the same photos is free, like remaking a listing.
+    url = 'photos:' + hashlib.sha256(''.join(sorted(hashlib.sha256(d).hexdigest() for _, d in files)).encode()).hexdigest()[:32]
+    # ai_motion off whatever the client sends: these photos come back from the customer's Drive, and Google's Limited Use
+    # rules forbid passing Drive data to a provider that trains AI models on it (Higgsfield does).
+    requested = {**_style(fields), 'ai_motion': False, 'source': 'photos', 'send_to_host': False, **facts, 'rooms': rooms,
+                 'delete_inputs': fields.get('delete_inputs', True) is not False}
+    key = str(idempotency_key or '')[:120] or secrets.token_hex(16)
+    with database.connect() as c:
+        owner = database.user_id(user, c)
+        seen = c.execute('SELECT id,request_hash FROM jobs WHERE owner_id=%s AND idempotency_key=%s', (owner, key)).fetchone()
+        generation = gdrive.usable_generation(c, owner)
+    if seen:
+        if seen['request_hash'] != _request_hash(url, requested):
+            raise AdmissionError(REUSED, 409)
+        return get(user, seen['id'])
+    if generation is None:
+        raise AdmissionError(DRIVE_FIRST, 412)
+    ok, reason, _ = plans.can_generate(user, url, ip)
+    if not ok:
+        raise AdmissionError(reason, 402)
+    try:
+        cleaned = [photos.clean(data, name) for name, data in files]
+    except photos.PhotoError as e:
+        raise AdmissionError(str(e)) from None
+    job_id = uuid.uuid4().hex[:16]
+    try:
+        folder, ids = gdrive.upload_inputs(user, job_id, cleaned, generation)
+    except RuntimeError as e:
+        raise AdmissionError(f'Your photos could not be saved to your Google Drive: {e}', 502) from None
+    # Kept with the job as evidence, outside the request hash: the customer's statement that the quotes are real.
+    extra = {'photos': {'folder': folder, 'ids': ids}, **({'quotes_confirmed_at': time.time()} if facts['quotes'] else {})}
+    try:
+        job = _admit(user, url, requested, key, ip, extra, job_id, pin=generation)
+    except Exception:
+        _forget_inputs(user, folder, ids, generation)
+        raise
+    if job['id'] != job_id:  # the same request was admitted meanwhile: keep its photos, drop this copy
+        _forget_inputs(user, folder, ids, generation)
+    return job
+
+
+def precheck_photos(user, idempotency_key=None, ip=None):
+    """admit_photos' cheap refusals, run before an upload takes a slot or its body is read: Drive, then credit.
+    A retried request (a key already used) is left to admit_photos, and so is an account that has made photo reels
+    before and is out of credit: the same photos again would be a free remake, known only once they are read."""
+    key = str(idempotency_key or '')[:120]
+    with database.connect() as c:
+        owner = database.user_id(user, c)
+        if key and c.execute('SELECT 1 FROM jobs WHERE owner_id=%s AND idempotency_key=%s', (owner, key)).fetchone():
+            return
+        if gdrive.usable_generation(c, owner) is None:
+            raise AdmissionError(DRIVE_FIRST, 412)
+        made = c.execute("SELECT 1 FROM usage WHERE owner_id=%s AND kind='video' AND refunded_at IS NULL "
+                         "AND listing_key LIKE 'photos:%%' LIMIT 1", (owner,)).fetchone()
+    ok, reason, meta = plans.can_generate(user, 'photos:', ip)  # a photo set nobody has made yet
+    if not ok and not (made and meta.get('upgrade')):
+        raise AdmissionError(reason, 402)
+
+
+def _forget_inputs(user, folder, ids, generation):
+    try:
+        gdrive.delete_inputs(user, folder, generation, ids)
+    except RuntimeError:
+        pass  # ponytail: the folder stays in the customer's own Drive; they can delete it there
+
+
+def _admit(user, url, requested, idempotency_key, ip, extra=None, job_id=None, pin=None):
+    """Drive check, credit reservation and the job row in ONE transaction; `extra` is kept but not hashed.
+    `pin`: the Drive connection generation the job's inputs were saved under."""
     key = str(idempotency_key or '')[:120] or secrets.token_hex(16)
     digest = _request_hash(url, requested)
-    job_id = uuid.uuid4().hex[:16]
+    job_id = job_id or uuid.uuid4().hex[:16]
     now = time.time()
     with database.connect() as c:
         owner = database.user_id(user, c)
@@ -69,17 +172,23 @@ def admit(user, url, requested, idempotency_key=None, ip=None, fp=None):
                              (owner, key)).fetchone()
         if existing:
             if existing['request_hash'] != digest:
-                raise AdmissionError('That request key was already used for a different reel', 409)
+                raise AdmissionError(REUSED, 409)
             return get(user, existing['id'])
+        if not airbnb.enabled():  # kill switch: refused before anything is charged
+            raise AdmissionError(airbnb.DISABLED, 503)
+        if store.blocked_ids([listing_id(url)], c):  # the host (or an admin) took this listing down
+            raise AdmissionError(REMOVED, 403)
         generation = gdrive.usable_generation(c, owner)
         if generation is None:
-            raise AdmissionError('Connect your Google Drive in Account first — finished reels are delivered there', 412)
+            raise AdmissionError(DRIVE_FIRST, 412)
+        if pin is not None and generation != pin:
+            raise AdmissionError('Google Drive was reconnected while your photos were uploading — try again', 409)
         try:
-            plans.reserve(user, url, job_id, ip, fp, conn=c)
+            plans.reserve(user, url, job_id, ip, conn=c)
         except ValueError as e:
             raise AdmissionError(str(e), 402) from None
         plan = plans.PLANS.get(store.get_account(user, c)['plan'], plans.PLANS['free'])
-        params = {**requested, 'plan': plan['key'], 'max_seconds': plan['max_seconds'],
+        params = {**requested, **(extra or {}), 'plan': plan['key'], 'max_seconds': plan['max_seconds'],
                   'ai_motion': requested['ai_motion'] and bool(plan['ai_motion'])}
         c.execute('INSERT INTO jobs(id,owner_id,idempotency_key,request_hash,url,params,drive_generation,created,updated) '
                   'VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)',
@@ -214,6 +323,12 @@ def finish(job_id, token, status, error=None, meta=None):
                          {'done': 'Done', 'failed': 'Failed', 'cancelled': 'Cancelled'}[status], now, now, job_id, token)).fetchone()
         if job and status != 'done':
             _refund(c, job)
+        if job and status == 'done':
+            try:
+                with c.transaction():  # savepoint: a referral error must never undo a delivered reel
+                    referrals.reward_first_delivery(c, job['owner_id'], now)
+            except Exception as e:  # the referral stays waiting and is decided on the account's next delivery
+                print(json.dumps({'referral_reward_error': type(e).__name__}), flush=True)
     return bool(job)
 
 
@@ -238,10 +353,31 @@ def live_leases():
                                            (time.time(),)).fetchall()}
 
 
-def pending_cleanup(limit=50):
+def drop_inputs(job):
+    """Delete a photo reel's uploaded photos from the owner's Drive when they asked for it, through whichever Drive
+    connection is current (drive.file reaches the app's own files after a reconnect too), also for an account being
+    deactivated or erased. Records 'deleted', or 'delete_failed' for the hourly retry (app/retention.py). True when
+    nothing is left to delete. Never raises: clean-up must never stop jobs being claimed or an account change."""
+    p = job['params'] or {}
+    folder = (p.get('photos') or {}).get('folder')
+    if not folder or not p.get('delete_inputs') or (job.get('meta') or {}).get('inputs') == 'deleted':
+        return True
+    try:
+        gdrive.delete_inputs(None, folder, None, p['photos'].get('ids') or (), owner_id=job['owner_id'])
+        state = 'deleted'
+    except Exception:  # e.g. Drive disconnected or Google down: the photos stay in the customer's own Drive for now
+        state = 'delete_failed'
     with database.connect() as c:
-        return [r['id'] for r in c.execute("SELECT id FROM jobs WHERE status IN ('done','failed','cancelled') "
-                                           'AND cleanup_at IS NULL ORDER BY finished_at LIMIT %s', (limit,)).fetchall()]
+        c.execute('UPDATE jobs SET meta=meta || %s,updated=%s WHERE id=%s', (Jsonb({'inputs': state}), time.time(), job['id']))
+    return state == 'deleted'
+
+
+def pending_cleanup(limit=50):
+    """Finished jobs whose scratch (and, for photo reels, Drive inputs) no worker has cleaned up yet."""
+    with database.connect() as c:
+        return c.execute("SELECT j.id,j.owner_id,j.params,j.meta,j.drive_generation,u.email AS owner_email FROM jobs j "
+                         "JOIN users u ON u.id=j.owner_id WHERE j.status IN ('done','failed','cancelled') "
+                         'AND j.cleanup_at IS NULL ORDER BY j.finished_at LIMIT %s', (limit,)).fetchall()
 
 
 def mark_cleaned(job_id, error=None):

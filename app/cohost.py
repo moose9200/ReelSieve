@@ -9,6 +9,7 @@ and sends it themselves. Airbnb's Terms forbid unsolicited commercial messages â
 make it relevant, stop if asked."""
 import re,html,time,random
 import httpx
+from app import airbnb, store
 from app import search as listing_search
 UA=listing_search.UA
 BASE='https://www.airbnb.co.uk'
@@ -17,20 +18,21 @@ def _slug(city):
 def _try_network(city):
     out=[]
     for u in (f'{BASE}/host/{_slug(city)}/co-hosts',f'https://www.airbnb.com/host/{_slug(city)}/co-hosts'):
-        try:r=httpx.get(u,headers=UA,follow_redirects=True,timeout=25)
-        except Exception:continue
-        if r.status_code!=200 or 'co-host' not in r.text.lower():continue
-        t=r.text
-        for m in re.finditer(r'href="(/users/show/(\d+)[^"]*)"[^>]*>\s*([^<]{2,40})',t):
-            out.append({'id':'u'+m.group(2),'name':html.unescape(m.group(3)).strip(),'url':BASE+m.group(1),'listings':None,'tagline':'Co-Host Network',
-                        'profile_url':f'{BASE}/users/show/{m.group(2)}'})
-        if out:break
+        # Only a network failure gets one retry on airbnb.com. Any answer from airbnb.co.uk is final: a block raises
+        # airbnb.Unavailable, no page (404: most cities, checked live 27 Sep 2026) leaves discover() to the operators.
+        try:r=airbnb.get(u,headers=UA,timeout=25)
+        except httpx.HTTPError:continue
+        if r.status_code==200 and 'co-host' in r.text.lower():
+            for m in re.finditer(r'href="(/users/show/(\d+)[^"]*)"[^>]*>\s*([^<]{2,40})',r.text):
+                out.append({'id':'u'+m.group(2),'name':html.unescape(m.group(3)).strip(),'url':BASE+m.group(1),'listings':None,'tagline':'Co-Host Network',
+                            'profile_url':f'{BASE}/users/show/{m.group(2)}'})
+        break
     dedup={};[dedup.setdefault(o['url'],o) for o in out]
     return list(dedup.values())[:20]
 def _listing_host(lid):
     try:
-        t=httpx.get(f'{BASE}/rooms/{lid}',headers=UA,follow_redirects=True,timeout=30).text
-    except Exception:return None
+        t=airbnb.get(f'{BASE}/rooms/{lid}',headers=UA,timeout=30).text
+    except httpx.HTTPError:return None
     u=html.unescape(t)
     name=(re.search(r'Hosted by ([A-Z][\w\'â€™-]{1,30})',u) or [None,''])[1]
     m=re.search(r'"listingsCount"\s*:\s*(\d+)',t) or re.search(r'(\d+)\s+listings?',u)
@@ -42,7 +44,8 @@ def _listing_host(lid):
 def _operators(city,limit=12):
     """Hosts in this city worth pitching: most-reviewed listings first, one row per host."""
     res=listing_search.search(city,None,None,2,pages=2)
-    items=sorted(res.get('items',[]),key=lambda x:-((x.get('reviews') or 0)*(x.get('rating') or 0)))[:limit*2]
+    # a host's takedown also stops us reading that listing
+    items=sorted(store.without_blocked_listings(res.get('items',[])),key=lambda x:-((x.get('reviews') or 0)*(x.get('rating') or 0)))[:limit*2]
     out=[];seen=set()
     for it in items:
         if len(out)>=limit:break

@@ -21,8 +21,10 @@ AIRBNB_PROFILE=re.compile(r'https://www\.airbnb\.(?:co\.uk|com)/users/show/\d{1,
 LINKS=((re.compile(r'https://(?:[a-z]{2,3}\.)?linkedin\.com/in/[\w%-]+/?'),'LinkedIn profile'),
        (re.compile(r'https://www\.linkedin\.com/search/results/people/\?\S*'),'LinkedIn search'),
        (AIRBNB_PROFILE,'Airbnb profile'),
-       (re.compile(r'https://www\.airbnb\.(?:co\.uk|com)/contact_host/\d{1,20}/send_message'),'Airbnb message form'))
-LABELS={'LinkedIn profile':'LinkedIn profile ↗','LinkedIn search':'Search LinkedIn ↗','Airbnb profile':'Airbnb profile ↗'}
+       (re.compile(r'https://www\.airbnb\.(?:co\.uk|com)/contact_host/\d{1,20}/send_message'),'Airbnb message form'),
+       (re.compile(r'https://find-and-update\.company-information\.service\.gov\.uk/company/[A-Z0-9]{8}'),'Companies House record'))
+LABELS={'LinkedIn profile':'LinkedIn profile ↗','LinkedIn search':'Search LinkedIn ↗','Airbnb profile':'Airbnb profile ↗',
+        'Companies House record':'Companies House record ↗'}
 def link_type(url):
     """What a stored link really is, judged by its exact shape."""
     return next((t for rx,t in LINKS if rx.fullmatch(url or '')),'Link' if url else '')

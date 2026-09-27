@@ -26,11 +26,13 @@
   {'q': 'Which listing links does ReelSieve accept?', 'a': [
     'ReelSieve accepts Airbnb listing links only, the kind with /rooms/ and a number in the address.',
     'Links from any Airbnb country site work, such as airbnb.com or airbnb.co.uk.',
-    'Links from other booking sites are not supported.']},
+    'Links from other booking sites are not supported.',
+    'You can also skip the link and upload ' ~ limits.MIN_PHOTOS ~ ' to ' ~ limits.MAX_PHOTOS ~ ' of your own photos with a title and location.']},
   {'q': 'What is in each reel?', 'a': [
     "A ReelSieve reel opens with the listing's name and town.",
     'A rating card follows when the listing has reviews, then the rooms in walking order with captions.',
-    'It ends with a real five-star guest review and a closing card.']},
+    'A reel made from a link ends with a real five-star guest review from the listing and a closing card.',
+    'A reel made from your own photos has no rating card and can show one guest quote you provide.']},
   {'q': 'How long is each video?', 'a': [
     'On the Free plan a reel runs for up to ' ~ P.free.max_seconds ~ ' seconds.',
     'Paid plans allow up to ' ~ P.starter.max_seconds ~ ' seconds.',
@@ -41,19 +43,19 @@
     'Both are one-off payments in US dollars, and the credits never expire.']},
   {'q': 'Where does the finished video go?', 'a': [
     'ReelSieve saves the reel and a 720p copy to the Google Drive you connect.',
-    "It uses Google's drive.file permission, which lets it see only the files it creates.",
+    "It uses Google's drive.file permission, which lets it see only the files it creates, plus your Google account's email address and ID to show which account is connected.",
     'The reel stays private until you share it, and ReelSieve keeps no copy.']},
   {'q': 'Does ReelSieve message the host for me?', 'a': [
     'No.',
     'ReelSieve drafts a message with no links in it, because Airbnb filters links before a booking.',
-    'It also suggests a YouTube title the host can search for.',
+    'It offers to send the reel to the host privately if they reply.',
     'You send the message yourself from your own Airbnb account.']},
   {'q': 'What is AI camera motion?', 'a': [
     "AI camera motion is an option on ReelSieve's paid plans that generates a camera move through each room from the listing photo.",
     'A photo check runs first and skips the paid step if the photos are too weak.',
     'Without it, each photo gets a gentle depth-based move.']},
   {'q': 'Who owns the videos?', 'a': [
-    'You keep full rights to the videos ReelSieve makes for you.',
+    "You own what ReelSieve adds to your videos; the listing's photos and reviews stay their owners'.",
     "You are responsible for having the right to use the listing's photos, as the terms of use explain."]},
   {'q': 'What happens if a render fails?', 'a': [
     'If a render fails, ReelSieve puts the credit back in your account.',
@@ -105,9 +107,8 @@
   <meta name="twitter:title" content="ReelSieve: Airbnb walkthrough videos from a listing link">
   <meta name="twitter:description" content="{{ description }}">
   <meta name="twitter:image" content="{{ canonical }}static/sample/poster.jpg">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Assistant:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link rel="preload" href="/static/fonts/assistant-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/static/fonts.css?v={{ asset_version }}">
   <link rel="preload" as="image" href="{{ poster_src }}">
   <link rel="stylesheet" href="/static/landing.css?v={{ asset_version }}">
   <script type="application/ld+json">
@@ -267,7 +268,7 @@
         <li class="lp-cell">
           <p class="lp-index">5</p>
           <h3>Review card</h3>
-          {{ lines(["A real five-star guest review, trimmed to a sentence or two, with the guest's name and the month."]) }}
+          {{ lines(["A real five-star guest review, trimmed to a sentence or two, with the month it was written.", "The guest's name is never shown."]) }}
         </li>
         <li class="lp-cell">
           <p class="lp-index">6</p>
@@ -331,7 +332,7 @@
         <h2 id="drive-title">Your reels live in your Google Drive.</h2>
         {{ lines([
           'ReelSieve saves each finished reel to the Google Drive you connect.',
-          "It asks for Google's drive.file permission only, so it can see just the files it creates.",
+          "It asks for Google's drive.file permission, so it can see just the files it creates, plus your Google account's email address and ID to show which account is connected.",
           'Every reel is private until you choose to make a share link.',
           'ReelSieve keeps no copy after delivery.']) }}
         <p class="lp-more"><a href="/privacy">Read what ReelSieve stores and for how long</a></p>
@@ -352,7 +353,7 @@
         {{ lines([
           'Airbnb filters links out of messages sent before a booking.',
           'ReelSieve drafts a message with no links in it.',
-          'It also suggests a YouTube title, so the host can find the reel once you have uploaded it.',
+          'It offers to send the reel to the host privately once they reply.',
           'You send it from your own Airbnb account.',
           'ReelSieve never sends messages for you.']) }}
         <h3 class="lp-subhead">Outreach tools</h3>
@@ -473,6 +474,7 @@
         <ul>
           <li><a href="/privacy">Privacy</a></li>
           <li><a href="/terms">Terms</a></li>
+          <li><a href="/privacy/request">Privacy requests</a></li>
         </ul>
       </nav>
     </div>

@@ -1,8 +1,10 @@
 """In-app Airbnb listing search: parse the public search-results page (no login) so a listing can be picked inside the tool.
-Verified 19 Sep 2026: /s/<location>/homes embeds a `data-deferred-state` JSON with `StaySearchResult` objects."""
+Verified 19 Sep 2026: /s/<location>/homes embeds a `data-deferred-state` JSON with `StaySearchResult` objects.
+/s/ is disallowed by robots.txt; the owner keeps this search (27 Sep 2026), so every page goes through app.airbnb:
+the shared rate limit, the kill switch and a hard stop on a block."""
 import re,json,base64,html
 from urllib.parse import quote
-import httpx
+from app import airbnb
 UA={'User-Agent':'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0 Safari/537.36','Accept-Language':'en-GB,en;q=0.9'}
 BASE='https://www.airbnb.co.uk'
 def _walk(o,out):
@@ -45,7 +47,7 @@ def _base_url(location,checkin,checkout,adults):
     q=f'adults={int(adults or 2)}'+(f'&checkin={checkin}&checkout={checkout}' if checkin and checkout else '')
     return f'{BASE}/s/{quote(_slug(location))}/homes?{q}'
 def _fetch(url):
-    r=httpx.get(url,headers=UA,follow_redirects=True,timeout=40);r.raise_for_status();return r
+    r=airbnb.get(url,headers=UA,timeout=40);r.raise_for_status();return r
 def _cursors(page_html):
     m=re.search(r'"pageCursors":\[([^\]]*)\]',page_html);return re.findall(r'"([A-Za-z0-9+/=]+)"',m.group(1)) if m else []
 def price_value(p):

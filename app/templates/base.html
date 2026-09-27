@@ -20,9 +20,8 @@
       } catch (e) {}
     })();
   </script>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Assistant:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="preload" href="/static/fonts/assistant-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/static/fonts.css?v={{ asset_version }}">
   <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
 </head>
 <body>
@@ -57,7 +56,7 @@
   </main>
 
   <footer class="site-footer">
-    ReelSieve is a Braivex product · <a href="https://braivex.com" target="_blank" rel="noopener">braivex.com</a> · ReelSieve is an independent third party and is not endorsed by or associated with Airbnb, Inc. or its affiliates.
+    ReelSieve is a Braivex product · <a href="https://braivex.com" target="_blank" rel="noopener">braivex.com</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="/privacy/request">Privacy requests</a> · ReelSieve is an independent third party and is not endorsed by or associated with Airbnb, Inc. or its affiliates.
   </footer>
 
   <script src="/static/app.js?v={{ asset_version }}" defer></script>

@@ -13,6 +13,7 @@
     <li>Up to {{ account.max_seconds }} seconds per video</li>
     <li>{{ 'AI camera motion included' if account.ai_motion else 'AI camera motion on paid plans' }}</li>
     <li>Full HD 16:9 or 9:16 video, plus a 720p copy</li>
+    {% if account.bonus_videos and account.remaining is not none %}<li>{{ account.bonus_videos }} bonus video{{ 's' if account.bonus_videos != 1 }} from invites, used first</li>{% endif %}
   </ul>
   <div class="actions">
     <a class="btn btn-primary" href="/upgrade">{% if account.plan == 'free' %}Upgrade{% elif account.remaining is none %}See plans{% else %}Buy more videos{% endif %}</a>
@@ -21,6 +22,21 @@
 </section>
 
 {% include '_gdrive_card.html' %}
+
+<section class="card" id="invite-card">
+  <div class="section-head"><h2>Invite other hosts</h2><span class="pill {{ 'pill-done' if referral.rewarded else 'pill-skipped' }}">{{ referral.rewarded }} rewarded</span></div>
+  <p class="hint">When a host signs up through your link and their first reel reaches their Google Drive, you each get one bonus video. You can earn up to {{ referral.monthly_limit }} a month. <a href="/terms">Conditions apply</a>.</p>
+  <div class="field">
+    <label for="ref-link">Your invite link</label>
+    <div class="copy-row">
+      <input type="text" id="ref-link" readonly value="{{ referral.link }}">
+      <button type="button" class="btn btn-secondary" id="ref-copy">Copy link</button>
+    </div>
+  </div>
+  <p class="hint">Share it in public posts, for example on your social media or your website. You get a reward when people sign up, so label those posts as an ad (for example #ad). Don't put it in Airbnb listings, guidebooks, house manuals or guest messages.</p>
+  <p class="hint">Only send it by email, text or direct message to someone who has asked you for it. Sending it to anyone else is unsolicited marketing, which UK law (PECR) forbids, and both you and ReelSieve can be held responsible. We never message anyone for you.</p>
+  <p class="hint">Your code travels in the link only. We don't set a referral or tracking cookie. The only cookies are the sign-in and security cookies described in our <a href="/privacy">privacy notice</a>.</p>
+</section>
 
 <section class="card">
   <div class="section-head"><h2>Password</h2></div>
@@ -33,7 +49,24 @@
 
 <section class="card">
   <div class="section-head"><h2>Your data</h2></div>
-  <p class="hint">Your reels and outreach are visible only to you. Finished reels live in your own Google Drive, not on our servers. We store a one-way hash of your network and device to keep the free tier fair — never the raw values. See <a href="/privacy">Privacy</a>.</p>
-  <p class="hint">Need your account deleted? Email <a href="mailto:hello@braivex.com?subject=Delete%20my%20ReelSieve%20account">hello@braivex.com</a> and it's done within a day.</p>
+  <p class="hint">Your reels and outreach are visible only to you. Finished reels live in your own Google Drive, not on our servers. For free videos, and when you sign up or sign in, we keep a pseudonymised code for your network (a keyed hash of your IP address range, never the address itself) to keep the free tier and invites fair, and delete it after 90 days. See <a href="/privacy">Privacy</a>.</p>
+  <div class="actions"><a class="btn btn-secondary" href="/api/account/export" download>Download my data</a></div>
+  <p class="hint">One JSON file with everything we hold about your account: plan, reels, orders, outreach, invites, your Google Drive connection (never its keys) and any admin changes to your account.</p>
+  {% if team_changes %}
+  <h3>Changes our team made to your account</h3>
+  <ul class="steps">{% for e in team_changes %}<li>{{ e.ts|day }}: {{ e.label }}</li>{% endfor %}</ul>
+  <p class="hint">If you did not expect one of these, <a href="/privacy/request">tell us</a>.</p>
+  {% endif %}
+</section>
+
+<section class="card" id="delete-card">
+  <div class="section-head"><h2>Delete your account</h2></div>
+  <p class="hint">This signs you out, stops reels in progress, disconnects Google Drive and deletes your reels list, outreach and account details. Reels already in your Google Drive stay there: they are your files. This cannot be undone.</p>
+  <p class="hint">We keep only: paid orders for {{ records_years }} years (reference, date, plan, amount, currency, payment provider, status, time paid and billing email); a payment you reported that has not cleared, for 90 days; privacy requests and admin records, for 2 years; network codes on free videos, until their 90 days end; your "Do not contact" marks, as a keyed hash of your email, for 90 days; India backup copies, until they expire within 90 days; and the archive of our previous system, until 25 Dec 2026. <a href="/privacy">Details</a></p>
+  <div class="grid-2">
+    <div class="field"><label for="del-password">Password</label><input type="password" id="del-password" autocomplete="current-password"></div>
+    <div class="field"><label for="del-confirm">Type DELETE to confirm</label><input type="text" id="del-confirm" autocomplete="off" autocapitalize="characters" spellcheck="false"></div>
+  </div>
+  <div class="actions"><button type="button" class="btn btn-danger" id="del-btn">Delete my account</button><span class="form-status" id="del-status" role="status" aria-live="polite"></span></div>
 </section>
 {% endblock %}

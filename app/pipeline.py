@@ -29,7 +29,10 @@ CAPTIONS={'exterior':[('Arrive in {city}','{hood_or_city}  /  {parking}'),('Firs
           'garden':[('Your private outdoors','{garden_fact}'),('Evenings outside','{garden_fact}'),('Sun, when it shows','{garden_fact}')],
           'spa':[('Switch off completely','{spa_fact}'),('Warm up, wind down','{spa_fact}'),('Nights under the stars','{spa_fact}')],
           'view':[('The view from here','{city}'),('Above it all','{city}'),('Out the window','{city}')],
-          'other':[('More to discover','{amenity_fact}'),('The details','{amenity_fact}'),('Every corner considered','{city}')]}
+          'other':[('More to discover','{amenity_fact}'),('The details','{amenity_fact}'),('Every corner considered','{city}'),
+                   ('Take a closer look','{amenity_fact}'),('Thoughtful touches','{city}'),('Made to feel at home','{amenity_fact}'),
+                   ('Space to breathe','{city}'),('Quiet corners','{amenity_fact}'),('Room for everyone','{city}'),
+                   ('Stay a little longer','{amenity_fact}'),('Little luxuries','{city}')]}
 def log(cb,msg):
     print(msg,flush=True)
     if cb:cb(msg)
@@ -39,9 +42,11 @@ def listing_id(url):
     if not m:raise ValueError('Not an Airbnb listing URL (expected /rooms/<id>)')
     return m.group(1)
 # ---------------- scraping ----------------
+LISTING_KEYS=['id','url','title','city','rating','count','guests','host','host_id']  # kept in job meta; host and host_id go at 30 days
 def scrape_listing(url,cb=None):
+    from app import airbnb
     lid=listing_id(url);canon=f'https://www.airbnb.co.uk/rooms/{lid}'
-    log(cb,f'Fetching listing {lid}');t=httpx.get(canon,headers=UA,follow_redirects=True,timeout=40).text
+    log(cb,f'Fetching listing {lid}');t=airbnb.get(canon,headers=UA,timeout=40).text   # a block raises airbnb.Unavailable: the job stops here
     d={'id':lid,'url':canon}
     ld=re.search(r'<script type="application/ld\+json">(\{"@context":"https://schema.org","@type":"Product".*?)</script>',t)
     if ld:
@@ -65,6 +70,7 @@ def scrape_listing(url,cb=None):
     if m:d.update(guests=int(m.group(1)),bedrooms=m.group(2),beds=int(m.group(3)),baths=m.group(4))
     m=re.search(r'"roomType":"([^"]+)"',t);d['room_type']=m.group(1) if m else ''
     m=re.search(r'Hosted by ([A-Z][\w\'-]{1,30})',html.unescape(t));d['host']=m.group(1) if m else ''
+    m=re.search(r'"hostId"\s*:\s*"(\d{1,20})"',t);d['host_id']=m.group(1) if m else None   # as cohost.py: the job page checks do-not-contact
     am=re.findall(r'"title":"([^"]{3,40})","subtitle":null,"icon":"SYSTEM_[A-Z_]+","available":true',t)
     if not am:am=re.findall(r'"available":true,"title":"([^"]{3,40})"',t)
     d['amenities']=list(dict.fromkeys(html.unescape(a) for a in am))[:40]
@@ -79,16 +85,36 @@ def scrape_listing(url,cb=None):
     d['photos']=photos;log(cb,f'Found {len(photos)} photos, rating {d.get("rating")} from {d.get("count")} reviews')
     return d
 def scrape_reviews(url,cb=None,limit=12):
-    """Reviews are client-rendered; use headless Chromium and parse the visible text."""
-    lid=listing_id(url);out=[];scrape_reviews.meta={}
+    """Reviews are client-rendered; use headless Chromium and parse the visible text.
+    The base /rooms/<id> page carries no review text or dates (checked live 27 Sep 2026), so this page stays.
+    Every request the page makes to Airbnb goes through app.airbnb too: the page takes a slot of the page budget, each
+    script, style and data call one of the 'browser' budget, and pictures, video and fonts are not loaded at all (the
+    text renders the same without them, checked live 27 Sep 2026). A block status on any Airbnb response, the reviews
+    data call included, stops the job like any other."""
+    from app import airbnb
+    lid=listing_id(url);out=[];scrape_reviews.meta={};rurl=f'https://www.airbnb.co.uk/rooms/{lid}/reviews'
     try:
+        airbnb.gate(rurl)
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
             b=p.chromium.launch(headless=True);pg=b.new_page(user_agent=UA['User-Agent'],locale='en-GB')
-            pg.goto(f'https://www.airbnb.co.uk/rooms/{lid}/reviews',wait_until='domcontentloaded',timeout=60000)
-            try:pg.wait_for_selector('text=/Rating, \\d stars/',timeout=20000)
+            answers,stopped=[],[]
+            def route(r):
+                q=r.request
+                if q.resource_type in ('image','media','font'):return r.abort()
+                if not (q.url==rurl and q.is_navigation_request()):   # the page itself took its slot above
+                    try:airbnb.gate(q.url,None if q.is_navigation_request() else 'browser')
+                    except airbnb.Unavailable as e:stopped.append(e);return r.abort()
+                r.continue_()
+            pg.route('**/*',route);pg.on('response',lambda resp:answers.append((resp.url,resp.status)))
+            resp=pg.goto(rurl,wait_until='domcontentloaded',timeout=60000)
+            if resp:airbnb.check(rurl,resp.status)
+            try:pg.wait_for_selector('text=/Rating, \\d stars/',timeout=45000)   # paced requests: allow for the queue
             except Exception:pass
-            pg.wait_for_timeout(1500);text=pg.inner_text('body');b.close()
+            pg.wait_for_timeout(1500)
+            for u,s in answers:airbnb.check(u,s)   # every Airbnb response the page got, the reviews data call included
+            if stopped:raise stopped[0]
+            airbnb.check(rurl,200,pg.content(),'text/html');text=pg.inner_text('body');b.close()
         mm=re.search(r'5 stars, (\d+)% of reviews',text)
         if mm:scrape_reviews.meta['five_star_pct']=int(mm.group(1))
         lines=text.split('\n')
@@ -105,12 +131,14 @@ def scrape_reviews(url,cb=None,limit=12):
             body=re.sub(r'^[\s,·•]+','',body);body=re.sub(r'^(Stayed (with kids|with a pet|a few nights|one night|about a week|a week|over a week|in a home|for a month or more)|Group trip|Family trip|Trip with friends|Solo trip|Business trip|Couple.?s trip)\s*[,·]?\s*','',body,flags=re.I).strip()
             if body and name and len(name)<40:out.append({'name':name,'stars':stars,'date':date,'text':body})
             if len(out)>=limit:break
+    except airbnb.Unavailable:raise   # blocked or paused: stop the job, never continue by another route
     except Exception as e:log(cb,f'Reviews unavailable ({type(e).__name__}: {str(e)[:80]}) — continuing without review card')
     dedup=[];seen=set()
     for r in out:
         k=(r['name'],r['text'][:40])
         if k not in seen:seen.add(k);dedup.append(r)
-    log(cb,f'Captured {len(dedup)} reviews');return dedup
+    log(cb,f'Captured {len(dedup)} reviews')
+    return [{k:v for k,v in r.items() if k!='name'} for r in dedup]   # names only told duplicates apart; the reel never names a guest
 def pick_review(revs):
     """Shortest 5-star review that names a concrete feature, trimmed to ~140 chars at a sentence boundary."""
     kws=['hot tub','sauna','clean','spotless','host','view','location','beach','bed','kitchen','garden','pool','beautiful','amazing','perfect']
@@ -132,9 +160,11 @@ def classify(label):
 def month_word(date):
     m=re.search(r'(January|February|March|April|May|June|July|August|September|October|November|December) (\d{4})',date or '')
     return f'{m.group(1)} {m.group(2)}' if m else time.strftime('%B %Y')
-def build_manifest(d,revs,imgdir,depth_dir,scenes_n=None,max_scenes=14,min_scenes=6,scores=None):
+def build_manifest(d,revs,imgdir,depth_dir,scenes_n=None,max_scenes=14,min_scenes=6,scores=None,fill_any=False):
     """Walkthrough order (research: exterior → entry/living → kitchen/dining → bedrooms → bath → outdoor → best feature + CTA;
-    3–5 s per shot, 8–15 photos). Photos stay grouped by room so the reel reads like walking the house; length = photo count × scene_seconds."""
+    3–5 s per shot, 8–15 photos). Photos stay grouped by room so the reel reads like walking the house; length = photo count × scene_seconds.
+    fill_any: short of min_scenes, any unused photo fills in as an 'other' scene, not only unlabelled ones (own photos, which
+    may all show one or two rooms)."""
     groups={}
     for p in d['photos']:groups.setdefault(classify(p['label']),[]).append(p)
     if scores:   # best-first inside each room; drop clearly bad frames (blurry / blown-out / off-shoot) when the room has alternatives
@@ -154,7 +184,7 @@ def build_manifest(d,revs,imgdir,depth_dir,scenes_n=None,max_scenes=14,min_scene
             if cands and len(chosen)<max_scenes:p=cands[0];chosen.append((k,p));used.add(p['url'])
     chosen.sort(key=lambda kp:order.index(kp[0]))
     if len(chosen)<min_scenes:   # unlabelled "Additional photos" only fill gaps
-        for p in groups.get('other',[]):
+        for p in groups.get('other',[])+(d['photos'] if fill_any else []):
             if len(chosen)>=min_scenes:break
             if p['url'] not in used:chosen.append(('other',p));used.add(p['url'])
     if hero is closer:closer=next((p for k,p in reversed(chosen) if k in('spa','garden','view','exterior')),hero)
@@ -164,9 +194,9 @@ def build_manifest(d,revs,imgdir,depth_dir,scenes_n=None,max_scenes=14,min_scene
     if last in (bg_trust,bg_review):last=next((p for p in [x for _,x in reversed(chosen)] if p not in (bg_trust,bg_review) and p is not hero),hero)
     am=[a.lower() for a in d.get('amenities',[])];city=d.get('city') or 'town'
     def has(*w):return any(any(x in a for x in w) for a in am)
-    facts={'city':city,'hood_or_city':city,'parking':'Free parking' if has('parking') else ('Superhost' if d.get('superhost') else f"{d.get('guests','')} guests".strip()),
+    facts={'city':city,'hood_or_city':city,'parking':'Free parking' if has('parking') else ('Superhost' if d.get('superhost') else (f"{d['guests']} guests" if d.get('guests') else '')),
            'living_fact':'  /  '.join([x for x in ['TV' if has('tv') else '','Wifi' if has('wifi') else '','Fireplace' if has('fireplace') else ''] if x]) or 'Space to relax',
-           'kitchen_fact':'Full kitchen' if has('kitchen') else 'Dining space','beds_fact':f"{d.get('beds','')} beds  /  sleeps {d.get('guests','')}".replace('  beds','beds').strip(' /'),
+           'kitchen_fact':'Full kitchen' if has('kitchen') else 'Dining space','beds_fact':'  /  '.join(x for x in [f"{d['beds']} beds" if d.get('beds') else '',f"sleeps {d['guests']}" if d.get('guests') else ''] if x) or city,
            'bath_fact':'  /  '.join([x for x in ['Bath' if has('bath') else '','Hairdryer' if has('hairdryer') else ''] if x]) or 'Fresh and modern',
            'garden_fact':'  /  '.join([x for x in ['Fire pit' if has('fire pit') else '','BBQ' if has('bbq','barbecue') else '','Private garden' if has('garden') else ''] if x]) or 'Fresh air, your way',
            'spa_fact':'  /  '.join([x for x in ['Hot tub' if has('hot tub') else '','Sauna' if has('sauna') else '','Pool' if has('pool') else ''] if x]) or 'Time to switch off',
@@ -176,7 +206,7 @@ def build_manifest(d,revs,imgdir,depth_dir,scenes_n=None,max_scenes=14,min_scene
         except Exception:return s
     scenes=[];seen_k={}
     for k,p in scene_items:
-        opts=CAPTIONS.get(k,CAPTIONS['other']);t,sub=opts[seen_k.get(k,0)%len(opts)];seen_k[k]=seen_k.get(k,0)+1;scenes.append({'image':str(imgdir/Path(p['url']).name),'title':fill(t),'subtitle':fill(sub) or city,'room':k})
+        opts=CAPTIONS.get(k,CAPTIONS['other']);t,sub=opts[seen_k.get(k,0)%len(opts)];seen_k[k]=seen_k.get(k,0)+1;scenes.append({'image':str(imgdir/Path(p['url']).name),'title':fill(t),'subtitle':fill(sub).strip().rstrip('/').strip() or city,'room':k})   # an empty fact leaves no dangling ' / '
     rv=pick_review(revs);badges=[b for b in ['Guest favourite' if d.get('guest_favourite') else '','Superhost' if d.get('superhost') else '',f"{d.get('count')} reviews" if d.get('count') else ''] if b]
     hooks=[x for x in [('Hot tub' if has('hot tub') else ''),('Sauna' if has('sauna') else ''),('Pool' if has('pool') else ''),(f"Sleeps {d['guests']}" if d.get('guests') else ''),('Free parking' if has('parking') else ''),('Wifi' if has('wifi') else '')] if x][:3]
     m={'brand':'','depth_dir':str(depth_dir),'scene_seconds':4.5,'intro_seconds':4.5,'outro_seconds':5.5,
@@ -190,9 +220,9 @@ def build_manifest(d,revs,imgdir,depth_dir,scenes_n=None,max_scenes=14,min_scene
     for sc in m['scenes']:sc['caption']=sc['title'];sc['accent']=sc['title'].split()[-1]
     m['overlays']={'title':m['intro']['title'],'subtitle':m['intro']['subtitle'],
         'trust':(f"{d['rating']:.2f} \u2605 from {d['count']} reviews" if d.get('rating') else None),
-        'review':(rv['text'] if rv else None),'review_by':(f"{rv['name']}, Airbnb guest" if rv else None),
+        'review':(rv['text'] if rv else None),'review_by':(f"Guest review, {month_word(rv['date'])}" if rv else None),
         'cta':'Your next escape awaits','cta_pill':'BOOK ON AIRBNB','by':'by Braivex.com'}
-    if rv:m['reviews']={'seconds':5.5,'bg':[str(imgdir/Path(bg_review['url']).name)],'items':[{'name':rv['name'],'stars':rv['stars'],'date':month_word(rv['date']),'text':rv['text']}]}
+    if rv:m['reviews']={'seconds':5.5,'bg':[str(imgdir/Path(bg_review['url']).name)],'items':[{'stars':rv['stars'],'date':month_word(rv['date']),'text':rv['text']}]}
     return m
 
 # ---------------- QA guards (regression: each rule maps to a mistake already made once) ----------------
@@ -214,7 +244,8 @@ def lint_manifest(m,min_images=6):
         if len(parts)!=len(set(parts)):probs.append(f'{k} subtitle repeats a fact: {m[k]["subtitle"]}')
     for rv in (m.get('reviews') or {}).get('items',[]):
         t=rv['text']
-        if re.match(r'^[\s,·•]',t) or re.match(r'^(Stayed |Group trip|Family trip|Solo trip|Business trip)',t,re.I):probs.append(f'review text not sanitised: {t[:40]!r}')
+        typed=(m.get('reviews') or {}).get('typed')   # the customer's own words (own-photo reel), not a scraped trip tag
+        if re.match(r'^[\s,·•]',t) or (not typed and re.match(r'^(Stayed |Group trip|Family trip|Solo trip|Business trip)',t,re.I)):probs.append(f'review text not sanitised: {t[:40]!r}')
         if len(t)<20:probs.append('review text too short')
     if m.get('brand'):probs.append('brand watermark is on (must be off by default)')
     for pth in list(imgs)+[v for v in bgs.values() if v]:
@@ -231,7 +262,8 @@ def lint_manifest(m,min_images=6):
     return total
 # ---------------- media ----------------
 def download_photos(d,imgdir,cb=None,needed=None):
-    """Photo URLs come from a scraped page, so each goes through the public-host guard."""
+    """Photo URLs come from a scraped page, so each goes through the public-host guard. Airbnb CDN photos also take a slot
+    of the shared image budget (fetch.get -> airbnb.gate); a block raises airbnb.Unavailable out of here and stops the job."""
     from app import fetch
     from concurrent.futures import ThreadPoolExecutor
     imgdir.mkdir(parents=True,exist_ok=True);urls=needed or [p['url'] for p in d['photos']]
@@ -241,7 +273,7 @@ def download_photos(d,imgdir,cb=None,needed=None):
         try:_,body=fetch.get(u+('?im_w=1920' if 'muscache.com' in u else ''),headers=UA,timeout=60)
         except (ValueError,httpx.HTTPError):return
         f.write_bytes(body)
-    with ThreadPoolExecutor(6) as ex:list(ex.map(one,urls))   # small pool: one CDN host, politely bounded
+    with ThreadPoolExecutor(6) as ex:list(ex.map(one,urls))   # parallel, paced by the shared image budget
     log(cb,f'Downloaded {len(list(imgdir.iterdir()))} photos')
 def seedance_clips(m,workdir,cb=None,duration=4):
     """Optional: Higgsfield Seedance 2.5 image-to-video per scene (billable). Falls back per scene on any failure."""
@@ -306,6 +338,37 @@ def email_html(d,link,dur):
 {'<p><a href="'+link+'" style="background:#00f0ff;color:#04070a;padding:12px 18px;border-radius:10px;font-weight:700;text-decoration:none">Watch the 1080p reel</a></p>' if link else ''}
 <p style="color:#8a8a8a;font-size:12px">A 720p copy is attached when under 20 MB. Made with ReelSieve, a Braivex product · braivex.com</p></div>"""
 # ---------------- orchestration ----------------
+# ---------------- own photos (no scraping): the customer's photos + typed facts ----------------
+PHOTO_LABEL={k:words[0] for k,words in ROUTE}   # a label classify() maps back to its room ('hot tub' -> spa)
+OWN_PHOTOS={'min_scenes':8,'fill_any':True}      # own photos may be unlabelled or all of one room: use more of them
+def photo_listing(facts,names):
+    """The listing dict build_manifest expects, built from the customer's typed facts and photo files: nothing is fetched.
+    `names` are the photo files in upload order; facts['rooms'] is aligned with them."""
+    rooms=list(facts.get('rooms') or [])
+    d={'id':'photos','url':None,'title':facts['title'],'city':facts['location'],'rating':None,'count':None,'guests':None,'host':'',
+       'amenities':list(facts.get('highlights') or []),'highlights':[],'categories':{},'superhost':False,'guest_favourite':False,
+       'photos':[{'label':PHOTO_LABEL.get(rooms[i] if i<len(rooms) else 'other',PHOTO_LABEL['other']),'url':n} for i,n in enumerate(names)]}
+    # The first quote as typed, at the rating given: pick_review's five-star preference is for scraped reviews only
+    # (DMCC Act 2024 Sch 20 para 13(5)(i): no greater prominence for positive reviews).
+    revs=[{'stars':int(q['stars']),'date':'','text':q['text']} for q in facts.get('quotes') or []][:1]
+    return d,revs
+def own_photos_manifest(m,d):
+    """Replace the wording that only fits an Airbnb listing. A typed guest quote is shown as the customer wrote it
+    (the renderers add the quote marks), with no date (none is known) and never a name."""
+    m['intro']['eyebrow']=(d.get('city') or '').upper() or 'YOUR NEXT STAY'
+    m['outro']['eyebrow']=m['intro']['title'].upper()   # the outro subtitle already names the place
+    m['outro']['cta']=m['overlays']['cta_pill']='BOOK YOUR STAY'
+    if m.get('reviews'):
+        for it in m['reviews']['items']:it['date']=''
+        m['reviews']['typed']=True;m['overlays']['review_by']='Guest review'
+    return m
+def run_photos(images_dir,facts,out_dir,ai_motion=False,cb=None,renderer='v2',max_seconds=None,ai_resolution='1080p'):
+    """Reel from the customer's own photos (already in disposable scratch as p01.jpg…) and typed facts: the same scoring,
+    selection, depth, audit, AI motion and renderers as a listing reel, with no scraping."""
+    out_dir=Path(out_dir);work=out_dir/'work';work.mkdir(parents=True,exist_ok=True);imgdir=Path(images_dir)
+    names=sorted(p.name for p in imgdir.glob('p*.jpg'));log(cb,f'Using your {len(names)} photos')
+    d,revs=photo_listing(facts,names)
+    return _reel(d,revs,imgdir,out_dir,work,ai_motion,cb,renderer,max_seconds,ai_resolution,own=True)
 def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer='v2',max_seconds=None,ai_resolution='1080p'):
     out_dir=Path(out_dir);out_dir.mkdir(parents=True,exist_ok=True);work=out_dir/'work';work.mkdir(exist_ok=True)
     if is_airbnb(url):
@@ -317,6 +380,9 @@ def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer
         if len(d['photos'])<5:raise RuntimeError(f"Only {len(d['photos'])} usable photos found on that page. Try the listing's Airbnb link, or a page that shows the full photo gallery.")
     (out_dir/'listing.json').write_text(json.dumps({**d,'reviews':revs},indent=1))
     imgdir=work/'images';download_photos(d,imgdir,cb)   # every photo, so selection is on quality not on Airbnb's order
+    return _reel(d,revs,imgdir,out_dir,work,ai_motion,cb,renderer,max_seconds,ai_resolution)
+def _reel(d,revs,imgdir,out_dir,work,ai_motion,cb,renderer,max_seconds,ai_resolution,own=False):
+    """Photos on disk + listing facts -> scored selection, depth, audit, optional AI motion, render. Shared by both entry points."""
     from app import photoscore
     have=[imgdir/Path(p['url']).name for p in d['photos'] if (imgdir/Path(p['url']).name).exists()]
     log(cb,f'Scoring {len(have)} photos for sharpness, light and colour')
@@ -327,7 +393,9 @@ def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer
     log(cb,f'Estimating depth for {len(short)} photos')
     subprocess.run([PY,str(HERE/'depth.py'),str(sel),str(work/'depth')],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     photoscore.add_depth(scores,work/'depth')
-    m=build_manifest(d,revs,imgdir,work/'depth',scores=scores);m['photo_scores']=scores
+    m=build_manifest(d,revs,imgdir,work/'depth',scores=scores,**(OWN_PHOTOS if own else {}))
+    if own:m=own_photos_manifest(m,d)   # own photos may be unlabelled: use more of them than the 6-scene floor
+    m['photo_scores']=scores
     used={Path(s['image']).name for s in m['scenes']}|{Path(m['intro']['image']).name,Path(m['outro']['image']).name}
     ranked=sorted(scores.items(),key=lambda kv:-kv[1]['score'])
     log(cb,f"Scored {len(scores)} photos; using {len(used)} (best {ranked[0][1]['score']}, median {sorted(v['score'] for v in scores.values())[len(scores)//2]}, lowest used {min(scores[k]['score'] for k in used if k in scores)})")
@@ -374,7 +442,7 @@ def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer
     safe=re.sub(r'[^A-Za-z0-9]+','-',d['title'])[:40].strip('-');out=out_dir/f"{time.strftime('%Y-%m-%d')}_{safe}-by-Braivex.mp4"
     m['aspect']='9:16' if renderer=='v3' else '16:9'
     dur,small=render(m,work,out,cb,renderer)
-    res={'video':str(out),'video_720':str(small),'duration':dur,'audit':m.get('audit'),'ai_plan':m.get('ai_plan'),'selection':m.get('selection'),'photo_scores':m.get('photo_scores'),'listing':{**{k:d.get(k) for k in ['id','url','title','city','rating','count','guests','host']},'photo':(d.get('photos') or [{}])[0].get('url')},'review_used':m.get('reviews',{}).get('items',[None])[0]}
+    res={'video':str(out),'video_720':str(small),'duration':dur,'audit':m.get('audit'),'ai_plan':m.get('ai_plan'),'selection':m.get('selection'),'photo_scores':m.get('photo_scores'),'listing':{**{k:d.get(k) for k in LISTING_KEYS},'photo':None if own else (d.get('photos') or [{}])[0].get('url')},'review_used':m.get('reviews',{}).get('items',[None])[0]}
     (out_dir/'result.json').write_text(json.dumps(res,indent=1));return res
 if __name__=='__main__':
     import argparse

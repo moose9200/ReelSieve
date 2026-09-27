@@ -5,36 +5,42 @@ Web process only: identity, jobs, billing and Drive credentials live in PostgreS
 in app.worker. Nothing here writes customer data to local disk.
 Run: .venv/bin/uvicorn app.server:app --port 8787   (DATABASE_URL, SESSION_SECRET, TOKEN_ENCRYPTION_KEY)
 """
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, contextmanager
 import hashlib
 import json
 import os
 import re
 import secrets
+import threading
 import time
 from pathlib import Path
 from urllib.parse import quote
 from xml.sax.saxutils import escape
 
+import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse,
                                Response, StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.formparsers import MultiPartException, MultiPartParser
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app import admin, auth, billing, cohost, database, gdrive, hostmsg, jobs, linkedin, plans, store
+from app import admin, airbnb, auth, billing, cohost, companies, database, fetch, gdrive, hostmsg, invoices, jobs, linkedin, photos, plans, referrals, retention, store
 from app import search as listing_search
 
 HERE = Path(__file__).resolve().parent
 REQUIRED = ('DATABASE_URL', 'SESSION_SECRET', 'TOKEN_ENCRYPTION_KEY')
 CSRF_COOKIE = 'reelsieve_csrf'
-PUBLIC_PREFIXES = ('/static/', '/oauth/google/callback', '/favicon.ico', '/api/billing/webhook/')
-PUBLIC_EXACT = ('/', '/login', '/signup', '/setup', '/forgot', '/healthz', '/privacy', '/terms',
+PUBLIC_PREFIXES = ('/static/', '/oauth/google/callback', '/favicon.ico', '/api/billing/webhook/', '/r/')
+PUBLIC_EXACT = ('/', '/login', '/signup', '/setup', '/forgot', '/healthz', '/privacy', '/terms', '/privacy/request',
                 '/robots.txt', '/sitemap.xml', '/llms.txt')
 DAILY_CAP = int(os.getenv('OUTREACH_DAILY_CAP', '5'))
 TRUSTED_HOPS = int(os.getenv('TRUSTED_PROXY_HOPS', '1'))
-COHOST_MESSAGE = ("Hi {name} — I'm Hemant from ReelSieve (Braivex). I make short cinematic walkthrough videos for short-let "
+COHOST_MESSAGE = ("Hi {name} — I make short cinematic walkthrough videos for short-let "
                   "listings, built from the photos and reviews already on them. I made one for a {city} property this week and thought of you.\n\n"
                   "Happy to make one for {listing_title} free so you can see it — no strings, no card. If it is useful I do them at volume for operators.\n\n"
                   "If you'd rather I sent it elsewhere, tell me where and I will.")
@@ -48,8 +54,27 @@ SETTINGS = [('HF_KEY', True, 'Higgsfield API key — enables AI camera motion (b
             ('BILLING_WEBHOOK_SECRET', True, 'Secret your payment provider signs webhooks with'),
             ('STRIPE_SECRET_KEY', True, 'Stripe secret or restricted key (Checkout Sessions: write); card checkout needs this and the webhook secret'),
             ('STRIPE_WEBHOOK_SECRET', True, 'Signing secret (whsec_…) of the Stripe webhook endpoint for checkout.session.completed'),
+            ('INVOICE_BACKUP_BUCKET', False, 'Worker service: S3 bucket in India for the daily invoice backup (Income-tax Rules 2026 r.46(8)), with a lifecycle rule deleting invoices/ within 90 days and versioning off; the backup is off until the bucket and both keys are set'),
+            ('INVOICE_BACKUP_REGION', False, 'Worker service: bucket region, ap-south-1 (Mumbai, the default) or ap-south-2 (Hyderabad)'),
+            ('INVOICE_BACKUP_ACCESS_KEY_ID', True, 'Worker service: access key ID of an IAM user allowed only s3:PutObject on invoices/* when If-None-Match is sent, and s3:GetLifecycleConfiguration on the bucket'),
+            ('INVOICE_BACKUP_SECRET_ACCESS_KEY', True, 'Worker service: secret access key of that IAM user'),
+            ('INVOICE_BACKUP_ENDPOINT', False, 'Worker service, optional: https:// S3 endpoint. An AWS one must name the region (https://s3.ap-south-1.amazonaws.com); any other needs INVOICE_BACKUP_ENDPOINT_IN_INDIA'),
+            ('INVOICE_BACKUP_ENDPOINT_IN_INDIA', False, 'Worker service: set to 1 to confirm a non-AWS INVOICE_BACKUP_ENDPOINT keeps files on servers in India; the app cannot check this'),
             ('BILLING_NOTE', False, 'Line shown to customers who choose invoice'),
-            ('DEFAULT_MESSAGE', False, 'Default host message template')]
+            ('DEFAULT_MESSAGE', False, 'Default host message template'),
+            ('AIRBNB_FETCH_ENABLED', False, 'Airbnb fetching: 1 on, 0 off. Off stops every request to Airbnb and its photo '
+                                            'CDN: new listing-link reels, reels in progress, Find a listing, co-host search and listing photos'),
+            ('AIRBNB_BLOCK_COOLDOWN_MIN', False, 'Minutes all Airbnb fetching pauses after Airbnb blocks a request'),
+            ('AIRBNB_PAGE_RPS', False, 'Airbnb page requests per second, one budget for the web and every worker'),
+            ('AIRBNB_IMAGE_RPS', False, 'Airbnb photo requests per second, one budget for the web and every worker'),
+            ('AIRBNB_BROWSER_RPS', False, 'Script and data requests per second of the headless reviews page, one budget for every worker')]
+SETTING_DEFAULTS = airbnb.DEFAULTS
+# Airbnb lookups one account may have running at once: searches and co-host lookups, and photos through /img.
+# A person's browser runs one search at a time and loads a screen of thumbnails; a script running more is refused.
+AT_ONCE = {'lookup': 2, 'img': 24}
+_running, _running_lock = {}, threading.Lock()
+# "Remove my listing" requests from the public form that block at once, per email address and in total, in 24 hours.
+REMOVALS_PER_EMAIL, REMOVALS_PER_DAY = 3, 20
 
 
 def validate_config():
@@ -58,12 +83,32 @@ def validate_config():
     if missing:
         raise RuntimeError('Missing required configuration: ' + ', '.join(missing))
     gdrive._fernet()
+    airbnb.validate()
+
+
+@contextmanager
+def at_once(user, group):
+    """Refuse (429) when this account already has AT_ONCE[group] Airbnb lookups of this group running.
+    ponytail: counted per web process; with several web replicas each allows its own AT_ONCE."""
+    key = (user, group)
+    with _running_lock:
+        if _running.get(key, 0) >= AT_ONCE[group]:
+            raise HTTPException(429, 'You already have Airbnb lookups running. Wait for them to finish.')
+        _running[key] = _running.get(key, 0) + 1
+    try:
+        yield
+    finally:
+        with _running_lock:
+            _running[key] -= 1
+            if not _running[key]:
+                del _running[key]
 
 
 @asynccontextmanager
 async def lifespan(_app):
     validate_config()
     database.initialize()
+    store._suppression_key()  # freeze the do-not-contact key before anything can rotate SESSION_SECRET
     yield
 
 
@@ -86,7 +131,10 @@ def site_url():
 
 
 tpl.env.globals['site_url'] = site_url
+tpl.env.globals['airbnb_enabled'] = airbnb.enabled
+tpl.env.globals['airbnb_disabled'] = airbnb.DISABLED
 tpl.env.filters['day'] = lambda ts: time.strftime('%d %b %Y', time.gmtime(ts or 0))
+tpl.env.filters['when'] = lambda ts: time.strftime('%d %b %Y %H:%M UTC', time.gmtime(ts or 0))
 
 
 def _secure(request):
@@ -128,6 +176,7 @@ class Gate(BaseHTTPMiddleware):
     """Sign-in gate plus one CSRF policy for every state-changing request (webhook excepted: it is HMAC-signed)."""
 
     async def dispatch(self, request, call_next):
+        airbnb.max_wait.set(airbnb.WEB_MAX_WAIT)  # this request's task only: a web request never queues long for Airbnb
         path = request.url.path
         nonce = request.cookies.get(CSRF_COOKIE, '')
         fresh = '' if nonce else secrets.token_urlsafe(24)
@@ -143,10 +192,14 @@ class Gate(BaseHTTPMiddleware):
             return RedirectResponse('/login?next=' + quote(target), status_code=303)
         if request.method not in ('GET', 'HEAD', 'OPTIONS') and not path.startswith('/api/billing/webhook/'):
             sent = request.headers.get('x-csrf-token', '')
-            if not sent and request.headers.get('content-type', '').startswith(('application/x-www-form-urlencoded', 'multipart/form-data')):
-                form = await request.form()
-                sent = form.get('csrf') or ''
-                request.scope['_form'] = dict(form)
+            # /api/ callers are the page's scripts, which always send the header: the body is never read here.
+            if not sent and not path.startswith('/api/') and \
+                    request.headers.get('content-type', '').startswith(('application/x-www-form-urlencoded', 'multipart/form-data')):
+                try:
+                    request.scope['_form'] = await _small_form(request)
+                except HTTPException as e:
+                    return HTMLResponse(e.detail, status_code=e.status_code)
+                sent = request.scope['_form'].get('csrf') or ''
             basis = _csrf_basis(request)
             if (fresh and not session) or not auth.csrf_ok(basis, sent):
                 if path.startswith('/api/'):
@@ -170,6 +223,8 @@ async def security_headers(request, call_next):
     response = await call_next(request)
     for k, v in SECURITY_HEADERS.items():
         response.headers.setdefault(k, v)
+    if _secure(request):  # browsers only honour HSTS over HTTPS; one year, this host only
+        response.headers.setdefault('Strict-Transport-Security', 'max-age=31536000')
     if os.getenv('SEO_NOINDEX') == '1':  # staging and previews: never compete with the real site in search
         response.headers['X-Robots-Tag'] = 'noindex, nofollow'
     if request.url.path.startswith('/static/') and response.status_code < 400:
@@ -178,8 +233,22 @@ async def security_headers(request, call_next):
     return response
 
 
+FORM_MAX = 64 * 1024  # sign-in, sign-up and privacy forms; files only ever arrive through the photo upload API
+
+
+async def _small_form(request):
+    """An HTML form body: small, read in memory, never a file part, so nothing reaches disk before sign-in and CSRF."""
+    length = request.headers.get('content-length', '')
+    if not length.isdigit() or not 0 < int(length) <= FORM_MAX:
+        raise HTTPException(413, 'This form is too large. Reload the page and try again.')
+    try:
+        return dict(await request.form(max_files=0, max_fields=50))
+    except (MultiPartException, StarletteHTTPException):  # Starlette turns a refused part into its own 400
+        raise HTTPException(400, 'This form could not be read. Reload the page and try again.')
+
+
 async def _form(request):
-    return request.scope.get('_form') or dict(await request.form())
+    return request.scope['_form'] if '_form' in request.scope else await _small_form(request)
 
 
 def _set_session(resp, request, user, long=True):
@@ -231,8 +300,9 @@ LLMS_TXT = """# ReelSieve
 
 > ReelSieve, made by Braivex, turns an Airbnb listing link into a cinematic walkthrough video built from the listing's own photos and real guest reviews.
 
-For now it accepts only Airbnb listing links, the kind with /rooms/ in the address.
-Each video has an intro, a rating card, the rooms in walking order with captions, a real guest review card and an outro.
+It works from an Airbnb listing link, the kind with /rooms/ in the address, or from {min_photos} to {max_photos} photos the customer uploads.
+Link reels have an intro, a rating card when the listing has reviews, the rooms in walking order with captions, a real guest review card and an outro.
+Photo reels have an intro, the rooms in walking order with captions and an outro, and can show one guest quote the customer provides.
 There are two styles: 16:9 cinematic and 9:16 vertical.
 Every listing photo is scored and the best frame for each room is used.
 Paid plans can add AI camera motion.
@@ -291,7 +361,8 @@ def llms_txt():
     """https://llmstxt.org format. Prices come from plans.PLANS on every request."""
     lines = '\n'.join(f"- {p['name']}: {p['price_label']} for {p['videos']} videos" if p['price_usd'] is not None
                       else f"- {p['name']}: priced on request" for p in plans.public_plans())
-    return PlainTextResponse(LLMS_TXT.format(plans=lines, base=site_url()))
+    return PlainTextResponse(LLMS_TXT.format(plans=lines, base=site_url(), min_photos=photos.MIN_PHOTOS,
+                                             max_photos=photos.MAX_PHOTOS))
 
 
 # ---------------- identity ----------------
@@ -307,7 +378,8 @@ def login_page(request: Request, next: str = '/app', notice: str = ''):
     if request.state.user:
         return RedirectResponse(_safe_next(next), status_code=303)
     msg = {'out': 'You have been signed out.', 'created': 'Account created — sign in.',
-           'pw': 'Password changed — sign in with the new one.'}.get(notice, '')
+           'pw': 'Password changed — sign in with the new one.',
+           'deleted': 'Your account has been deleted.'}.get(notice, '')
     return tpl.TemplateResponse(request, 'login.html', {'next': _safe_next(next), 'notice': msg})
 
 
@@ -324,6 +396,7 @@ async def login_post(request: Request):
         time.sleep(0.6)
         return ctx('Wrong email or password', 401)
     auth.clear_fails(ip)
+    store.note_signin(u, ip)
     return _set_session(RedirectResponse(nxt, status_code=303), request, u, f.get('remember') == '1')
 
 
@@ -339,29 +412,43 @@ def forgot(request: Request):
     return tpl.TemplateResponse(request, 'forgot.html', {})
 
 
+def _ref(code):
+    code = (code or '').strip().lower()
+    return code if referrals.CODE.match(code) else ''
+
+
+@app.get('/r/{code}')
+def referral_link(code: str):
+    """Invite link. The code goes on in the address to a hidden signup field: no cookie, no browser storage (PECR reg 6)."""
+    code = _ref(code)
+    return RedirectResponse('/signup' + ('?ref=' + code if code else ''), status_code=303)
+
+
 @app.get('/signup', response_class=HTMLResponse)
-def signup_page(request: Request, plan: str = '', url: str = ''):
+def signup_page(request: Request, plan: str = '', url: str = '', ref: str = ''):
     if request.state.user:
         return RedirectResponse('/app', status_code=303)
-    return tpl.TemplateResponse(request, 'signup.html', {'plan': plan, 'url': url[:500], 'plans': plans.public_plans()})
+    return tpl.TemplateResponse(request, 'signup.html', {'plan': plan, 'url': url[:500], 'ref': _ref(ref), 'plans': plans.public_plans()})
 
 
 @app.post('/signup')
 async def signup_post(request: Request):
     f = await _form(request)
     u, p1, p2 = (f.get('user') or '').strip(), f.get('password') or '', f.get('password2') or ''
-    plan, url, ip, fp = (f.get('plan') or 'free').strip(), (f.get('url') or '').strip()[:500], _ip(request), (f.get('fp') or '')[:400]
-    ctx = lambda err: tpl.TemplateResponse(request, 'signup.html', {'user': u, 'plan': plan, 'url': url, 'error': err, 'plans': plans.public_plans()}, status_code=400)  # noqa: E731
+    plan, url, ip, ref = (f.get('plan') or 'free').strip(), (f.get('url') or '').strip()[:500], _ip(request), _ref(f.get('ref'))
+    ctx = lambda err: tpl.TemplateResponse(request, 'signup.html', {'user': u, 'plan': plan, 'url': url, 'ref': ref, 'error': err, 'plans': plans.public_plans()}, status_code=400)  # noqa: E731
     if p2 and p1 != p2:
         return ctx('Passwords do not match')
-    guard = plans.signup_guard(u, ip, fp)
+    guard = plans.signup_guard(u, ip)
     if guard:
         return ctx(guard)
     try:
         auth.create_user(u, p1, 'member')
     except ValueError as e:
         return ctx(str(e))
-    store.ensure_account(u, 'free', ip, fp)
+    store.ensure_account(u, 'free')
+    store.note_signin(u, ip)
+    referrals.attribute(u, ref)
     nxt = '/app' + (('?url=' + quote(url)) if url else '')
     if plan in ('starter', 'commercial'):
         nxt = '/upgrade?plan=' + plan
@@ -387,6 +474,32 @@ def api_account(request: Request):
     return plans.account_view(request.state.user)
 
 
+@app.get('/api/account/export')
+def account_export(request: Request):
+    """Download my data (UK/EU GDPR Art 15 and 20): every table's rows for the signed-in owner, as JSON."""
+    data = {'exported_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()), 'privacy_notice': site_url() + '/privacy',
+            **store.export(request.state.user)}
+    return Response(json.dumps(data, indent=1, default=str), media_type='application/json',
+                    headers={'Content-Disposition': 'attachment; filename="reelsieve-my-data.json"', 'Cache-Control': 'private, no-store'})
+
+
+@app.post('/api/account/delete')
+async def account_delete(request: Request):
+    """Delete my account (Art 17 / DPDP s12) after a password re-check and a typed DELETE."""
+    b = await request.json()
+    if (b.get('confirm') or '').strip() != 'DELETE':
+        raise HTTPException(400, 'Type DELETE to confirm')
+    if not auth.verify(request.state.user, b.get('password') or ''):
+        raise HTTPException(400, 'Password is wrong')
+    try:
+        warning = admin.erase(request.state.user, request.state.user)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    resp = JSONResponse({'ok': True, 'warning': warning, 'redirect': '/login?notice=deleted'})
+    resp.delete_cookie(auth.COOKIE)
+    return resp
+
+
 @app.post('/api/users/plan')
 async def api_user_plan(request: Request):
     _require_admin(request)
@@ -404,7 +517,8 @@ async def api_user_plan(request: Request):
     if u not in {x['user'] for x in auth.users()}:
         raise HTTPException(404, 'No such user')
     store.ensure_account(u)
-    store.set_plan(u, pl, credits, note=f'set by {request.state.user}')
+    store.set_plan(u, pl, credits, note='set by admin')
+    store.admin_event('plan', request.state.user, u, plan=pl, credits=credits)
     return {'ok': True, 'account': plans.account_view(u)}
 
 
@@ -439,6 +553,18 @@ async def api_users_del(request: Request):
     return {'users': auth.users(), 'warning': warning}
 
 
+@app.post('/api/users/erase')
+async def api_users_erase(request: Request):
+    """Erase, unlike Remove: personal data deleted or anonymised; paid orders kept for the tax record period."""
+    _require_admin(request)
+    target = ((await request.json()).get('user') or '').strip().lower()
+    try:
+        warning = admin.erase(target, request.state.user)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {'users': auth.users(), 'warning': warning}
+
+
 @app.post('/api/users/password')
 async def api_users_pw(request: Request):
     _require_admin(request)
@@ -447,6 +573,7 @@ async def api_users_pw(request: Request):
         auth.set_password(b.get('user', ''), b.get('password', ''))
     except ValueError as e:
         raise HTTPException(400, str(e))
+    store.admin_event('password_reset', request.state.user, b.get('user', ''))
     return {'ok': True}
 
 
@@ -461,17 +588,148 @@ def landing(request: Request):
     return tpl.TemplateResponse(request, 'landing.html', {
         'signed_in': bool(request.state.user), 'user': request.state.user, 'plans': plans.public_plans(),
         'products': plans.PRODUCTS, 'sample_video': os.getenv('SAMPLE_VIDEO_URL') or None,
-        'sample_poster': os.getenv('SAMPLE_POSTER_URL') or None})
+        'sample_poster': os.getenv('SAMPLE_POSTER_URL') or None, 'limits': photos})
+
+
+def _notice_facts():
+    """What the privacy notice says about payments and the India backup, read from the configuration it describes."""
+    from urllib.parse import urlsplit
+    links = sorted({urlsplit(billing.checkout_link(p)).hostname for p in ('starter', 'commercial') if billing.checkout_link(p)})
+    backup = invoices.config() or {}
+    return {'payments': {'stripe': billing.stripe_enabled(), 'links': links},
+            'backup_aws': not backup.get('endpoint') or '.amazonaws.com' in backup['endpoint']}  # AWS unless a non-AWS endpoint is set
 
 
 @app.get('/privacy', response_class=HTMLResponse)
 def privacy(request: Request):
-    return tpl.TemplateResponse(request, 'legal.html', {'kind': 'privacy'})
+    return tpl.TemplateResponse(request, 'legal.html', {'kind': 'privacy', **_notice_facts()})
 
 
 @app.get('/terms', response_class=HTMLResponse)
 def terms(request: Request):
     return tpl.TemplateResponse(request, 'legal.html', {'kind': 'terms'})
+
+
+def _request_page(request, status=200, **ctx):
+    return tpl.TemplateResponse(request, 'privacy_request.html', {'types': store.PRIVACY_REQUEST_TYPES, 'f': {}, **ctx},
+                                status_code=status)
+
+
+@app.get('/privacy/request', response_class=HTMLResponse)
+def privacy_request_page(request: Request):
+    """Rights requests and complaints from anyone, signed in or not (UK DPA 2018 s.164A; Art 12: one month)."""
+    return _request_page(request)
+
+
+@app.post('/privacy/request')
+async def privacy_request_post(request: Request):
+    f = {k: (v or '').strip() for k, v in (await _form(request)).items() if k != 'csrf'}
+    net = store.net_of(_ip(request))  # per /24 or /64: a new IPv6 address each time is still one network
+    if auth.too_many(net, 'privacy'):
+        return _request_page(request, 429, f=f, error='Too many requests from this network. Try again in 10 minutes, or email hello@braivex.com.')
+    profile = linkedin.airbnb_profile(f.get('airbnb_profile', ''))
+    company = companies.number(f.get('company_number'))
+    removal = f.get('type') == 'listing_removal'
+    listing = jobs.listing_id(f.get('listing_url', ''))
+    error = ('Choose what the request is about' if f.get('type') not in store.PRIVACY_REQUEST_TYPES else
+             'Enter a valid email address so we can reply' if not auth.EMAIL.match(f.get('email', '')) else
+             'Paste the link to your Airbnb listing (airbnb.co.uk/rooms/<number>)' if removal and not listing else
+             'Tell us what you would like us to do' if not f.get('details') and not removal else
+             'Paste the link to your Airbnb profile (airbnb.co.uk/users/show/<number>), or leave it empty'
+             if f.get('airbnb_profile') and not profile else
+             'Enter the 8-character company number from Companies House (for example 01234567 or SC123456), or leave it empty'
+             if f.get('company_number') and not company else
+             'Paste the link to your Airbnb listing (airbnb.co.uk/rooms/<number>), or leave it empty'
+             if f.get('listing_url') and not listing else None)
+    if error:
+        return _request_page(request, 400, f=f, error=error)
+    auth.record_fail(net, 'privacy')  # counts submissions, not failures
+    details = f.get('details') or 'Remove my listing from ReelSieve.'
+    ref, received = store.add_privacy_request(f['type'], auth.norm(f['email']), f.get('name', '')[:200] or None, details[:4000],
+                                              profile.rsplit('/', 1)[-1] if profile else None, company_number=company,
+                                              listing_id=listing)
+    # An objection to direct marketing is honoured at once, for every user. Nothing proves who sent it, so each entry
+    # carries the request reference: Settings shows it next to the request and an admin can undo an abusive one.
+    if f['type'] == 'objection' and profile:
+        store.suppress({'airbnb_profile': profile}, ref=ref)
+    if f['type'] == 'objection' and company:
+        store.suppress({'company_number': company}, ref=ref)
+    if removal:
+        # Anyone can send this form and nothing proves the listing is theirs, so the block is at once but provisional:
+        # it lapses at the reply deadline unless an admin confirms it, and a few per address and per day block at once
+        # (the rest wait for the admin's check).
+        mine, total = store.recent_removals(auth.norm(f['email']), received - 86400)
+        if mine <= REMOVALS_PER_EMAIL and total <= REMOVALS_PER_DAY:
+            store.block_listing(listing, 'Removal request ' + ref, expires_at=store.one_month_after(received))
+    return _request_page(request, ack={'ref': ref, 'received': received, 'due': store.one_month_after(received),
+                                       'listing': listing if removal else None,
+                                       'listing_blocked': bool(removal and store.blocked_ids([listing]))})
+
+
+@app.post('/api/privacy-requests/handled')
+async def privacy_request_handled(request: Request):
+    _require_admin(request)
+    ref = ((await request.json()).get('ref') or '').strip()
+    if not store.handle_privacy_request(ref):
+        raise HTTPException(404, 'No open request with that reference')
+    store.admin_event('privacy_request_handled', request.state.user, None, ref=ref)
+    return {'ok': True}
+
+
+@app.post('/api/privacy-requests/unsuppress')
+async def privacy_request_unsuppress(request: Request):
+    """Admin: a privacy request turned out abusive, so the do-not-contact entries it made are removed (logged)."""
+    _require_admin(request)
+    ref = str((await request.json()).get('ref') or '').strip()
+    n = store.undo_request_suppressions(ref) if ref else 0
+    if not n:
+        raise HTTPException(404, 'No do-not-contact entries came from that request')
+    store.admin_event('request_unsuppress', request.state.user, None, ref=ref, rows=n)
+    return {'ok': True, 'removed': n}
+
+
+@app.post('/api/blocked-listings')
+async def blocked_listing_add(request: Request):
+    """Admin: no reels of this listing, and not in co-host or Outreach results. Takes a /rooms/<id> link or the number."""
+    _require_admin(request)
+    b = await request.json()
+    raw = str(b.get('listing') or '').strip()
+    lid = raw if re.fullmatch(r'\d{1,20}', raw) else jobs.listing_id(raw)
+    if not lid:
+        raise HTTPException(400, 'Paste an Airbnb listing link (airbnb.…/rooms/<number>) or its number')
+    store.block_listing(lid, str(b.get('reason') or '').strip()[:300] or 'Added by an admin')
+    store.admin_event('listing_block', request.state.user, None, listing=lid)
+    return {'ok': True, 'listing_id': lid}
+
+
+@app.post('/api/blocked-listings/remove')
+async def blocked_listing_remove(request: Request):
+    _require_admin(request)
+    lid = str((await request.json()).get('listing_id') or '').strip()
+    if not store.unblock_listing(lid):
+        raise HTTPException(404, 'That listing is not blocked')
+    store.admin_event('listing_unblock', request.state.user, None, listing=lid)
+    return {'ok': True}
+
+
+@app.post('/api/blocked-listings/confirm')
+async def blocked_listing_confirm(request: Request):
+    """Admin: a public removal request checked and upheld, so its block no longer lapses."""
+    _require_admin(request)
+    lid = str((await request.json()).get('listing_id') or '').strip()
+    if not store.confirm_listing_block(lid):
+        raise HTTPException(404, 'No provisional block for that listing')
+    store.admin_event('listing_confirm', request.state.user, None, listing=lid)
+    return {'ok': True}
+
+
+@app.post('/api/airbnb/resume')
+def airbnb_resume(request: Request):
+    """Admin: after checking why Airbnb refused us, start Airbnb fetching again (a hard stop never ends on its own)."""
+    _require_admin(request)
+    airbnb.resume()
+    store.admin_event('airbnb_resume', request.state.user, None)
+    return {'ok': True}
 
 
 def _upgrade_page(request, plan='', order=None, note='We send the invoice within a few hours and add your credits the moment it clears.', **extra):
@@ -525,14 +783,14 @@ async def billing_start(request: Request):
             o, url = billing.start_stripe_checkout(request.state.user, pl, base)
         except RuntimeError as e:
             raise HTTPException(502, str(e))
-        return {'ok': True, 'order': o, 'pay_url': url}
+        return {'ok': True, 'order': billing.view(o), 'pay_url': url}
     if not billing.checkout_link(pl):
         raise HTTPException(400, 'No payment link configured for that plan — request an invoice instead')
     try:
-        o = billing.create_order(request.state.user, pl, 'link', (b.get('note') or '')[:400], {'ip': _ip(request)})
+        o = billing.create_order(request.state.user, pl, 'link', (b.get('note') or '')[:400])
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return {'ok': True, 'order': o, 'pay_url': billing.pay_url(pl, o['ref'], base)}
+    return {'ok': True, 'order': billing.view(o), 'pay_url': billing.pay_url(pl, o['ref'], base)}
 
 
 @app.post('/api/billing/request')
@@ -542,10 +800,10 @@ async def billing_request(request: Request):
     if pl not in ('starter', 'commercial'):
         raise HTTPException(400, 'Choose Starter or Commercial')
     try:
-        o = billing.create_order(request.state.user, pl, b.get('provider') or 'invoice', (b.get('note') or '')[:400], {'ip': _ip(request)})
+        o = billing.create_order(request.state.user, pl, b.get('provider') or 'invoice', (b.get('note') or '')[:400])
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return {'ok': True, 'order': o}
+    return {'ok': True, 'order': billing.view(o)}
 
 
 @app.get('/api/billing/orders')
@@ -560,17 +818,20 @@ async def billing_settle(request: Request):
     _require_admin(request)
     b = await request.json()
     try:
-        o = billing.settle((b.get('ref') or '').strip(), by=request.state.user)
+        o = billing.settle((b.get('ref') or '').strip(), by='admin')
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return {'ok': True, 'order': o, 'account': plans.account_view(o['user'])}
+    store.admin_event('order_settle', request.state.user, o['user'], ref=o['ref'])
+    return {'ok': True, 'order': billing.view(o), 'account': plans.account_view(o['user'])}
 
 
 @app.post('/api/billing/cancel')
 async def billing_cancel(request: Request):
     _require_admin(request)
     b = await request.json()
-    return {'ok': True, 'order': billing.cancel((b.get('ref') or '').strip(), b.get('note') or 'cancelled')}
+    o = billing.cancel((b.get('ref') or '').strip(), b.get('note') or 'cancelled')
+    store.admin_event('order_cancel', request.state.user, o['user'], ref=o['ref'])
+    return {'ok': True, 'order': billing.view(o)}
 
 
 @app.post('/api/billing/link')
@@ -582,7 +843,8 @@ async def billing_link(request: Request):
         o = billing.set_pay_link((b.get('ref') or '').strip(), b.get('url') or '')
     except ValueError as e:
         raise HTTPException(400, str(e))
-    return {'ok': True, 'order': o}
+    store.admin_event('order_link', request.state.user, o['user'], ref=o['ref'])
+    return {'ok': True, 'order': billing.view(o)}
 
 
 @app.post('/api/billing/webhook/{provider}')
@@ -649,7 +911,9 @@ def search_phrase(listing):
 def job_view(j, receipts=None):
     """Everything the UI shows about one job. Links come only from the owner's confirmed Drive receipts."""
     p, m = j['params'] or {}, j['meta'] or {}
-    listing = {'url': j['url'], **(m.get('listing') or {})}
+    own = p.get('source') == 'photos'  # the customer's own photos: no listing link, host or Airbnb page
+    listing = {**({'url': None, 'title': p.get('title'), 'city': p.get('location')} if own else {'url': j['url']}),
+               **(m.get('listing') or {})}
     listing['location'] = listing.get('city')
     recs = receipts if receipts is not None else {}
     primary = recs.get('primary')
@@ -664,6 +928,12 @@ def job_view(j, receipts=None):
              .replace('{listing_title}', listing.get('title') or 'your listing').replace('{city}', listing.get('city') or '')
              .replace('{search_phrase}', phrase).replace('{reel_link}', link or '(reel link not shared yet)'))
     lid = listing_id_of(j['url'])
+    # A host who objected (their Airbnb profile, or their name on this listing) is never offered as someone to contact.
+    hid = str(listing.get('host_id') or '')
+    quiet = not own and bool(hid or host) and not store.unsuppressed(
+        [{'airbnb_profile': f'/users/show/{hid}' if hid.isdigit() else '', 'name': host, 'listing_url': j['url']}])
+    if quiet:
+        msg = final = ''
     return {
         'id': j['id'], 'status': j['status'], 'progress': j['progress'], 'step': j['step'], 'log': j['log'] or [],
         'error': j['error'], 'listing': listing, 'style': p.get('style', 'v2'), 'duration': m.get('duration'),
@@ -674,10 +944,12 @@ def job_view(j, receipts=None):
         'stream_url': f"/api/jobs/{j['id']}/video" if primary else None,
         'download_url': f"/api/jobs/{j['id']}/video?download=1" if primary else None,
         'drive_link': primary['webViewLink'] if primary else None, 'shared': shared, 'reel_link': link,
-        'poster': listing.get('photo'), 'host_status': m.get('host_status'), 'host_error': m.get('host_error'),
+        'poster': img_src(listing['photo'] + ('?im_w=1200' if '?' not in listing['photo'] else '')) if listing.get('photo') else None,
+        'host_status': m.get('host_status'), 'host_error': m.get('host_error'),
         'message': msg, 'message_final': final, 'search_phrase': phrase,
-        'youtube_title': phrase.replace(' ReelSieve', ' — by ReelSieve'),
-        'contact_url': hostmsg.contact_url(lid) if lid else None}
+        'contact_url': hostmsg.contact_url(lid) if lid and not quiet else None, 'host_suppressed': quiet,
+        'source': 'photos' if own else 'listing', 'key': lid or j['url'],
+        'delete_inputs': bool(p.get('delete_inputs')), 'inputs': m.get('inputs')}
 
 
 def _views(user, rows):
@@ -697,11 +969,12 @@ def _one(request, j):
 
 
 @app.get('/app', response_class=HTMLResponse)
-def index(request: Request, url: str = ''):
+def index(request: Request, url: str = '', mode: str = ''):
     u = request.state.user
     return tpl.TemplateResponse(request, 'index.html', {
         'jobs': _views(u, jobs.list_for(u, 12)), 'hf_configured': bool(os.getenv('HF_KEY')), 'gdrive': gdrive.status(u),
-        'default_message': default_message(), 'prefill_url': url[:500], 'account': plans.account_view(u)})
+        'default_message': default_message(), 'prefill_url': url[:500], 'account': plans.account_view(u),
+        'photos_mode': mode == 'photos' and not url, 'limits': photos})
 
 
 @app.post('/api/jobs')
@@ -709,10 +982,125 @@ async def create_job(request: Request):
     b = await request.json()
     try:
         j = jobs.admit(request.state.user, b.get('url'), b, request.headers.get('idempotency-key') or b.get('idempotency_key'),
-                       _ip(request), (b.get('fp') or '')[:400])
+                       _ip(request))
     except jobs.AdmissionError as e:
         raise HTTPException(e.status, str(e))
     return {'id': j['id'], 'account': plans.account_view(request.state.user)}
+
+
+PHOTO_BODY_MAX = photos.MAX_TOTAL + 1024 * 1024  # the photos plus the typed fields and multipart framing
+TOO_BIG = 'Your photos add up to more than 250 MB. Choose fewer or smaller photos.'
+PHOTO_SLOT_WAIT = 20         # seconds a request waits for a free upload slot before it is told to try again
+PHOTO_MIN_RATE = 64 * 1024   # bytes a second an upload must average (after the grace period) to keep its slot
+PHOTO_READ_GRACE = 30        # seconds before that rate counts: connection set-up and a slow first chunk
+PHOTO_DEADLINE = float(os.getenv('PHOTO_UPLOAD_DEADLINE', '600'))  # seconds one upload may take in all, however it trickles
+PHOTO_PER_NETWORK = int(os.getenv('PHOTO_UPLOADS_PER_NETWORK', '1'))  # uploads at once from one /24 or /64
+# ponytail: each upload is held in memory once (up to ~250 MB); two at a time bounds the web process. Raise with its memory.
+_photo_slots = asyncio.Semaphore(int(os.getenv('PHOTO_UPLOAD_SLOTS', '2')))
+_uploading = set()  # owners with an upload in progress in this (single) web process: one at a time each
+_uploading_nets = {}  # network -> uploads in progress from it
+
+
+class _Photo:
+    """One photo part, kept as the bytes arrive: MultiPartParser.parse writes each chunk here instead of to a spooled
+    file, so the body is held once and nothing is copied out again. Past photos.MAX_BYTES it is refused at once."""
+    def __init__(self, filename):
+        self.filename, self.data = filename, bytearray()
+
+    async def write(self, chunk):
+        self.data += chunk
+        if len(self.data) > photos.MAX_BYTES:
+            raise MultiPartException('A photo is larger than 15 MB')
+
+    async def seek(self, _offset):  # parse() rewinds each finished file; there is nothing to rewind
+        pass
+
+
+class _PhotoForm(MultiPartParser):
+    """The photo upload's parser: fields stay small (max_part_size), photo parts go straight into _Photo buffers, so no
+    part is spooled and nothing is written to disk."""
+
+    def on_headers_finished(self):
+        super().on_headers_finished()
+        part = self._current_part
+        if part.file is not None:
+            self._files_to_close_on_error.pop().close()  # the empty spooled file the base class made is never used
+            part.file = _Photo(part.file.filename)
+
+
+async def _capped(stream, limit):
+    """The body, refused past `limit` bytes, once it falls behind PHOTO_MIN_RATE, or at PHOTO_DEADLINE however it
+    trickles: a stalled or slow client cannot hold an upload slot (uvicorn itself has no body-read timeout)."""
+    got, start, chunks = 0, time.monotonic(), stream.__aiter__()
+    while True:
+        due = min(start + PHOTO_READ_GRACE + got / PHOTO_MIN_RATE, start + PHOTO_DEADLINE)
+        try:
+            async with asyncio.timeout(max(0.01, due - time.monotonic())):
+                chunk = await chunks.__anext__()
+        except StopAsyncIteration:
+            return
+        except TimeoutError:
+            raise HTTPException(408, 'The upload was too slow and has stopped. Check your connection, or choose fewer or '
+                                     'smaller photos, and try again.')
+        got += len(chunk)
+        if got > limit:
+            raise HTTPException(413, TOO_BIG)
+        yield chunk
+
+
+@app.post('/api/jobs/photos')
+async def create_photo_job(request: Request):
+    """'Your own photos': one multipart request with the photos and the typed facts (app.jobs.admit_photos)."""
+    length = request.headers.get('content-length', '')
+    if length.isdigit() and int(length) > PHOTO_BODY_MAX:
+        raise HTTPException(413, TOO_BIG)
+    user, ip = request.state.user, _ip(request)  # signed in: the Gate refused anyone else before this runs
+    net = store.net_of(ip)
+    if user in _uploading:
+        raise HTTPException(429, 'You are already uploading photos for a reel. Wait for that upload to finish.')
+    _uploading.add(user)
+    counted = False
+    try:
+        # the cheap refusals (Drive, credit) before this upload takes a slot or a byte of its body is read
+        try:
+            await run_in_threadpool(jobs.precheck_photos, user, request.headers.get('idempotency-key'), ip)
+        except jobs.AdmissionError as e:
+            raise HTTPException(e.status, str(e))
+        if _uploading_nets.get(net, 0) >= PHOTO_PER_NETWORK:
+            raise HTTPException(429, 'Someone on your network is already uploading photos. Try again when that upload has finished.')
+        _uploading_nets[net], counted = _uploading_nets.get(net, 0) + 1, True
+        try:
+            async with asyncio.timeout(PHOTO_SLOT_WAIT):
+                await _photo_slots.acquire()
+        except TimeoutError:
+            raise HTTPException(503, 'Photo uploads are busy right now. Try again in a minute.')
+        try:
+            try:
+                form = await _PhotoForm(request.headers, _capped(request.stream(), PHOTO_BODY_MAX),
+                                        max_files=photos.MAX_PHOTOS + 1, max_fields=photos.MAX_PHOTOS + 20,
+                                        max_part_size=64 * 1024).parse()
+            except MultiPartException:
+                raise HTTPException(400, f'Choose {photos.MIN_PHOTOS} to {photos.MAX_PHOTOS} photos, each under 15 MB, '
+                                         'and try again')
+            files = [(f.filename or '', f.data) for f in form.getlist('photos') if isinstance(f, _Photo)]  # no copy
+            fields = {k: form.get(k) for k in ('title', 'location', 'highlights', 'style', 'ai_resolution')}
+            fields.update(delete_inputs=form.get('delete_inputs') != 'false',  # ai_motion: never on own photos (admit_photos)
+                          quotes_real=form.get('quotes_real') == 'true', rooms=form.getlist('room'),
+                          quotes=[{'text': t, 'stars': s} for t, s in zip(form.getlist('quote_text'), form.getlist('quote_stars'))])
+            del form
+            try:
+                j = await run_in_threadpool(jobs.admit_photos, user, fields, files, request.headers.get('idempotency-key'), ip)
+            except jobs.AdmissionError as e:
+                raise HTTPException(e.status, str(e))
+        finally:
+            _photo_slots.release()
+    finally:
+        _uploading.discard(user)
+        if counted:
+            _uploading_nets[net] -= 1
+            if not _uploading_nets[net]:
+                del _uploading_nets[net]
+    return {'id': j['id'], 'account': plans.account_view(user)}
 
 
 @app.get('/api/jobs/{jid}')
@@ -789,7 +1177,7 @@ def job_video(request: Request, jid: str, variant: str = 'primary', download: in
 def library(user):
     groups, order = {}, []
     for v in _views(user, jobs.list_for(user, 200)):
-        lid = listing_id_of(v['listing']['url']) or v['listing']['url']
+        lid = v['key']  # the listing, or for own-photo reels the photo set
         if lid not in groups:
             groups[lid] = {'listing': {**v['listing'], 'id': lid}, 'jobs': [], 'latest': v, 'poster': v['poster']}
             order.append(lid)
@@ -815,6 +1203,49 @@ def reels_index(request: Request):
         if lid and v['status'] == 'done':
             out.setdefault(lid, []).append({'id': v['id'], 'created': v['created'], 'drive_link': v['drive_link']})
     return out
+
+
+# ---------------- listing photos ----------------
+
+# ponytail: the one Airbnb CDN host seen in listing, search and co-host data; add a host here when another appears.
+IMG_HOSTS = ('a0.muscache.com',)
+IMG_MAX = 8 * 1024 * 1024
+IMG_MAGIC = ((b'\xff\xd8\xff', 'image/jpeg'), (b'\x89PNG\r\n\x1a\n', 'image/png'), (b'GIF87a', 'image/gif'), (b'GIF89a', 'image/gif'))
+
+
+def img_src(url):
+    """Pages show listing photos through /img, so a visitor's browser never contacts Airbnb's CDN."""
+    return '/img?u=' + quote(url, safe='') if url else None
+
+
+def _image_type(body):
+    """From the bytes, not the upstream header: only raster formats a browser shows (never SVG or HTML)."""
+    for magic, kind in IMG_MAGIC:
+        if body.startswith(magic):
+            return kind
+    if body[:4] == b'RIFF' and body[8:12] == b'WEBP':
+        return 'image/webp'
+    return 'image/avif' if body[4:12] in (b'ftypavif', b'ftypavis') else None
+
+
+@app.get('/img')
+def image_proxy(request: Request, u: str = ''):
+    """Signed-in only (the Gate). https to IMG_HOSTS only, every redirect re-checked (app.fetch), size-capped."""
+    try:
+        with at_once(request.state.user, 'img'):
+            # WebP, not AVIF: the CDN answers AVIF when asked, which Safari before 16 cannot show.
+            _, body = fetch.get(u, headers={'User-Agent': listing_search.UA['User-Agent'], 'Accept': 'image/webp,image/jpeg,image/png'},
+                                timeout=20, max_bytes=IMG_MAX, hosts=IMG_HOSTS, record_blocks=False)  # the user chose u
+    except airbnb.Unavailable as e:
+        raise HTTPException(503, str(e))
+    except ValueError:
+        raise HTTPException(400, 'Not an allowed image')
+    except httpx.HTTPError:
+        raise HTTPException(502, 'Image unavailable')
+    kind = _image_type(body)
+    if not kind:
+        raise HTTPException(400, 'Not an allowed image')
+    return Response(body, media_type=kind, headers={'Cache-Control': 'private, max-age=86400'})
 
 
 # ---------------- listing search ----------------
@@ -860,23 +1291,43 @@ def api_places(q: str = ''):
     return res
 
 
+def _airbnb_on():
+    """Kill switch: features that read Airbnb refuse with the same notice the page shows."""
+    if not airbnb.enabled():
+        raise HTTPException(503, airbnb.DISABLED)
+
+
+def _unblocked(res):
+    """A listing taken down from ReelSieve never shows in Find a listing (so neither do its photos)."""
+    items = store.without_blocked_listings(res.get('items') or [])
+    return {**res, 'items': items, **({'count': len(items)} if 'count' in res else {})}
+
+
 @app.get('/api/search')
-def api_search(location: str, checkin: str = '', checkout: str = '', adults: int = 2, offset: int = 0, pages: int = 3):
+def api_search(request: Request, location: str, checkin: str = '', checkout: str = '', adults: int = 2, offset: int = 0, pages: int = 3):
     """In-app listing picker: public Airbnb search results (no login)."""
+    _airbnb_on()
     if not location.strip():
         raise HTTPException(400, 'Enter a location')
-    try:
-        return listing_search.search(location[:120], checkin or None, checkout or None, adults, offset, min(max(pages, 1), 5))
-    except Exception:
-        raise HTTPException(502, 'Search failed — try again')
+    with at_once(request.state.user, 'lookup'):
+        try:
+            return _unblocked(listing_search.search(location[:120], checkin or None, checkout or None, adults, offset, min(max(pages, 1), 5)))
+        except airbnb.Unavailable as e:
+            raise HTTPException(503, str(e))
+        except Exception:
+            raise HTTPException(502, 'Search failed — try again')
 
 
 @app.get('/api/search/more')
-def api_search_more(location: str, page: int, checkin: str = '', checkout: str = '', adults: int = 2):
-    try:
-        return listing_search.search_page(location[:120], checkin or None, checkout or None, adults, page)
-    except Exception:
-        raise HTTPException(502, 'Load more failed — try again')
+def api_search_more(request: Request, location: str, page: int, checkin: str = '', checkout: str = '', adults: int = 2):
+    _airbnb_on()
+    with at_once(request.state.user, 'lookup'):
+        try:
+            return _unblocked(listing_search.search_page(location[:120], checkin or None, checkout or None, adults, page))
+        except airbnb.Unavailable as e:
+            raise HTTPException(503, str(e))
+        except Exception:
+            raise HTTPException(502, 'Load more failed — try again')
 
 
 # ---------------- Google Drive ----------------
@@ -929,12 +1380,13 @@ def gdrive_status(request: Request):
 
 @app.post('/api/gdrive/disconnect')
 def gdrive_disconnect(request: Request):
-    warning = None
+    """Photos the customer asked us to delete go first, while the grant still reaches them (as deactivate and erase)."""
+    warnings = [admin.drop_photo_inputs(database.user_id(request.state.user))]
     try:
         gdrive.disconnect(request.state.user)
     except RuntimeError as e:
-        warning = str(e)
-    return {**gdrive.status(request.state.user), 'warning': warning}
+        warnings.append(str(e))
+    return {**gdrive.status(request.state.user), 'warning': ' '.join(w for w in warnings if w) or None}
 
 
 # ---------------- outreach (drafted here, sent by the customer) ----------------
@@ -947,27 +1399,44 @@ def outreach_page(request: Request):
     return tpl.TemplateResponse(request, 'outreach.html', {
         'csrf': csrf_for(request), 'stats': store.outreach_stats(u), 'cities': store.cities(u), 'rows': rows,
         'default_message': os.getenv('COHOST_MESSAGE') or COHOST_MESSAGE, 'linkedin_default': linkedin.CONNECT_DEFAULT,
-        'daily_cap': DAILY_CAP, 'cap': DAILY_CAP, 'sent_today': store.sent_today(u)})
+        'daily_cap': DAILY_CAP, 'cap': DAILY_CAP, 'sent_today': store.sent_today(u),
+        'b2b_template': companies.TEMPLATE, 'b2b_categories': companies.CATEGORIES, 'b2b_snapshot': companies.meta().get('snapshot'),
+        'b2b_sender': (store.get_account(u) or {}).get('b2b_sender') or {}})
+
+
+def outreach_allowed(items):
+    """People who objected never reappear, nor do listings taken down from ReelSieve."""
+    return store.unsuppressed(store.without_blocked_listings(items))
 
 
 @app.get('/api/outreach/cohosts')
-def api_cohosts(city: str = ''):
+def api_cohosts(request: Request, city: str = ''):
+    _airbnb_on()
     if not city.strip():
         raise HTTPException(400, 'Enter a city')
-    try:
-        return cohost.discover(city.strip()[:120])
-    except Exception:
-        raise HTTPException(502, 'Lookup failed — try again')
+    with at_once(request.state.user, 'lookup'):
+        try:
+            res = cohost.discover(city.strip()[:120])
+        except airbnb.Unavailable as e:
+            raise HTTPException(503, str(e))
+        except Exception:
+            raise HTTPException(502, 'Lookup failed — try again')
+    return {**res, 'items': outreach_allowed(res.get('items') or [])}
 
 
 @app.get('/api/outreach/linkedin')
-def api_linkedin(city: str = '', role: str = 'property manager'):
+def api_linkedin(request: Request, city: str = '', role: str = 'property manager'):
+    _airbnb_on()
     if not city.strip():
         raise HTTPException(400, 'Enter a city')
-    try:
-        return linkedin.build(city.strip()[:120], (role.strip() or 'property manager')[:80])
-    except Exception:
-        raise HTTPException(502, 'Lookup failed — try again')
+    with at_once(request.state.user, 'lookup'):
+        try:
+            res = linkedin.build(city.strip()[:120], (role.strip() or 'property manager')[:80])
+        except airbnb.Unavailable as e:
+            raise HTTPException(503, str(e))
+        except Exception:
+            raise HTTPException(502, 'Lookup failed — try again')
+    return {**res, 'items': outreach_allowed(res.get('items') or [])}
 
 
 @app.post('/api/outreach/queue')
@@ -977,9 +1446,69 @@ async def api_queue(request: Request):
     ids = [store.add_outreach(u, ch, str(it.get('name') or '')[:200], str(it.get('url') or '')[:500], str(it.get('city') or '')[:120],
                               str(it.get('message') or '')[:3000],
                               meta={**{k: it.get(k) for k in ('id', 'listing_title', 'company') if k in it},
+                                    'listing_url': str(it.get('listing_url') or '')[:300],
                                     'airbnb_profile': linkedin.airbnb_profile(it.get('airbnb_profile'))})
-           for it in (b.get('items') or [])[:25]]
+           for it in outreach_allowed([it for it in (b.get('items') or [])[:25] if isinstance(it, dict)])]
     return {'ok': True, 'ids': ids, 'rows': store.outreach_rows(u), 'stats': store.outreach_stats(u)}
+
+
+@app.get('/api/outreach/companies')
+def api_companies(place: str = '', category: str = '', page: int = 1):
+    """UK property companies from the Companies House register (business to business; app/companies.py)."""
+    try:
+        return companies.search(place, category, page)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post('/api/outreach/companies/queue')
+async def api_company_queue(request: Request):
+    b, u = await request.json(), request.state.user
+    try:
+        rid = companies.queue(u, b.get('company_number'), b.get('template'), b.get('sender'))
+    except LookupError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {'ok': True, 'id': rid, 'stats': store.outreach_stats(u)}
+
+
+def _suppress(item, user):
+    """Do not contact, for every user: recorded against the account marking it and limited per day (store.suppress)."""
+    if not store.suppress(item, user):
+        raise HTTPException(429, 'You have reached the daily limit for marking prospects as do not contact. Do not contact '
+                                 'this one meanwhile, and mark it again tomorrow. If they want it done today, they can use '
+                                 'our privacy request form.')
+
+
+@app.post('/api/outreach/companies/suppress')
+async def api_company_suppress(request: Request):
+    """Do not contact: the company never appears in anyone's results again (a keyed hash of its number is kept).
+    Only companies in the register snapshot, recorded against this account and capped per day, so no account can wipe
+    the list for everyone; python -m app.admin unsuppress undoes one account's marks."""
+    n = companies.number((await request.json()).get('company_number'))
+    if not n:
+        raise HTTPException(400, 'That is not a company number')
+    if not companies.exists(n):
+        raise HTTPException(404, 'That company is not in the register snapshot')
+    _suppress({'company_number': n}, request.state.user)
+    return {'ok': True}
+
+
+@app.post('/api/outreach/suppress')
+async def api_out_suppress(request: Request):
+    """Do not contact: the prospect objected. Suppressed for every user (hashes only) and this row deleted."""
+    b, u = await request.json(), request.state.user
+    r = store.outreach_get(int(b.get('id') or 0), u)
+    if not r:
+        raise HTTPException(404)
+    try:
+        meta = json.loads(r.get('meta') or '{}')
+    except ValueError:
+        meta = {}
+    _suppress({**(meta if isinstance(meta, dict) else {}), 'name': r['name'], 'url': r['url']}, u)
+    store.outreach_delete(r['id'], u)
+    return {'ok': True, 'stats': store.outreach_stats(u)}
 
 
 @app.post('/api/outreach/status')
@@ -1013,10 +1542,25 @@ def api_out_csv(request: Request):
 
 # ---------------- settings ----------------
 
+EVENT_LABELS = {'plan': 'Plan or credits changed', 'password_reset': 'Password reset', 'deactivate': 'Removed (deactivated)',
+                'erase': 'Account erased', 'order_settle': 'Order marked paid', 'order_cancel': 'Order cancelled',
+                'order_link': 'Pay link set', 'privacy_request_handled': 'Privacy request handled',
+                'invoice_export': 'Invoice CSV downloaded',
+                'unsuppress': 'Do-not-contact marks undone', 'request_unsuppress': 'Do-not-contact from a privacy request undone',
+                'listing_block': 'Listing blocked', 'listing_unblock': 'Listing unblocked', 'listing_confirm': 'Listing removal confirmed',
+                'airbnb_resume': 'Airbnb fetching resumed'}
+
+
 def settings_view():
     """Cloud-managed configuration, read-only: secrets show only whether they are set."""
-    return [{'key': k, 'configured': bool((os.getenv(k) or '').strip()), 'secret': secret, 'hint': hint,
-             'value': '' if secret else (os.getenv(k) or '')} for k, secret, hint in SETTINGS]
+    out = []
+    for k, secret, hint in SETTINGS:
+        v, default = (os.getenv(k) or '').strip(), SETTING_DEFAULTS.get(k)
+        out.append({'key': k, 'configured': bool(v or default), 'secret': secret, 'hint': hint,
+                    'value': '' if secret else (v or (default + ' (default)' if default else '')),
+                    'state': ('On' if airbnb.enabled() else 'Off') if k == 'AIRBNB_FETCH_ENABLED' else
+                             'Default' if default and not v else None})
+    return out
 
 
 @app.get('/settings', response_class=HTMLResponse)
@@ -1025,6 +1569,13 @@ def settings(request: Request, saved: int = 0, flash: str = ''):
         return RedirectResponse('/account' + (('?flash=' + quote(flash)) if flash else ('?saved=1' if saved else '')), status_code=303)
     return tpl.TemplateResponse(request, 'settings.html', {
         'settings': settings_view(), 'gdrive': gdrive.status(request.state.user), 'saved': bool(saved), 'flash': flash[:400],
+        'events': store.admin_events(50), 'event_labels': EVENT_LABELS,
+        'requests': store.open_privacy_requests(), 'request_types': store.PRIVACY_REQUEST_TYPES, 'now': time.time(),
+        'form_marks': store.request_suppressions(),
+        'backup': invoices.status(),
+        'referral_totals': referrals.totals(), 'referral_limit': referrals.MONTHLY_LIMIT,
+        'companies': companies.status(),
+        'blocked': store.blocked_listings(), 'airbnb_state': airbnb.state(),
         'redirect_uri': _redirect_uri(request), 'webhook_base': (public_base() or str(request.base_url).rstrip('/'))})
 
 
@@ -1034,8 +1585,22 @@ def settings_api(request: Request):
     return {s['key'].lower(): {'configured': s['configured']} for s in settings_view()}
 
 
+@app.get('/api/invoices/export.csv')
+def api_invoices_csv(request: Request):
+    """Every paid order, as the daily India backup writes it, for the accountant. Admins only; each download is logged."""
+    _require_admin(request)
+    body, n = invoices.export()
+    store.admin_event('invoice_export', request.state.user, rows=n)
+    name = f"reelsieve-invoices-{time.strftime('%Y-%m-%d', time.gmtime())}.csv"
+    return Response(body, media_type='text/csv; charset=utf-8',
+                    headers={'Content-Disposition': f'attachment; filename="{name}"', 'Cache-Control': 'no-store'})
+
+
 @app.get('/account', response_class=HTMLResponse)
 def account_page(request: Request, saved: int = 0, flash: str = ''):
     return tpl.TemplateResponse(request, 'account.html', {
         'account': plans.account_view(request.state.user), 'plans': plans.public_plans(),
-        'gdrive': gdrive.status(request.state.user), 'saved': bool(saved), 'flash': flash[:400]})
+        'gdrive': gdrive.status(request.state.user), 'saved': bool(saved), 'flash': flash[:400],
+        'records_years': retention.FINANCIAL_RECORDS_YEARS, 'team_changes': store.team_changes(request.state.user),
+        'referral': {'link': site_url() + '/r/' + referrals.code_for(request.state.user),
+                     'rewarded': referrals.rewarded_count(request.state.user), 'monthly_limit': referrals.MONTHLY_LIMIT}})

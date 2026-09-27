@@ -38,3 +38,9 @@ def test_worker_only_health_and_role_flags(db, monkeypatch):
         assert body == {'ok': True, 'role': 'worker', 'build': 'test-build', 'db': True}
     finally:
         server.shutdown()
+
+
+def test_web_process_writes_no_access_log():
+    """uvicorn's access log prints client addresses and full query strings (OAuth code/state, Stripe session id)."""
+    web = start.commands()[0]
+    assert web[2] == 'uvicorn' and '--no-access-log' in web

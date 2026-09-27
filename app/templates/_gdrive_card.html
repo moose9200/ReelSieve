@@ -5,7 +5,7 @@
     <span class="pill pill-plain {{ 'pill-done' if gdrive.connected else ('pill-running' if gdrive.reconnect else 'pill-neg') }}" id="gdrive-pill">{% if gdrive.connected %}Connected{% if gdrive.email %} · {{ gdrive.email }}{% endif %}{% elif gdrive.reconnect %}Reconnect needed{% else %}Not connected{% endif %}</span>
   </div>
   <p class="hint">Finished reels are delivered to a folder called "<strong>{{ gdrive.folder }}</strong>" in <strong>your</strong> Google Drive, named after the listing URL. A reel can only be made once your Drive is connected — ReelSieve keeps no copy.</p>
-  <p class="hint">ReelSieve asks only for the <code>drive.file</code> permission, so it sees the files it creates for you and nothing else in your Drive. Reels are <strong>private</strong> until you choose to share one from its page. Disconnect at any time.</p>
+  <p class="hint">ReelSieve asks Google for the <code>drive.file</code> permission, so it sees only the files it creates for you and nothing else in your Drive, plus your Google account's email address and ID to show which account is connected. Reels are <strong>private</strong> until you choose to share one from its page. Disconnect at any time.</p>
   {% if gdrive.reconnect %}<p class="hint hint-warn" role="alert">Google access for {{ gdrive.email or 'your account' }} expired or was revoked. Reconnect to keep delivering reels.</p>{% endif %}
   {% if not gdrive.configured %}<p class="hint hint-warn">Google Drive delivery is not set up on this install yet. {% if request.state.is_admin %}Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in the hosting environment.{% else %}Ask the ReelSieve team to switch it on.{% endif %}</p>{% endif %}
   <div class="actions">

@@ -13,10 +13,16 @@
 
 <input type="hidden" id="or-csrf" value="{{ csrf_for(request) }}">
 
+<section class="card" id="outreach-rules">
+  <div class="section-head"><h2>Before you message anyone</h2></div>
+  <p class="hint">UK law (PECR) treats direct messages on platforms such as Airbnb and LinkedIn as electronic mail. Message individuals and sole traders only if they have given consent to hear from you, and respect every opt-out straight away. Airbnb's Terms do not allow commercial messages without the recipient's consent. You send every message yourself, from your own account, and you are responsible for it.</p>
+</section>
+
 <section class="card" id="cohost-card">
   <p class="eyebrow">AIRBNB CO-HOST NETWORK</p>
   <div class="section-head"><h2>Find co-hosts</h2><span class="pill pill-skipped">You send each one</span></div>
-  <p class="hint">Co-hosts and property managers list themselves here to be contacted. Find them by city, personalise, add them to the tracker, then open each one and send the message from your own Airbnb account. ReelSieve never sends for you — keep it to about {{ cap }} a day so it stays human.</p>
+  {% if not airbnb_enabled() %}<p class="hint hint-warn" role="status">{{ airbnb_disabled }}</p>{% endif %}
+  <p class="hint">Hosts come from Airbnb's Co-Host Network page for the city when Airbnb shows it, otherwise from the hosts behind the city's best-reviewed listings. Find them by city, personalise, add them to the tracker, then open each one and send the message from your own Airbnb account. ReelSieve never sends for you — keep it to about {{ cap }} a day so it stays human.</p>
   <p class="hint">Marked sent today: <span id="sent-today">{{ sent_today }}</span>.</p>
 
   <div class="or-find-row">
@@ -24,7 +30,7 @@
       <label for="co-city">City</label>
       <input type="text" id="co-city" placeholder="Bournemouth, United Kingdom" list="city-list" autocomplete="off" spellcheck="false">
     </div>
-    <button type="button" class="btn btn-primary" id="co-find">Find co-hosts</button>
+    <button type="button" class="btn btn-primary" id="co-find"{% if not airbnb_enabled() %} disabled{% endif %}>Find co-hosts</button>
   </div>
   <datalist id="city-list">
     {%- for c in cities or [] %}<option value="{{ c }}"></option>{% endfor -%}
@@ -52,6 +58,7 @@
 <section class="card" id="li-card">
   <p class="eyebrow">LINKEDIN</p>
   <div class="section-head"><h2>LinkedIn prospects</h2><span class="pill pill-skipped">Manual send</span></div>
+  {% if not airbnb_enabled() %}<p class="hint hint-warn" role="status">{{ airbnb_disabled }}</p>{% endif %}
   <p class="hint">LinkedIn's terms forbid automated sending, so ReelSieve prepares the list and the words — you paste and send. Copy each message, or export the list as CSV.</p>
   <p class="hint">Airbnb shows hosts by first name only, so ReelSieve can't know anyone's exact LinkedIn profile. <b>Search LinkedIn</b> opens a people search for that name in that city; check who you pick against their <b>Airbnb profile</b> before you connect.</p>
 
@@ -64,7 +71,7 @@
       <label for="li-role">Role</label>
       <input type="text" id="li-role" placeholder="short let property manager" value="property manager" autocomplete="off" spellcheck="false">
     </div>
-    <button type="button" class="btn btn-primary" id="li-build">Build prospect list</button>
+    <button type="button" class="btn btn-primary" id="li-build"{% if not airbnb_enabled() %} disabled{% endif %}>Build prospect list</button>
     <a class="btn btn-secondary" id="li-export" href="/api/outreach/export.csv" download>Export CSV</a>
   </div>
 
@@ -76,6 +83,51 @@
     <textarea id="li-message" rows="5" spellcheck="true">{{ linkedin_default or '' }}</textarea>
   </div>
   <p class="hint">Tokens: <code>{name}</code> <code>{company}</code> <code>{city}</code>. Connection notes are capped at 300 characters — the counter turns amber past 300.</p>
+</section>
+
+<section class="card" id="companies-card">
+  <p class="eyebrow">COMPANIES HOUSE</p>
+  <div class="section-head"><h2>UK property companies (business to business)</h2><span class="pill pill-skipped">Companies only</span></div>
+  <p class="hint">Active UK companies (limited, unlimited and community interest companies) and LLPs on the official Companies House register whose business is holiday and short-stay accommodation, or managing property for others. Company details only: no officer or shareholder details. {% if b2b_snapshot %}From the register snapshot of {{ b2b_snapshot }}, refreshed monthly.{% else %}The first register snapshot has not been loaded yet, so there is nothing to search.{% endif %}</p>
+
+  <div class="or-find-row or-find-row-b2b">
+    <div class="field">
+      <label for="b2b-place">Town or postcode area</label>
+      <input type="text" id="b2b-place" placeholder="Bournemouth, BH or BH1" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="field">
+      <label for="b2b-category">Category</label>
+      <select id="b2b-category">
+        <option value="">All property companies</option>
+        {%- for key, c in (b2b_categories or {}).items() %}<option value="{{ key }}">{{ c[0]|capitalize }}</option>{% endfor -%}
+      </select>
+    </div>
+    <button type="button" class="btn btn-primary" id="b2b-find">Find companies</button>
+  </div>
+
+  <p class="or-statusline"><span class="form-status" id="b2b-status" role="status" aria-live="polite"></span></p>
+  <div id="b2b-results" class="or-results"></div>
+  <div class="actions or-mt hidden" id="b2b-pager">
+    <button type="button" class="btn btn-secondary btn-sm" id="b2b-prev">Previous</button>
+    <span class="hint" id="b2b-page" aria-live="polite"></span>
+    <button type="button" class="btn btn-secondary btn-sm" id="b2b-next">Next</button>
+  </div>
+</section>
+
+<section class="card" id="b2b-email-card">
+  <p class="eyebrow">COMPANIES HOUSE</p>
+  <div class="section-head"><h2>Business email</h2><span class="pill pill-skipped">You send each one</span></div>
+  <p class="hint" id="b2b-consent">When does a business email need consent? You can email a limited company or LLP without asking first, as long as you say who you are and give an easy way to opt out. This covers the company's own email addresses, such as those on its own website domain. A personal address such as Gmail belongs to an individual, so email it only if they have agreed. Sole traders and ordinary partnerships count as individuals, so email them only if they have agreed to hear from you. Whoever you write to, stop as soon as they ask. If you write to a named person at a company, data protection law covers their details too.</p>
+  <div class="grid-3 b2b-sender or-mt">
+    <div class="field"><label for="b2b-sender-name">Your name</label><input type="text" id="b2b-sender-name" autocomplete="name" placeholder="Priya Shah" value="{{ b2b_sender.name or '' }}"></div>
+    <div class="field"><label for="b2b-sender-business">Business name (required if you are writing for a business)</label><input type="text" id="b2b-sender-business" autocomplete="organization" placeholder="Reel Studio" value="{{ b2b_sender.business or '' }}"></div>
+    <div class="field"><label for="b2b-sender-email">Reply email</label><input type="email" id="b2b-sender-email" autocomplete="email" value="{{ b2b_sender.email or request.state.user or '' }}"></div>
+  </div>
+  <div class="field or-mt">
+    <label for="b2b-template">What each company receives</label>
+    <textarea id="b2b-template" rows="7" spellcheck="true">{{ b2b_template or '' }}</textarea>
+  </div>
+  <p class="hint">Token: <code>{company}</code>. <b>Queue</b> adds the company and its finished email to the tracker, where you copy it into your own email. Every email ends with your name, business and reply email, then an opt-out line: “If you would rather not hear from me again, reply "unsubscribe" or email [your reply email] and I will not contact you again.” ReelSieve always adds that ending, so it cannot be left out by mistake. When you queue, your name, business name and reply email are saved to your account so they are filled in next time. Deleting your account deletes them.</p>
 </section>
 
 <section class="card" id="tracker-card">
@@ -96,6 +148,7 @@
         <option value="">All channels</option>
         <option value="cohost">Co-host</option>
         <option value="linkedin">LinkedIn</option>
+        <option value="company">Company</option>
       </select>
     </div>
     <div class="field">
@@ -128,7 +181,7 @@
             <span class="or-when" data-ts="{{ r.ts }}">{{ r.ts }}</span>
             {% if r.sent_at %}<small class="or-sub">sent <span class="or-when" data-ts="{{ r.sent_at }}">{{ r.sent_at }}</span></small>{% endif %}
           </td>
-          <td data-label="Channel"><span class="or-chan">{{ 'Co-host' if r.channel == 'cohost' else ('LinkedIn' if r.channel == 'linkedin' else (r.channel or '—')) }}</span></td>
+          <td data-label="Channel"><span class="or-chan">{{ {'cohost': 'Co-host', 'linkedin': 'LinkedIn', 'company': 'Company'}.get(r.channel, r.channel or '—') }}</span></td>
           <td data-label="Name">
             <span class="or-name">{{ r.name or '—' }}</span>
             <small class="or-sub or-note{% if not r.note %} hidden{% endif %}">{{ r.note or '' }}</small>
@@ -149,6 +202,7 @@
               {% if r.airbnb_profile %}<a class="btn btn-secondary btn-sm" href="{{ r.airbnb_profile }}" target="_blank" rel="noopener">Airbnb profile ↗</a>{% endif %}
               <button type="button" class="btn btn-secondary btn-sm tr-copy" data-msg="{{ r.message or '' }}">Copy message</button>
               <button type="button" class="btn btn-secondary btn-sm tr-note" data-id="{{ r.id }}" data-note="{{ r.note or '' }}">Note</button>
+              <button type="button" class="btn btn-danger btn-sm tr-suppress" data-id="{{ r.id }}" title="They asked not to be contacted: removes them here and from every ReelSieve user's results">Do not contact</button>
             </div>
           </td>
         </tr>
@@ -158,7 +212,7 @@
   </div>
   <p class="empty hidden" id="tr-none">Nothing matches those filters.</p>
   {% else %}
-  <p class="empty">Nothing yet. Find co-hosts above, or build a LinkedIn list.</p>
+  <p class="empty">Nothing yet. Find co-hosts above, build a LinkedIn list, or queue a UK property company.</p>
   {% endif %}
 </section>
 {% endblock %}
