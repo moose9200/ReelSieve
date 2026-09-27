@@ -1,8 +1,9 @@
 """Every request ReelSieve makes to Airbnb (airbnb.* pages, muscache.com photos), from any process, passes here:
 the kill switch, the block cool-down, and one rate limit in PostgreSQL shared by the web and every worker.
 
-A block (403, 429, 451, 503 or a challenge page) records the time, pauses all Airbnb fetching everywhere for
-AIRBNB_BLOCK_COOLDOWN_MIN and raises Unavailable, which callers let through: no retry by another route.
+A block (401, 403, 407, 429, 451, 503 or a challenge page) is recorded in an append-only history, pauses all Airbnb
+fetching everywhere for AIRBNB_BLOCK_COOLDOWN_MIN and raises Unavailable, which callers let through: no retry by
+another route. A 451, or a block again after a pause ended, stops Airbnb fetching until an admin resumes it.
 """
 import contextvars
 import logging
@@ -19,7 +20,9 @@ from app import database
 BLOCKED = 'Airbnb is not serving this page to us right now. Try again later.'
 DISABLED = 'ReelSieve is not fetching from Airbnb right now. Try again later.'
 BUSY = 'Airbnb lookups are busy right now. Try again in a minute.'
-BLOCK_STATUSES = (403, 429, 451, 503)
+BLOCK_STATUSES = (401, 403, 407, 429, 451, 503)
+HARD_STATUSES = (451,)  # Unavailable For Legal Reasons: never resumed on a timer
+REPEAT_WINDOW = 24 * 3600  # a block within this long of an earlier one, after that one's pause ended, is a hard stop
 # Conservative: bot-wall challenge markers only. A normal Airbnb page mentions "datadome" and "recaptcha" in its config.
 CHALLENGE = re.compile(r'captcha-delivery\.com|px-captcha|_Incapsula_Resource|/cdn-cgi/challenge-platform|'
                        r'<title>\s*(?:Access Denied|Pardon Our Interruption|Just a moment\.\.\.)\s*</title>', re.I)
@@ -86,16 +89,25 @@ def cooldown():
     return float(setting('AIRBNB_BLOCK_COOLDOWN_MIN')) * 60
 
 
-def last_block(conn=None):
-    """The last block with the time fetching resumes, or None."""
+def state(conn=None):
+    """The newest block (or None), when its pause ends, whether an admin must resume (hard) and whether fetching is
+    stopped now. Resuming clears every block, so an uncleared newest block is the one that counts."""
     with database.transaction(conn) as c:
-        row = c.execute('SELECT ts,status,host,reason FROM airbnb_blocks WHERE id=1').fetchone()
-    return {**row, 'until': row['ts'] + cooldown()} if row else None
+        last = c.execute('SELECT * FROM airbnb_blocks ORDER BY ts DESC, id DESC LIMIT 1').fetchone()
+        hard = bool(c.execute('SELECT 1 FROM airbnb_blocks WHERE hard AND cleared_at IS NULL LIMIT 1').fetchone())
+    until = last['ts'] + cooldown() if last else None
+    return {'last': last, 'until': until, 'hard': hard,
+            'stopped': hard or bool(last and last['cleared_at'] is None and time.time() < until)}
+
+
+def resume():
+    """An admin checked: clear every block so fetching starts again. The history stays."""
+    with database.connect() as c:
+        return c.execute('UPDATE airbnb_blocks SET cleared_at=%s WHERE cleared_at IS NULL', (time.time(),)).rowcount
 
 
 def _refuse_if_paused(c):
-    b = last_block(c)
-    if b and time.time() < b['until']:
+    if state(c)['stopped']:
         raise Unavailable(BLOCKED)
 
 
@@ -122,9 +134,11 @@ def gate(url, bucket=None):
             _refuse_if_paused(c)
 
 
-def check(url, status, body=None, content_type=''):
-    """After every response: a block status, or a challenge page, records the block and stops this fetch path."""
-    if not kind(url):
+def check(url, status, body=None, content_type='', record=True):
+    """After every response: a block status, or a challenge page, records the block and stops this fetch path.
+    record=False, for a URL a user chose (the image proxy): nothing is recorded or raised, and the caller treats the
+    answer as a failed fetch, so one odd URL cannot pause the service for everyone."""
+    if not kind(url) or not record:
         return
     if status in BLOCK_STATUSES:
         reason = 'status'
@@ -133,12 +147,18 @@ def check(url, status, body=None, content_type=''):
         reason = 'challenge'
     else:
         return
-    host = urlsplit(url).hostname
+    host, now = urlsplit(url).hostname, time.time()
     with database.connect() as c:
-        c.execute('INSERT INTO airbnb_blocks(id,ts,status,host,reason) VALUES(1,%s,%s,%s,%s) ON CONFLICT (id) DO UPDATE '
-                  'SET ts=EXCLUDED.ts,status=EXCLUDED.status,host=EXCLUDED.host,reason=EXCLUDED.reason',
-                  (time.time(), status, host, reason))
-    log.warning('Airbnb block: %s answered %s (%s); all Airbnb fetching paused for %.0f min', host, status, reason, cooldown() / 60)
+        prior = c.execute('SELECT max(ts) AS ts FROM airbnb_blocks WHERE cleared_at IS NULL AND ts>%s',
+                          (now - REPEAT_WINDOW,)).fetchone()['ts']
+        # Refused again after a pause ended: stop until a person has checked. Refusals of requests already in flight
+        # when the first came (inside its pause) are the same block.
+        hard = status in HARD_STATUSES or (prior is not None and now - prior >= cooldown())
+        c.execute('INSERT INTO airbnb_blocks(ts,status,host,reason,hard) VALUES(%s,%s,%s,%s,%s)', (now, status, host, reason, hard))
+    if hard:
+        log.error('Airbnb block: %s answered %s (%s); all Airbnb fetching stopped until an admin resumes it', host, status, reason)
+    else:
+        log.warning('Airbnb block: %s answered %s (%s); all Airbnb fetching paused for %.0f min', host, status, reason, cooldown() / 60)
     raise Unavailable(BLOCKED)
 
 

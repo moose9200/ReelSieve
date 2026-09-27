@@ -878,6 +878,17 @@
     });
   });
 
+  // ---------- admin: resume Airbnb fetching after a block ----------
+  var abResume = document.getElementById("airbnb-resume");
+  if (abResume) abResume.addEventListener("click", function () {
+    var out = document.getElementById("airbnb-status");
+    if (!confirm("Resume Airbnb fetching? Do this only once you know why Airbnb refused us.")) return;
+    abResume.disabled = true; out.className = "form-status";
+    postJSON("/api/airbnb/resume", {})
+      .then(function () { window.location.reload(); })
+      .catch(function (e) { out.textContent = e.message; out.classList.add("is-error"); abResume.disabled = false; });
+  });
+
   // ---------- admin: orders ----------
   var ordList = document.getElementById("ord-list");
   if (ordList) {

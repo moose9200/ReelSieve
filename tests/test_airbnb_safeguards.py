@@ -223,11 +223,91 @@ def test_search_and_image_proxy_stop_on_a_block_and_say_why(web, airbnb_net, db)
     assert r.status_code == 503 and r.json()['detail'] == BLOCKED and len(airbnb_net.calls) == 1
 
 
-def test_a_blocked_photo_is_a_block_too(web, airbnb_net, db):
+def test_a_refused_photo_in_a_render_job_is_a_block(airbnb_net, db, tmp_path):
     airbnb_net.status['/im/'] = 403
-    r = web['alice'].get('/img', params={'u': PHOTO})
-    assert r.status_code == 503 and r.json()['detail'] == BLOCKED
+    with pytest.raises(airbnb.Unavailable, match='not serving'):
+        pipeline.download_photos({'photos': [{'label': '', 'url': PHOTO}]}, tmp_path / 'img')
     assert blocks(db)[0]['host'] == 'a0.muscache.com'
+
+
+def test_a_refused_photo_through_the_image_proxy_pauses_nothing(web, airbnb_net, db):
+    """/img takes any muscache URL a signed-in user sends, so its answer is never a reason to stop the service."""
+    airbnb_net.status['/im/'] = 403
+    assert web['alice'].get('/img', params={'u': PHOTO}).status_code == 400
+    assert blocks(db) == [] and pipeline.scrape_listing(ROOM)['city'] == 'Poole'
+
+
+@pytest.mark.parametrize('status', [401, 407])
+def test_an_authentication_refusal_is_a_block(airbnb_net, db, status):
+    airbnb_net.status['/rooms/'] = status
+    with pytest.raises(airbnb.Unavailable, match='not serving'):
+        pipeline.scrape_listing(ROOM)
+    assert blocks(db)[0]['status'] == status
+
+
+def test_co_host_lookup_never_tries_airbnb_com_after_an_answer_from_airbnb_co_uk(airbnb_net, db, monkeypatch):
+    airbnb_net.status['/host/'] = 404  # no Co-Host Network page for the city: the operators fallback, not another site
+    monkeypatch.setattr(cohost.listing_search, 'search', lambda *a, **k: {'items': []})
+    cohost.discover('Poole')
+    assert airbnb_net.calls == ['www.airbnb.co.uk/host/poole/co-hosts']
+
+
+def resume(web):
+    return post(web['admin'], '/api/airbnb/resume')
+
+
+def test_blocks_are_kept_and_a_repeat_after_the_cool_down_stops_fetching_until_an_admin_resumes(web, airbnb_net, db):
+    airbnb_net.status['/rooms/'] = 403
+    with pytest.raises(airbnb.Unavailable):
+        pipeline.scrape_listing(ROOM)
+    age_block(db, 31 * 60)
+    with pytest.raises(airbnb.Unavailable):
+        pipeline.scrape_listing(ROOM)  # refused again once the pause ended
+    assert [(b['status'], b['hard']) for b in blocks(db)] == [(403, False), (403, True)]
+    airbnb_net.status.clear()
+    age_block(db, 5 * 3600)
+    sent = len(airbnb_net.calls)
+    with pytest.raises(airbnb.Unavailable, match='not serving'):
+        pipeline.scrape_listing(ROOM)  # no timer restarts it
+    assert len(airbnb_net.calls) == sent
+    config = web['admin'].get('/settings').text.split('id="config-card"', 1)[1]
+    assert 'stopped until an admin resumes it' in config and 'id="airbnb-resume"' in config
+    assert post(web['alice'], '/api/airbnb/resume').status_code == 403
+    assert resume(web).status_code == 200
+    assert pipeline.scrape_listing(ROOM)['city'] == 'Poole'
+    assert len(blocks(db)) == 2 and all(b['cleared_at'] for b in blocks(db))  # the history stays
+    activity = web['admin'].get('/settings').text.split('id="events-card"', 1)[1].split('</section>', 1)[0]
+    assert 'Airbnb fetching resumed' in activity
+
+
+def test_unavailable_for_legal_reasons_stops_fetching_at_once_until_an_admin_resumes(web, airbnb_net, db):
+    airbnb_net.status['/rooms/'] = 451
+    with pytest.raises(airbnb.Unavailable):
+        pipeline.scrape_listing(ROOM)
+    airbnb_net.status.clear()
+    age_block(db, 3 * 3600)
+    with pytest.raises(airbnb.Unavailable):
+        pipeline.scrape_listing(ROOM)
+    assert resume(web).status_code == 200 and pipeline.scrape_listing(ROOM)['city'] == 'Poole'
+
+
+def test_refusals_of_requests_already_in_flight_are_one_block(airbnb_net, db, tmp_path):
+    airbnb_net.status['/im/'] = 403
+    d = {'photos': [{'label': '', 'url': f'https://a0.muscache.com/im/pictures/hosting/{n}.jpeg'} for n in range(6)]}
+    with pytest.raises(airbnb.Unavailable):
+        pipeline.download_photos(d, tmp_path / 'img')  # six threads, several may be refused at once
+    assert blocks(db) and not any(b['hard'] for b in blocks(db))
+    airbnb_net.status.clear()
+    age_block(db, 31 * 60)
+    assert pipeline.scrape_listing(ROOM)['city'] == 'Poole'
+
+
+def test_settings_say_whether_fetching_is_paused_now(web, db):
+    with db.connect() as c:
+        c.execute("INSERT INTO airbnb_blocks(ts,status,host,reason) VALUES(%s,429,'www.airbnb.co.uk','status')", (time.time() - 7200,))
+    config = web['admin'].get('/settings').text.split('id="config-card"', 1)[1]
+    assert 'Last Airbnb block' in config and 'resumed at' in config and 'paused until' not in config
+    assert 'id="airbnb-resume"' not in config
 
 
 @pytest.mark.parametrize('pause', ['cool-down', 'switched off'])
@@ -626,7 +706,7 @@ def test_privacy_notice_says_how_we_fetch_and_how_hosts_stop_reels(web):
     page = web['anon'].get('/privacy').text
     listing = page.split('<h2>Listing content and your videos</h2>', 1)[1].split('<h2>', 1)[0]
     hosts = page.split('<h2>If you are an Airbnb host or guest</h2>', 1)[1].split('<h2>', 1)[0]
-    for phrase in ('logged out', 'limited rate', 'blocks us', 'Remove my listing from ReelSieve'):
+    for phrase in ('logged out', 'limited rate', 'we pause at once', 'we stop until a person has checked', 'Remove my listing from ReelSieve'):
         assert phrase in listing, phrase
     assert 'Remove my listing from ReelSieve' in hosts and 'href="/privacy/request"' in hosts
     assert "Videos show the text, star rating and month of a guest review, but not the reviewer's name." in listing

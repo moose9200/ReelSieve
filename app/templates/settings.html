@@ -84,7 +84,15 @@
 <section class="card" id="config-card">
   <div class="section-head"><h2>Configuration</h2><span class="pill pill-skipped">Read-only</span></div>
   <p class="hint">Change these in the hosting environment's variables and redeploy. Google OAuth redirect URI to register: <code>{{ redirect_uri }}</code>. Payment webhook: <code>{{ webhook_base }}/api/billing/webhook/skydo</code>. Stripe webhook endpoint: <code>{{ webhook_base }}/api/billing/webhook/stripe</code>, events <code>checkout.session.completed</code> and <code>checkout.session.async_payment_succeeded</code>.</p>
-  <p class="hint">{% if airbnb_block %}Last Airbnb block: {{ airbnb_block.ts|when }}, {{ airbnb_block.host }} answered {{ airbnb_block.status }}{% if airbnb_block.reason == 'challenge' %} with a challenge page{% endif %}; Airbnb fetching paused until {{ airbnb_block.until|when }}.{% else %}No Airbnb block recorded.{% endif %}</p>
+  {% set b = airbnb_state.last %}
+  <p class="hint" id="airbnb-block">{% if b %}Last Airbnb block: {{ b.ts|when }}, {{ b.host }} answered {{ b.status }}{% if b.reason == 'challenge' %} with a challenge page{% endif %};
+    {% if airbnb_state.hard %}Airbnb fetching is stopped until an admin resumes it{% if b.status != 451 %}: Airbnb refused us again after a pause{% endif %}.
+    {% elif airbnb_state.stopped %}Airbnb fetching paused until {{ airbnb_state.until|when }}.
+    {% elif b.cleared_at %}an admin resumed Airbnb fetching at {{ b.cleared_at|when }}.
+    {% else %}Airbnb fetching resumed at {{ airbnb_state.until|when }}.{% endif %}
+    {% else %}No Airbnb block recorded.{% endif %}
+    {% if airbnb_state.stopped %}<button type="button" class="btn btn-secondary btn-sm" id="airbnb-resume">Resume Airbnb fetching</button>{% endif %}</p>
+  <p class="form-status" id="airbnb-status" role="status" aria-live="polite"></p>
   <ul class="config-list">
     {% for s in settings %}
     <li class="config-row">

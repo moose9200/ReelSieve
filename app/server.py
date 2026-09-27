@@ -629,6 +629,15 @@ async def blocked_listing_remove(request: Request):
     return {'ok': True}
 
 
+@app.post('/api/airbnb/resume')
+def airbnb_resume(request: Request):
+    """Admin: after checking why Airbnb refused us, start Airbnb fetching again (a hard stop never ends on its own)."""
+    _require_admin(request)
+    airbnb.resume()
+    store.admin_event('airbnb_resume', request.state.user, None)
+    return {'ok': True}
+
+
 def _upgrade_page(request, plan='', order=None, note='We send the invoice within a few hours and add your credits the moment it clears.', **extra):
     u = request.state.user
     return tpl.TemplateResponse(request, 'upgrade.html', {
@@ -1007,7 +1016,7 @@ def image_proxy(request: Request, u: str = ''):
         with at_once(request.state.user, 'img'):
             # WebP, not AVIF: the CDN answers AVIF when asked, which Safari before 16 cannot show.
             _, body = fetch.get(u, headers={'User-Agent': listing_search.UA['User-Agent'], 'Accept': 'image/webp,image/jpeg,image/png'},
-                                timeout=20, max_bytes=IMG_MAX, hosts=IMG_HOSTS)
+                                timeout=20, max_bytes=IMG_MAX, hosts=IMG_HOSTS, record_blocks=False)  # the user chose u
     except airbnb.Unavailable as e:
         raise HTTPException(503, str(e))
     except ValueError:
@@ -1265,7 +1274,7 @@ def api_out_csv(request: Request):
 EVENT_LABELS = {'plan': 'Plan or credits changed', 'password_reset': 'Password reset', 'deactivate': 'Removed (deactivated)',
                 'erase': 'Account erased', 'order_settle': 'Order marked paid', 'order_cancel': 'Order cancelled',
                 'order_link': 'Pay link set', 'privacy_request_handled': 'Privacy request handled',
-                'listing_block': 'Listing blocked', 'listing_unblock': 'Listing unblocked'}
+                'listing_block': 'Listing blocked', 'listing_unblock': 'Listing unblocked', 'airbnb_resume': 'Airbnb fetching resumed'}
 
 
 def settings_view():
@@ -1288,7 +1297,7 @@ def settings(request: Request, saved: int = 0, flash: str = ''):
         'settings': settings_view(), 'gdrive': gdrive.status(request.state.user), 'saved': bool(saved), 'flash': flash[:400],
         'events': store.admin_events(50), 'event_labels': EVENT_LABELS,
         'requests': store.open_privacy_requests(), 'request_types': store.PRIVACY_REQUEST_TYPES, 'now': time.time(),
-        'blocked': store.blocked_listings(), 'airbnb_block': airbnb.last_block(),
+        'blocked': store.blocked_listings(), 'airbnb_state': airbnb.state(),
         'redirect_uri': _redirect_uri(request), 'webhook_base': (public_base() or str(request.base_url).rstrip('/'))})
 
 

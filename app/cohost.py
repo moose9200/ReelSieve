@@ -18,15 +18,15 @@ def _slug(city):
 def _try_network(city):
     out=[]
     for u in (f'{BASE}/host/{_slug(city)}/co-hosts',f'https://www.airbnb.com/host/{_slug(city)}/co-hosts'):
-        # A network error gets one retry on airbnb.com; a block raises airbnb.Unavailable and stops here (no other route).
+        # Only a network failure gets one retry on airbnb.com. Any answer from airbnb.co.uk is final: a block raises
+        # airbnb.Unavailable, no page (404: most cities, checked live 27 Sep 2026) leaves discover() to the operators.
         try:r=airbnb.get(u,headers=UA,timeout=25)
         except httpx.HTTPError:continue
-        if r.status_code!=200 or 'co-host' not in r.text.lower():continue
-        t=r.text
-        for m in re.finditer(r'href="(/users/show/(\d+)[^"]*)"[^>]*>\s*([^<]{2,40})',t):
-            out.append({'id':'u'+m.group(2),'name':html.unescape(m.group(3)).strip(),'url':BASE+m.group(1),'listings':None,'tagline':'Co-Host Network',
-                        'profile_url':f'{BASE}/users/show/{m.group(2)}'})
-        if out:break
+        if r.status_code==200 and 'co-host' in r.text.lower():
+            for m in re.finditer(r'href="(/users/show/(\d+)[^"]*)"[^>]*>\s*([^<]{2,40})',r.text):
+                out.append({'id':'u'+m.group(2),'name':html.unescape(m.group(3)).strip(),'url':BASE+m.group(1),'listings':None,'tagline':'Co-Host Network',
+                            'profile_url':f'{BASE}/users/show/{m.group(2)}'})
+        break
     dedup={};[dedup.setdefault(o['url'],o) for o in out]
     return list(dedup.values())[:20]
 def _listing_host(lid):
