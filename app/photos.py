@@ -10,13 +10,17 @@ import re
 
 from PIL import Image, ImageOps
 
-MIN_PHOTOS, MAX_PHOTOS = 6, 40
+MIN_PHOTOS, MAX_PHOTOS = 8, 40   # 8: the intro and closing shots plus the 6 walkthrough scenes the reel guards require
 MAX_BYTES = 15 * 1024 * 1024      # each upload, as sent
 MAX_TOTAL = 250 * 1024 * 1024     # all uploads of one reel, as sent
 MAX_EDGE = 2560                   # listing photos arrive 1920 wide; this keeps headroom for camera moves
 MAX_PIXELS = 60_000_000           # refuse decompression bombs before decoding
 MAX_QUOTES = 3
 ROOMS = ('exterior', 'living', 'kitchen', 'bedroom', 'bathroom', 'garden', 'spa', 'view', 'other')
+
+
+QUOTES_REAL = ('Tick the box to confirm the guest quotes are real reviews from guests who stayed, '
+               'quoted word for word with the rating they gave')
 
 
 class PhotoError(ValueError):
@@ -39,7 +43,7 @@ def kind(data):
 def check_batch(files):
     """[(name, bytes)] within the count and size limits, else PhotoError. Runs before any decoding."""
     if not MIN_PHOTOS <= len(files) <= MAX_PHOTOS:
-        raise PhotoError(f'Choose 6 to 40 photos (you chose {len(files)})')
+        raise PhotoError(f'Choose {MIN_PHOTOS} to {MAX_PHOTOS} photos (you chose {len(files)})')
     for name, data in files:
         if len(data) > MAX_BYTES:
             raise PhotoError(f'{_name(name)} is larger than 15 MB')
@@ -56,10 +60,14 @@ def clean(data, name=''):
         im = Image.open(io.BytesIO(data), formats=[fmt])
         if im.width * im.height > MAX_PIXELS:
             raise PhotoError(f'{_name(name)} has too many pixels. Use a photo under 60 megapixels.')
-        im = ImageOps.exif_transpose(im).convert('RGB')
+        try:
+            im = ImageOps.exif_transpose(im)
+        except Exception:  # malformed EXIF (Pillow raises TypeError, struct.error…): keep it unrotated; EXIF goes below anyway
+            pass
+        im = im.convert('RGB')
     except PhotoError:
         raise
-    except (OSError, ValueError, SyntaxError, Image.DecompressionBombError):
+    except Exception:  # whatever a broken or hostile file makes the decoder raise is a refusal, never a server error
         raise PhotoError(f'{_name(name)} could not be read as an image') from None
     im.thumbnail((MAX_EDGE, MAX_EDGE), Image.LANCZOS)
     out = Image.new('RGB', im.size)  # a fresh image carries no info dict: no EXIF, XMP, ICC or comment
@@ -99,6 +107,8 @@ def details(fields):
         quotes.append({'text': text, 'stars': stars})
     if len(quotes) > MAX_QUOTES:
         raise PhotoError('Add up to 3 guest quotes')
+    if quotes and fields.get('quotes_real') is not True:  # DMCC Act 2024 Sch 20 para 13: no fake or edited reviews
+        raise PhotoError(QUOTES_REAL)
     return {'title': title, 'location': location, 'highlights': highlights, 'quotes': quotes}
 
 

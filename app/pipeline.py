@@ -136,9 +136,11 @@ def classify(label):
 def month_word(date):
     m=re.search(r'(January|February|March|April|May|June|July|August|September|October|November|December) (\d{4})',date or '')
     return f'{m.group(1)} {m.group(2)}' if m else time.strftime('%B %Y')
-def build_manifest(d,revs,imgdir,depth_dir,scenes_n=None,max_scenes=14,min_scenes=6,scores=None):
+def build_manifest(d,revs,imgdir,depth_dir,scenes_n=None,max_scenes=14,min_scenes=6,scores=None,fill_any=False):
     """Walkthrough order (research: exterior → entry/living → kitchen/dining → bedrooms → bath → outdoor → best feature + CTA;
-    3–5 s per shot, 8–15 photos). Photos stay grouped by room so the reel reads like walking the house; length = photo count × scene_seconds."""
+    3–5 s per shot, 8–15 photos). Photos stay grouped by room so the reel reads like walking the house; length = photo count × scene_seconds.
+    fill_any: short of min_scenes, any unused photo fills in as an 'other' scene, not only unlabelled ones (own photos, which
+    may all show one or two rooms)."""
     groups={}
     for p in d['photos']:groups.setdefault(classify(p['label']),[]).append(p)
     if scores:   # best-first inside each room; drop clearly bad frames (blurry / blown-out / off-shoot) when the room has alternatives
@@ -158,7 +160,7 @@ def build_manifest(d,revs,imgdir,depth_dir,scenes_n=None,max_scenes=14,min_scene
             if cands and len(chosen)<max_scenes:p=cands[0];chosen.append((k,p));used.add(p['url'])
     chosen.sort(key=lambda kp:order.index(kp[0]))
     if len(chosen)<min_scenes:   # unlabelled "Additional photos" only fill gaps
-        for p in groups.get('other',[]):
+        for p in groups.get('other',[])+(d['photos'] if fill_any else []):
             if len(chosen)>=min_scenes:break
             if p['url'] not in used:chosen.append(('other',p));used.add(p['url'])
     if hero is closer:closer=next((p for k,p in reversed(chosen) if k in('spa','garden','view','exterior')),hero)
@@ -168,7 +170,7 @@ def build_manifest(d,revs,imgdir,depth_dir,scenes_n=None,max_scenes=14,min_scene
     if last in (bg_trust,bg_review):last=next((p for p in [x for _,x in reversed(chosen)] if p not in (bg_trust,bg_review) and p is not hero),hero)
     am=[a.lower() for a in d.get('amenities',[])];city=d.get('city') or 'town'
     def has(*w):return any(any(x in a for x in w) for a in am)
-    facts={'city':city,'hood_or_city':city,'parking':'Free parking' if has('parking') else ('Superhost' if d.get('superhost') else f"{d.get('guests','')} guests".strip()),
+    facts={'city':city,'hood_or_city':city,'parking':'Free parking' if has('parking') else ('Superhost' if d.get('superhost') else (f"{d['guests']} guests" if d.get('guests') else '')),
            'living_fact':'  /  '.join([x for x in ['TV' if has('tv') else '','Wifi' if has('wifi') else '','Fireplace' if has('fireplace') else ''] if x]) or 'Space to relax',
            'kitchen_fact':'Full kitchen' if has('kitchen') else 'Dining space','beds_fact':'  /  '.join(x for x in [f"{d['beds']} beds" if d.get('beds') else '',f"sleeps {d['guests']}" if d.get('guests') else ''] if x) or city,
            'bath_fact':'  /  '.join([x for x in ['Bath' if has('bath') else '','Hairdryer' if has('hairdryer') else ''] if x]) or 'Fresh and modern',
@@ -180,7 +182,7 @@ def build_manifest(d,revs,imgdir,depth_dir,scenes_n=None,max_scenes=14,min_scene
         except Exception:return s
     scenes=[];seen_k={}
     for k,p in scene_items:
-        opts=CAPTIONS.get(k,CAPTIONS['other']);t,sub=opts[seen_k.get(k,0)%len(opts)];seen_k[k]=seen_k.get(k,0)+1;scenes.append({'image':str(imgdir/Path(p['url']).name),'title':fill(t),'subtitle':fill(sub) or city,'room':k})
+        opts=CAPTIONS.get(k,CAPTIONS['other']);t,sub=opts[seen_k.get(k,0)%len(opts)];seen_k[k]=seen_k.get(k,0)+1;scenes.append({'image':str(imgdir/Path(p['url']).name),'title':fill(t),'subtitle':fill(sub).strip().rstrip('/').strip() or city,'room':k})   # an empty fact leaves no dangling ' / '
     rv=pick_review(revs);badges=[b for b in ['Guest favourite' if d.get('guest_favourite') else '','Superhost' if d.get('superhost') else '',f"{d.get('count')} reviews" if d.get('count') else ''] if b]
     hooks=[x for x in [('Hot tub' if has('hot tub') else ''),('Sauna' if has('sauna') else ''),('Pool' if has('pool') else ''),(f"Sleeps {d['guests']}" if d.get('guests') else ''),('Free parking' if has('parking') else ''),('Wifi' if has('wifi') else '')] if x][:3]
     m={'brand':'','depth_dir':str(depth_dir),'scene_seconds':4.5,'intro_seconds':4.5,'outro_seconds':5.5,
@@ -313,6 +315,7 @@ def email_html(d,link,dur):
 # ---------------- orchestration ----------------
 # ---------------- own photos (no scraping): the customer's photos + typed facts ----------------
 PHOTO_LABEL={k:words[0] for k,words in ROUTE}   # a label classify() maps back to its room ('hot tub' -> spa)
+OWN_PHOTOS={'min_scenes':8,'fill_any':True}      # own photos may be unlabelled or all of one room: use more of them
 def photo_listing(facts,names):
     """The listing dict build_manifest expects, built from the customer's typed facts and photo files: nothing is fetched.
     `names` are the photo files in upload order; facts['rooms'] is aligned with them."""
@@ -320,7 +323,9 @@ def photo_listing(facts,names):
     d={'id':'photos','url':None,'title':facts['title'],'city':facts['location'],'rating':None,'count':None,'guests':None,'host':'',
        'amenities':list(facts.get('highlights') or []),'highlights':[],'categories':{},'superhost':False,'guest_favourite':False,
        'photos':[{'label':PHOTO_LABEL.get(rooms[i] if i<len(rooms) else 'other',PHOTO_LABEL['other']),'url':n} for i,n in enumerate(names)]}
-    revs=[{'stars':int(q['stars']),'date':'','text':q['text']} for q in facts.get('quotes') or []]
+    # The first quote as typed, at the rating given: pick_review's five-star preference is for scraped reviews only
+    # (DMCC Act 2024 Sch 20 para 13(5)(i): no greater prominence for positive reviews).
+    revs=[{'stars':int(q['stars']),'date':'','text':q['text']} for q in facts.get('quotes') or []][:1]
     return d,revs
 def own_photos_manifest(m,d):
     """Replace the wording that only fits an Airbnb listing. A typed guest quote is shown as the customer wrote it
@@ -363,7 +368,7 @@ def _reel(d,revs,imgdir,out_dir,work,ai_motion,cb,renderer,max_seconds,ai_resolu
     log(cb,f'Estimating depth for {len(short)} photos')
     subprocess.run([PY,str(HERE/'depth.py'),str(sel),str(work/'depth')],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     photoscore.add_depth(scores,work/'depth')
-    m=build_manifest(d,revs,imgdir,work/'depth',scores=scores,**({'min_scenes':8} if own else {}))
+    m=build_manifest(d,revs,imgdir,work/'depth',scores=scores,**(OWN_PHOTOS if own else {}))
     if own:m=own_photos_manifest(m,d)   # own photos may be unlabelled: use more of them than the 6-scene floor
     m['photo_scores']=scores
     used={Path(s['image']).name for s in m['scenes']}|{Path(m['intro']['image']).name,Path(m['outro']['image']).name}
