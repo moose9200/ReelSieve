@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app import admin, auth, billing, cohost, database, fetch, gdrive, hostmsg, jobs, linkedin, plans, retention, store
+from app import admin, auth, billing, cohost, database, fetch, gdrive, hostmsg, invoices, jobs, linkedin, plans, retention, store
 from app import search as listing_search
 
 HERE = Path(__file__).resolve().parent
@@ -49,6 +49,11 @@ SETTINGS = [('HF_KEY', True, 'Higgsfield API key — enables AI camera motion (b
             ('BILLING_WEBHOOK_SECRET', True, 'Secret your payment provider signs webhooks with'),
             ('STRIPE_SECRET_KEY', True, 'Stripe secret or restricted key (Checkout Sessions: write); card checkout needs this and the webhook secret'),
             ('STRIPE_WEBHOOK_SECRET', True, 'Signing secret (whsec_…) of the Stripe webhook endpoint for checkout.session.completed'),
+            ('INVOICE_BACKUP_BUCKET', False, 'S3 bucket in India for the daily invoice backup (Income-tax Rules 2026 r.46(8)); the backup is off until the bucket and both keys are set'),
+            ('INVOICE_BACKUP_REGION', False, 'Bucket region: ap-south-1 (Mumbai, the default) or ap-south-2 (Hyderabad)'),
+            ('INVOICE_BACKUP_ACCESS_KEY_ID', True, 'Access key ID of the IAM user allowed only s3:PutObject on invoices/*'),
+            ('INVOICE_BACKUP_SECRET_ACCESS_KEY', True, 'Secret access key of that IAM user'),
+            ('INVOICE_BACKUP_ENDPOINT', False, 'Optional: https:// endpoint of another S3-compatible store whose servers are in India'),
             ('BILLING_NOTE', False, 'Line shown to customers who choose invoice'),
             ('DEFAULT_MESSAGE', False, 'Default host message template')]
 
@@ -1167,7 +1172,8 @@ def api_out_csv(request: Request):
 
 EVENT_LABELS = {'plan': 'Plan or credits changed', 'password_reset': 'Password reset', 'deactivate': 'Removed (deactivated)',
                 'erase': 'Account erased', 'order_settle': 'Order marked paid', 'order_cancel': 'Order cancelled',
-                'order_link': 'Pay link set', 'privacy_request_handled': 'Privacy request handled'}
+                'order_link': 'Pay link set', 'privacy_request_handled': 'Privacy request handled',
+                'invoice_export': 'Invoice CSV downloaded'}
 
 
 def settings_view():
@@ -1184,6 +1190,7 @@ def settings(request: Request, saved: int = 0, flash: str = ''):
         'settings': settings_view(), 'gdrive': gdrive.status(request.state.user), 'saved': bool(saved), 'flash': flash[:400],
         'events': store.admin_events(50), 'event_labels': EVENT_LABELS,
         'requests': store.open_privacy_requests(), 'request_types': store.PRIVACY_REQUEST_TYPES, 'now': time.time(),
+        'backup': invoices.status(),
         'redirect_uri': _redirect_uri(request), 'webhook_base': (public_base() or str(request.base_url).rstrip('/'))})
 
 
@@ -1191,6 +1198,17 @@ def settings(request: Request, saved: int = 0, flash: str = ''):
 def settings_api(request: Request):
     _require_admin(request)
     return {s['key'].lower(): {'configured': s['configured']} for s in settings_view()}
+
+
+@app.get('/api/invoices/export.csv')
+def api_invoices_csv(request: Request):
+    """Every paid order, as the daily India backup writes it, for the accountant. Admins only; each download is logged."""
+    _require_admin(request)
+    body, n = invoices.export()
+    store.admin_event('invoice_export', request.state.user, rows=n)
+    name = f"reelsieve-invoices-{time.strftime('%Y-%m-%d', time.gmtime())}.csv"
+    return Response(body, media_type='text/csv; charset=utf-8',
+                    headers={'Content-Disposition': f'attachment; filename="{name}"', 'Cache-Control': 'no-store'})
 
 
 @app.get('/account', response_class=HTMLResponse)

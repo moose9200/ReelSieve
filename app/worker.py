@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 
-from app import gdrive, jobs, retention, store
+from app import gdrive, invoices, jobs, retention, store
 
 LEASE = int(os.getenv('WORKER_LEASE_SECONDS', '90'))
 BEAT = max(1.0, LEASE / 6)
@@ -231,8 +231,11 @@ def run_once(worker, command=render_command):
     sweep()
     if time.time() - _last_purge[0] > 3600:
         _last_purge[0] = time.time()  # first: a failing purge must never stop jobs being claimed; it retries next hour
-        store.purge_signals()
-        retention.run()
+        for task in (store.purge_signals, retention.run, invoices.backup):
+            try:  # one failing task never skips the others (the India backup is a legal duty)
+                task()
+            except Exception as e:
+                print(json.dumps({'hourly_task_failed': task.__name__, 'error': type(e).__name__}), flush=True)
     job = jobs.claim(worker, LEASE)
     if not job:
         return False
