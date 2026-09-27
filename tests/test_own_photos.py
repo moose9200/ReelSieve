@@ -4,6 +4,9 @@ Real isolated PostgreSQL, the synthetic Google fake (tests/fakes.py) and stub re
 nothing here fetches Airbnb, calls a paid provider or sends a message.
 """
 import io
+import json
+from pathlib import Path
+import sys
 import time
 
 from PIL import Image, PngImagePlugin
@@ -299,6 +302,138 @@ def test_photo_route_admits_a_multipart_upload(drive, db, owners):
     data, files = multipart(5)
     r = alice.post('/api/jobs/photos', data=data, files=files, headers=csrf(owners['alice']))
     assert r.status_code == 400 and '6 to 40 photos' in r.json()['detail']
+
+
+# ---------------- worker: fetch from Drive into scratch, render, deliver, delete scratch (and inputs if asked) ----------------
+
+RENDER = r'''
+import json, pathlib, sys
+d = pathlib.Path(sys.argv[1])
+got = sorted(p.name for p in (d / 'inputs').glob('*.jpg'))
+(d / 'reel.mp4').write_bytes(b'primary'); (d / 'reel-720p.mp4').write_bytes(b'small')
+print(json.dumps({'log': 'Rendering from ' + ','.join(got)}), flush=True)
+print(json.dumps({'result': {'video': str(d / 'reel.mp4'), 'video_720': str(d / 'reel-720p.mp4'), 'duration': 30.0,
+      'listing': {'url': None, 'title': 'Harbour Cottage', 'city': 'Whitby, UK', 'photo': None}}}), flush=True)
+'''
+FAIL = r'''
+import json, sys
+print(json.dumps({'error': 'QA guards failed'}), flush=True)
+sys.exit(1)
+'''
+
+
+def stub(script):
+    return lambda job, d: [sys.executable, '-c', script, str(d)]
+
+
+def run_worker(script):
+    from app import worker
+    worker._stop.clear()
+    job = jobs.claim('test-worker', 30)
+    worker.process(job, stub(script))
+    return job
+
+
+def test_worker_fetches_the_photos_from_drive_renders_delivers_and_deletes_every_copy(drive, db):
+    from app import worker
+    job = photo_job()
+    folder = job['params']['photos']['folder']
+    run_worker(RENDER)
+    done = jobs.get('alice@example.test', job['id'])
+    assert done['status'] == 'done', done['error']
+    assert any('Rendering from p01.jpg,p02.jpg,p03.jpg,p04.jpg,p05.jpg,p06.jpg' in line for line in done['log'])
+    assert gdrive.receipt('alice@example.test', job['id'], 'primary')['name'] == 'Harbour Cottage.mp4'
+    assert not worker.scratch(job['id']).exists() and done['cleanup_at']
+    assert folder not in drive.folders and not drive.blobs  # the customer asked for the uploaded photos to go
+    assert done['meta']['inputs'] == 'deleted'
+
+
+def test_inputs_stay_in_drive_when_the_customer_keeps_them(drive, db):
+    job = photo_job(delete_inputs=False)
+    run_worker(RENDER)
+    done = jobs.get('alice@example.test', job['id'])
+    assert done['status'] == 'done' and job['params']['photos']['folder'] in drive.folders and len(drive.blobs) == 6
+    assert 'inputs' not in done['meta']
+
+
+def test_failed_photo_reel_is_refunded_and_its_inputs_still_deleted(drive, db):
+    from app import worker
+    job = photo_job()
+    run_worker(FAIL)
+    failed = jobs.get('alice@example.test', job['id'])
+    assert failed['status'] == 'failed' and failed['error'] == 'QA guards failed' and usage(db)[0]['refunded_at']
+    assert not drive.blobs and not worker.scratch(job['id']).exists()
+
+
+def test_a_photo_removed_from_drive_fails_the_reel_with_a_clear_reason_and_refunds(drive, db):
+    job = photo_job(delete_inputs=False)
+    gone = job['params']['photos']['ids'][2]
+    drive.blobs.pop(gone), drive.metas.pop(gone), drive.files.pop(gone)  # the customer deleted it in Drive
+    run_worker(RENDER)
+    failed = jobs.get('alice@example.test', job['id'])
+    assert failed['status'] == 'failed' and 'removed from your Google Drive' in failed['error'] and usage(db)[0]['refunded_at']
+
+
+def test_cancelled_queued_photo_reel_has_its_inputs_deleted_by_the_sweeper(drive, db):
+    from app import worker
+    job = photo_job()
+    jobs.cancel('alice@example.test', job['id'])
+    assert len(drive.blobs) == 6
+    worker.sweep()
+    assert not drive.blobs and jobs.get('alice@example.test', job['id'])['meta']['inputs'] == 'deleted'
+
+
+def test_render_command_for_photos_carries_the_folder_and_facts_but_no_link(drive, db, tmp_path):
+    from app import worker
+    photo_job(ai_motion=True)
+    cmd = worker.render_command(jobs.claim('w', 30), tmp_path)
+    spec = json.loads(cmd[4])
+    assert spec['photos'] == str(tmp_path / 'inputs') and 'url' not in spec and spec['ai_motion'] is False  # free plan
+    assert spec['facts']['title'] == 'Harbour Cottage' and spec['facts']['rooms'][0] == 'exterior'
+    assert spec['facts']['quotes'][0]['stars'] == 5
+
+
+# ---------------- pipeline: typed facts + local photos -> the same manifest, guards and renderers ----------------
+
+def test_own_photo_manifest_uses_rooms_quotes_and_highlights_and_never_says_airbnb(tmp_path):
+    from app import pipeline
+    rooms = ['exterior', 'living', 'living', 'kitchen', 'bedroom', 'bedroom', 'bathroom', 'garden', 'spa', 'view', 'other', 'other']
+    names = [f'p{i + 1:02d}.jpg' for i in range(len(rooms))]
+    for n in names:
+        (tmp_path / n).write_bytes(b'x')
+    facts = {'title': 'Harbour Cottage', 'location': 'Whitby, UK', 'highlights': ['Hot tub', 'Sea view', 'Free parking'],
+             'quotes': [{'text': 'Stayed a week. Spotless cottage with a lovely view of the harbour.', 'stars': 5}], 'rooms': rooms}
+    d, revs = pipeline.photo_listing(facts, names)
+    assert [pipeline.classify(p['label']) for p in d['photos']] == rooms
+    m = pipeline.own_photos_manifest(pipeline.build_manifest(d, revs, tmp_path, tmp_path / 'depth'), d)
+    assert pipeline.lint_manifest(m) >= 27
+    text = json.dumps(m)
+    assert 'AIRBNB' not in text.upper() and 'BOOK YOUR STAY' in text and 'None' not in text
+    assert not [s['subtitle'] for s in m['scenes'] if 'sleeps' in s['subtitle'].lower() or 'beds' in s['subtitle'].lower()]
+    assert m['outro']['eyebrow'] == 'HARBOUR COTTAGE'  # the location is already in the outro's subtitle
+    assert m['intro']['title'] == 'Harbour Cottage' and m['intro']['eyebrow'] == 'WHITBY, UK' and 'Hot tub' in m['intro']['subtitle']
+    # the customer's own words, in quotation marks, with no invented date (a typed quote has none)
+    quote = '“Stayed a week. Spotless cottage with a lovely view of the harbour.”'
+    assert m['reviews']['items'] == [{'stars': 5, 'date': '', 'text': quote}]
+    assert m['overlays']['review'] == quote and m['overlays']['review_by'] == 'Guest review' and 'trust' not in m
+    rk = [s['room'] for s in m['scenes']]
+    assert rk == sorted(rk, key=[k for k, _ in pipeline.ROUTE].index) and {'living', 'kitchen', 'bedroom', 'view'} <= set(rk)
+    assert m['intro']['image'].endswith('p01.jpg') and m['outro']['image'].endswith('p09.jpg')  # exterior opens, hot tub closes
+
+
+def test_unlabelled_own_photos_still_make_a_valid_reel(tmp_path):
+    from app import pipeline
+    names = [f'p{i + 1:02d}.jpg' for i in range(12)]
+    for n in names:
+        (tmp_path / n).write_bytes(b'x')
+    d, revs = pipeline.photo_listing({'title': 'Flat', 'location': 'Leeds', 'highlights': [], 'quotes': [], 'rooms': ['other'] * 12}, names)
+    m = pipeline.own_photos_manifest(pipeline.build_manifest(d, revs, tmp_path, tmp_path / 'depth'), d)
+    assert pipeline.lint_manifest(m) >= 27 and 'reviews' not in m
+
+
+def test_v2_review_card_omits_the_date_when_there_is_none():
+    src = (Path(__file__).resolve().parents[1] / 'app' / 'render_v2.py').read_text()
+    assert "if rv.get('date'):" in src
 
 
 def test_photo_route_stops_reading_past_the_size_limit(drive, db, owners, monkeypatch):

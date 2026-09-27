@@ -29,7 +29,10 @@ CAPTIONS={'exterior':[('Arrive in {city}','{hood_or_city}  /  {parking}'),('Firs
           'garden':[('Your private outdoors','{garden_fact}'),('Evenings outside','{garden_fact}'),('Sun, when it shows','{garden_fact}')],
           'spa':[('Switch off completely','{spa_fact}'),('Warm up, wind down','{spa_fact}'),('Nights under the stars','{spa_fact}')],
           'view':[('The view from here','{city}'),('Above it all','{city}'),('Out the window','{city}')],
-          'other':[('More to discover','{amenity_fact}'),('The details','{amenity_fact}'),('Every corner considered','{city}')]}
+          'other':[('More to discover','{amenity_fact}'),('The details','{amenity_fact}'),('Every corner considered','{city}'),
+                   ('Take a closer look','{amenity_fact}'),('Thoughtful touches','{city}'),('Made to feel at home','{amenity_fact}'),
+                   ('Space to breathe','{city}'),('Quiet corners','{amenity_fact}'),('Room for everyone','{city}'),
+                   ('Stay a little longer','{amenity_fact}'),('Little luxuries','{city}')]}
 def log(cb,msg):
     print(msg,flush=True)
     if cb:cb(msg)
@@ -167,7 +170,7 @@ def build_manifest(d,revs,imgdir,depth_dir,scenes_n=None,max_scenes=14,min_scene
     def has(*w):return any(any(x in a for x in w) for a in am)
     facts={'city':city,'hood_or_city':city,'parking':'Free parking' if has('parking') else ('Superhost' if d.get('superhost') else f"{d.get('guests','')} guests".strip()),
            'living_fact':'  /  '.join([x for x in ['TV' if has('tv') else '','Wifi' if has('wifi') else '','Fireplace' if has('fireplace') else ''] if x]) or 'Space to relax',
-           'kitchen_fact':'Full kitchen' if has('kitchen') else 'Dining space','beds_fact':f"{d.get('beds','')} beds  /  sleeps {d.get('guests','')}".replace('  beds','beds').strip(' /'),
+           'kitchen_fact':'Full kitchen' if has('kitchen') else 'Dining space','beds_fact':'  /  '.join(x for x in [f"{d['beds']} beds" if d.get('beds') else '',f"sleeps {d['guests']}" if d.get('guests') else ''] if x) or city,
            'bath_fact':'  /  '.join([x for x in ['Bath' if has('bath') else '','Hairdryer' if has('hairdryer') else ''] if x]) or 'Fresh and modern',
            'garden_fact':'  /  '.join([x for x in ['Fire pit' if has('fire pit') else '','BBQ' if has('bbq','barbecue') else '','Private garden' if has('garden') else ''] if x]) or 'Fresh air, your way',
            'spa_fact':'  /  '.join([x for x in ['Hot tub' if has('hot tub') else '','Sauna' if has('sauna') else '','Pool' if has('pool') else ''] if x]) or 'Time to switch off',
@@ -307,6 +310,34 @@ def email_html(d,link,dur):
 {'<p><a href="'+link+'" style="background:#00f0ff;color:#04070a;padding:12px 18px;border-radius:10px;font-weight:700;text-decoration:none">Watch the 1080p reel</a></p>' if link else ''}
 <p style="color:#8a8a8a;font-size:12px">A 720p copy is attached when under 20 MB. Made with ReelSieve, a Braivex product · braivex.com</p></div>"""
 # ---------------- orchestration ----------------
+# ---------------- own photos (no scraping): the customer's photos + typed facts ----------------
+PHOTO_LABEL={k:words[0] for k,words in ROUTE}   # a label classify() maps back to its room ('hot tub' -> spa)
+def photo_listing(facts,names):
+    """The listing dict build_manifest expects, built from the customer's typed facts and photo files: nothing is fetched.
+    `names` are the photo files in upload order; facts['rooms'] is aligned with them."""
+    rooms=list(facts.get('rooms') or [])
+    d={'id':'photos','url':None,'title':facts['title'],'city':facts['location'],'rating':None,'count':None,'guests':None,'host':'',
+       'amenities':list(facts.get('highlights') or []),'highlights':[],'categories':{},'superhost':False,'guest_favourite':False,
+       'photos':[{'label':PHOTO_LABEL.get(rooms[i] if i<len(rooms) else 'other',PHOTO_LABEL['other']),'url':n} for i,n in enumerate(names)]}
+    revs=[{'stars':int(q['stars']),'date':'','text':q['text']} for q in facts.get('quotes') or []]
+    return d,revs
+def own_photos_manifest(m,d):
+    """Replace the wording that only fits an Airbnb listing. A typed guest quote is shown in quotation marks as the
+    customer wrote it, with no date (none is known) and never a name."""
+    m['intro']['eyebrow']=(d.get('city') or '').upper() or 'YOUR NEXT STAY'
+    m['outro']['eyebrow']=m['intro']['title'].upper()   # the outro subtitle already names the place
+    m['outro']['cta']=m['overlays']['cta_pill']='BOOK YOUR STAY'
+    if m.get('reviews'):
+        for it in m['reviews']['items']:it['date']='';it['text']=f'“{it["text"]}”'
+        m['overlays']['review']=m['reviews']['items'][0]['text'];m['overlays']['review_by']='Guest review'
+    return m
+def run_photos(images_dir,facts,out_dir,ai_motion=False,cb=None,renderer='v2',max_seconds=None,ai_resolution='1080p'):
+    """Reel from the customer's own photos (already in disposable scratch as p01.jpg…) and typed facts: the same scoring,
+    selection, depth, audit, AI motion and renderers as a listing reel, with no scraping."""
+    out_dir=Path(out_dir);work=out_dir/'work';work.mkdir(parents=True,exist_ok=True);imgdir=Path(images_dir)
+    names=sorted(p.name for p in imgdir.glob('p*.jpg'));log(cb,f'Using your {len(names)} photos')
+    d,revs=photo_listing(facts,names)
+    return _reel(d,revs,imgdir,out_dir,work,ai_motion,cb,renderer,max_seconds,ai_resolution,own=True)
 def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer='v2',max_seconds=None,ai_resolution='1080p'):
     out_dir=Path(out_dir);out_dir.mkdir(parents=True,exist_ok=True);work=out_dir/'work';work.mkdir(exist_ok=True)
     if is_airbnb(url):
@@ -318,6 +349,9 @@ def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer
         if len(d['photos'])<5:raise RuntimeError(f"Only {len(d['photos'])} usable photos found on that page. Try the listing's Airbnb link, or a page that shows the full photo gallery.")
     (out_dir/'listing.json').write_text(json.dumps({**d,'reviews':revs},indent=1))
     imgdir=work/'images';download_photos(d,imgdir,cb)   # every photo, so selection is on quality not on Airbnb's order
+    return _reel(d,revs,imgdir,out_dir,work,ai_motion,cb,renderer,max_seconds,ai_resolution)
+def _reel(d,revs,imgdir,out_dir,work,ai_motion,cb,renderer,max_seconds,ai_resolution,own=False):
+    """Photos on disk + listing facts -> scored selection, depth, audit, optional AI motion, render. Shared by both entry points."""
     from app import photoscore
     have=[imgdir/Path(p['url']).name for p in d['photos'] if (imgdir/Path(p['url']).name).exists()]
     log(cb,f'Scoring {len(have)} photos for sharpness, light and colour')
@@ -328,7 +362,9 @@ def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer
     log(cb,f'Estimating depth for {len(short)} photos')
     subprocess.run([PY,str(HERE/'depth.py'),str(sel),str(work/'depth')],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
     photoscore.add_depth(scores,work/'depth')
-    m=build_manifest(d,revs,imgdir,work/'depth',scores=scores);m['photo_scores']=scores
+    m=build_manifest(d,revs,imgdir,work/'depth',scores=scores,**({'min_scenes':8} if own else {}))
+    if own:m=own_photos_manifest(m,d)   # own photos may be unlabelled: use more of them than the 6-scene floor
+    m['photo_scores']=scores
     used={Path(s['image']).name for s in m['scenes']}|{Path(m['intro']['image']).name,Path(m['outro']['image']).name}
     ranked=sorted(scores.items(),key=lambda kv:-kv[1]['score'])
     log(cb,f"Scored {len(scores)} photos; using {len(used)} (best {ranked[0][1]['score']}, median {sorted(v['score'] for v in scores.values())[len(scores)//2]}, lowest used {min(scores[k]['score'] for k in used if k in scores)})")
@@ -375,7 +411,7 @@ def run(url,out_dir,email=None,ai_motion=False,cb=None,public_base=None,renderer
     safe=re.sub(r'[^A-Za-z0-9]+','-',d['title'])[:40].strip('-');out=out_dir/f"{time.strftime('%Y-%m-%d')}_{safe}-by-Braivex.mp4"
     m['aspect']='9:16' if renderer=='v3' else '16:9'
     dur,small=render(m,work,out,cb,renderer)
-    res={'video':str(out),'video_720':str(small),'duration':dur,'audit':m.get('audit'),'ai_plan':m.get('ai_plan'),'selection':m.get('selection'),'photo_scores':m.get('photo_scores'),'listing':{**{k:d.get(k) for k in ['id','url','title','city','rating','count','guests','host']},'photo':(d.get('photos') or [{}])[0].get('url')},'review_used':m.get('reviews',{}).get('items',[None])[0]}
+    res={'video':str(out),'video_720':str(small),'duration':dur,'audit':m.get('audit'),'ai_plan':m.get('ai_plan'),'selection':m.get('selection'),'photo_scores':m.get('photo_scores'),'listing':{**{k:d.get(k) for k in ['id','url','title','city','rating','count','guests','host']},'photo':None if own else (d.get('photos') or [{}])[0].get('url')},'review_used':m.get('reviews',{}).get('items',[None])[0]}
     (out_dir/'result.json').write_text(json.dumps(res,indent=1));return res
 if __name__=='__main__':
     import argparse

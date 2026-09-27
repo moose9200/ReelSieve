@@ -318,9 +318,11 @@ def live_leases():
 
 
 def pending_cleanup(limit=50):
+    """Finished jobs whose scratch (and, for photo reels, Drive inputs) no worker has cleaned up yet."""
     with database.connect() as c:
-        return [r['id'] for r in c.execute("SELECT id FROM jobs WHERE status IN ('done','failed','cancelled') "
-                                           'AND cleanup_at IS NULL ORDER BY finished_at LIMIT %s', (limit,)).fetchall()]
+        return c.execute("SELECT j.id,j.params,j.meta,j.drive_generation,u.email AS owner_email FROM jobs j "
+                         "JOIN users u ON u.id=j.owner_id WHERE j.status IN ('done','failed','cancelled') "
+                         'AND j.cleanup_at IS NULL ORDER BY j.finished_at LIMIT %s', (limit,)).fetchall()
 
 
 def mark_cleaned(job_id, error=None):

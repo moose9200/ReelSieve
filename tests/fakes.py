@@ -108,7 +108,8 @@ class Google:
                         'webViewLink': 'https://drive.google.com/file/d/' + s['meta']['id'],
                         'appProperties': s['meta']['appProperties']}
                 self.files[info['id']] = info
-                self.blobs[info['id']] = s['data']
+                if s['meta'].get('mimeType') == 'image/jpeg':  # a reel's photos; kept so alt=media can serve them
+                    self.blobs[info['id']] = s['data']
                 if self.interrupt:
                     self.interrupt = False
                     raise httpx.ReadTimeout('sensitive-session-url', request=req)
@@ -124,8 +125,10 @@ class Google:
                     self.metas.pop(gone), self.files.pop(gone, None), self.blobs.pop(gone, None)
                 return httpx.Response(204)
             if req.url.params.get('alt') == 'media':
-                if self.metas.get(fid, {}).get('mimeType') == 'image/jpeg':  # a reel's photos; videos keep the canned reply
+                if fid in self.blobs:  # a reel's photos; videos keep the canned reply
                     return httpx.Response(200, content=self.blobs[fid], headers={'Content-Type': 'image/jpeg'})
+                if fid not in self.files:
+                    return httpx.Response(404, json={})
                 return httpx.Response(206 if 'Range' in req.headers else 200, content=b'video', headers={'Content-Type': 'video/mp4', 'Content-Range': 'bytes 0-4/5'})
             return httpx.Response(200, json=self.files[fid]) if fid in self.files else httpx.Response(404, json={})
         raise AssertionError('Unexpected synthetic Google request: ' + path)
