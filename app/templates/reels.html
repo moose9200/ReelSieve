@@ -18,8 +18,12 @@
         <p class="rg-sub">{{ g.listing.city or "" }}{% if g.listing.rating %}{% if g.listing.city %} · {% endif %}★ {{ g.listing.rating }}{% if g.listing.count %} ({{ g.listing.count }}){% endif %}{% endif %}{% if g.listing.city or g.listing.rating %} · {% endif %}{{ g.jobs|length }} reel{{ "s" if g.jobs|length != 1 else "" }}</p>
         <p class="rg-links">
           <a href="/jobs/{{ g.latest.id }}">Latest reel</a>
+          {% if g.listing.url %}
           <a href="{{ g.listing.url }}" target="_blank" rel="noopener noreferrer">Open on Airbnb ↗</a>
           <a href="/app?url={{ g.listing.url|urlencode }}">Make another</a>
+          {% else %}
+          <a href="/app?mode=photos">Make another from your photos</a>
+          {% endif %}
         </p>
       </div>
     </div>

@@ -33,6 +33,9 @@
       <video id="video" controls playsinline preload="metadata"{% if job.stream_url %} src="{{ job.stream_url }}"{% endif %}{% if job.poster %} poster="{{ job.poster }}"{% endif %}></video>
     </div>
     <p class="hint">Stored in your Google Drive only — ReelSieve keeps no copy.</p>
+    {% if job.source == 'photos' %}
+    <p class="hint" id="inputs-state">{% if job.inputs == 'deleted' %}Your uploaded photos were deleted from your Google Drive, as you asked.{% elif job.inputs == 'delete_failed' %}We could not delete your uploaded photos from Google Drive. They are in the Inputs folder inside your ReelSieve folder; delete them there if you like.{% elif job.delete_inputs %}Your uploaded photos will be deleted from your Google Drive once the reel is finished.{% else %}Your uploaded photos are in the Inputs folder inside your ReelSieve folder in Google Drive.{% endif %}</p>
+    {% endif %}
     <div class="video-actions">
       <a class="btn btn-primary{% if not job.download_url %} hidden{% endif %}" id="download-btn" href="{{ job.download_url or '#' }}">Download reel</a>
       <span class="email-line">
@@ -40,10 +43,12 @@
         <span class="pill pill-email pill-{{ 'done' if job.drive_link else 'skipped' }}" id="drive-pill">{{ ('Delivered · ' ~ ('shared by link' if job.shared else 'private')) if job.drive_link else '—' }}</span>
         <a id="drive-link" class="{% if not job.drive_link %}hidden{% endif %}" href="{{ job.drive_link or '#' }}" target="_blank" rel="noopener">Open in Drive ↗</a>
       </span>
+      {% if job.source != 'photos' %}
       <span class="email-line">
         <span class="eyebrow inline">Host message</span>
         <span class="pill pill-email" id="host-pill" data-status="{{ job.host_status or '' }}">{{ job.host_status or "—" }}</span>
       </span>
+      {% endif %}
     </div>
     <div class="field share-field{% if not job.drive_link %} hidden{% endif %}" id="share-box">
       <label for="reel-link">Public link</label>
@@ -64,6 +69,7 @@
     </div>
   </div>
 
+  {% if job.source != 'photos' %}
   <div class="card host-card{% if job.status != 'done' %} hidden{% endif %}" id="host-card">
     <div class="section-head"><h2>Send to the host on Airbnb</h2></div>
     <div class="field">
@@ -81,11 +87,12 @@
       <span class="form-status" id="host-status" role="status" aria-live="polite">{{ job.host_error or '' }}</span>
     </div>
   </div>
+  {% endif %}
 
   <div class="card sel-card{% if not job.selection %} hidden{% endif %}" id="sel-card">
     <div class="section-head"><h2>Photo selection</h2>{% if job.selection %}<span class="pill pill-done">{{ job.selection.used|length }} of {{ job.selection.downloaded }} used</span>{% endif %}</div>
     {% if job.selection %}
-    <p class="hint">All listing photos were downloaded and scored (sharpness, exposure, colour match, orientation, resolution, depth axis). The reel uses the best frame per room in walkthrough order.</p>
+    <p class="hint">{{ 'All your photos were scored' if job.source == 'photos' else 'All listing photos were downloaded and scored' }} (sharpness, exposure, colour match, orientation, resolution, depth axis). The reel uses the best frame per room in walkthrough order.</p>
     <details><summary>Show scores</summary>
     <ul class="score-list">
       {% for name in job.selection.used %}{% set sc = job.photo_scores[name] if job.photo_scores and name in job.photo_scores else None %}

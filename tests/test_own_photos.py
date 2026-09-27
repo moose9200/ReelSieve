@@ -6,6 +6,7 @@ nothing here fetches Airbnb, calls a paid provider or sends a message.
 import io
 import json
 from pathlib import Path
+import re
 import sys
 import time
 
@@ -439,6 +440,38 @@ def test_unlabelled_own_photos_still_make_a_valid_reel(tmp_path):
 def test_v2_review_card_omits_the_date_when_there_is_none():
     src = (Path(__file__).resolve().parents[1] / 'app' / 'render_v2.py').read_text()
     assert "if rv.get('date'):" in src
+
+
+# ---------------- pages ----------------
+
+def test_new_reel_page_offers_both_ways_with_listing_link_first(drive, owners):
+    alice = client_for(owners['alice'])
+    page = alice.get('/app').text
+    assert 'id="mode-link"' in page and 'id="mode-photos"' in page and 'Your own photos' in page
+    tag = lambda html, form_id: re.search(rf'<form id="{form_id}"[^>]*>', html).group(0)  # noqa: E731
+    assert 'hidden' in tag(page, 'photos-form') and 'hidden' not in tag(page, 'reel-form')  # listing link stays the default
+    assert 'accept="image/jpeg,image/png,image/webp"' in page and 'multiple' in page
+    assert re.search(r'id="delete_inputs"[^>]*checked', page)
+    assert 'name="quote_text"' in page and page.count('name="quote_text"') == 3 and 'name="quote_name"' not in page
+    assert 'your photos are sent to Higgsfield' in page
+    photos_page = alice.get('/app?mode=photos').text
+    assert 'hidden' not in tag(photos_page, 'photos-form') and 'hidden' in tag(photos_page, 'reel-form')
+    js = alice.get('/static/app.js').text
+    assert '/api/jobs/photos' in js and 'upload.onprogress' in js
+
+
+def test_photo_reel_pages_show_the_title_and_no_host_or_airbnb_links(drive, db, owners):
+    alice = client_for(owners['alice'])
+    job = photo_job()
+    view = alice.get(f"/api/jobs/{job['id']}").json()
+    assert view['source'] == 'photos' and view['listing']['title'] == 'Harbour Cottage' and view['listing']['url'] is None
+    assert view['contact_url'] is None and view['poster'] is None
+    run_worker(RENDER)
+    page = alice.get(f"/jobs/{job['id']}").text
+    assert 'Harbour Cottage' in page and 'id="host-card"' not in page and 'Open listing' not in page
+    assert 'deleted from your Google Drive' in page
+    reels = alice.get('/reels').text
+    assert 'Harbour Cottage' in reels and 'Open on Airbnb' not in reels and '/app?mode=photos' in reels
 
 
 # ---------------- privacy: export, erasure, retention cover everything this feature stores ----------------

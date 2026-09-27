@@ -744,7 +744,9 @@ def search_phrase(listing):
 def job_view(j, receipts=None):
     """Everything the UI shows about one job. Links come only from the owner's confirmed Drive receipts."""
     p, m = j['params'] or {}, j['meta'] or {}
-    listing = {'url': j['url'], **(m.get('listing') or {})}
+    own = p.get('source') == 'photos'  # the customer's own photos: no listing link, host or Airbnb page
+    listing = {**({'url': None, 'title': p.get('title'), 'city': p.get('location')} if own else {'url': j['url']}),
+               **(m.get('listing') or {})}
     listing['location'] = listing.get('city')
     recs = receipts if receipts is not None else {}
     primary = recs.get('primary')
@@ -773,7 +775,9 @@ def job_view(j, receipts=None):
         'host_status': m.get('host_status'), 'host_error': m.get('host_error'),
         'message': msg, 'message_final': final, 'search_phrase': phrase,
         'youtube_title': phrase.replace(' ReelSieve', ' — by ReelSieve'),
-        'contact_url': hostmsg.contact_url(lid) if lid else None}
+        'contact_url': hostmsg.contact_url(lid) if lid else None,
+        'source': 'photos' if own else 'listing', 'key': lid or j['url'],
+        'delete_inputs': bool(p.get('delete_inputs')), 'inputs': m.get('inputs')}
 
 
 def _views(user, rows):
@@ -793,11 +797,12 @@ def _one(request, j):
 
 
 @app.get('/app', response_class=HTMLResponse)
-def index(request: Request, url: str = ''):
+def index(request: Request, url: str = '', mode: str = ''):
     u = request.state.user
     return tpl.TemplateResponse(request, 'index.html', {
         'jobs': _views(u, jobs.list_for(u, 12)), 'hf_configured': bool(os.getenv('HF_KEY')), 'gdrive': gdrive.status(u),
-        'default_message': default_message(), 'prefill_url': url[:500], 'account': plans.account_view(u)})
+        'default_message': default_message(), 'prefill_url': url[:500], 'account': plans.account_view(u),
+        'photos_mode': mode == 'photos' and not url, 'limits': photos})
 
 
 @app.post('/api/jobs')
@@ -931,7 +936,7 @@ def job_video(request: Request, jid: str, variant: str = 'primary', download: in
 def library(user):
     groups, order = {}, []
     for v in _views(user, jobs.list_for(user, 200)):
-        lid = listing_id_of(v['listing']['url']) or v['listing']['url']
+        lid = v['key']  # the listing, or for own-photo reels the photo set
         if lid not in groups:
             groups[lid] = {'listing': {**v['listing'], 'id': lid}, 'jobs': [], 'latest': v, 'poster': v['poster']}
             order.append(lid)
