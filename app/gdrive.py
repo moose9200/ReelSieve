@@ -9,8 +9,10 @@ Network calls never run inside a database transaction: every write that follows 
 compare-and-set on the connection generation, so a disconnect or reconnect that happens while
 Google is answering wins over the stale refresh or upload.
 """
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -275,6 +277,14 @@ def _access(user):
     return tok['access_token'], row
 
 
+def _pinned(user, generation):
+    """_access, refused when the connection is no longer the one a job was admitted on (None: any)."""
+    token, conn = _access(user)
+    if generation is not None and conn['generation'] != generation:
+        raise RuntimeError('Google Drive was reconnected or disconnected after this reel started — start it again')
+    return token, conn
+
+
 def access_token(user):
     return _access(user)[0]
 
@@ -400,6 +410,47 @@ def _confirm(owner_id, job_id, variant, file_id, generation, info):
     return _receipt(row)
 
 
+def _resumable(headers, meta, f, size, mime, chunk, keep_going=None, fields='id,size'):
+    """One resumable upload session into Drive (the documented way for files over 5 MB); returns the file
+    resource Google sends back when the last byte lands. `f` is any seekable binary file."""
+    start = _require(_call('upload start', 'POST', UPLOAD, timeout=60, json=meta,
+                           params={'uploadType': 'resumable', 'fields': fields},
+                           headers={**headers, 'X-Upload-Content-Type': mime,
+                                    'X-Upload-Content-Length': str(size)}), 'upload start')
+    session = start.headers.get('Location')
+    if not session:
+        raise RuntimeError('Google Drive upload start failed (no upload session)')
+    sent, info, stalls = 0, None, 0
+    try:
+        with _client(600) as h:
+            while info is None:
+                if keep_going and not keep_going():
+                    raise RuntimeError('Upload stopped before it finished — nothing was delivered')
+                f.seek(sent)
+                data = f.read(chunk)
+                end = sent + len(data) - 1
+                r = h.put(session, content=data, headers={'Content-Range': f'bytes {sent}-{end}/{size}',
+                                                          'Content-Type': mime})
+                if r.status_code in (200, 201):
+                    info = _json(r)
+                elif r.status_code == 308:
+                    # Resume from what Google says it holds (no Range = nothing yet). It can never
+                    # hold more than was sent, and a transfer that keeps making no progress stops.
+                    got = r.headers.get('Range', '')
+                    got = int(got.rsplit('-', 1)[1]) + 1 if got.startswith('bytes=0-') else 0
+                    if got > end + 1:
+                        raise RuntimeError('Google Drive reported inconsistent upload progress — upload again')
+                    stalls = stalls + 1 if got <= sent else 0
+                    if stalls > 3:
+                        raise RuntimeError('Google Drive stopped accepting the upload — upload again')
+                    sent = got
+                else:
+                    _require(r, 'upload')
+    except httpx.HTTPError:
+        raise RuntimeError('The upload to Google Drive was interrupted — it will be reconciled on retry') from None
+    return info
+
+
 def upload(path, listing_url, user, description='', chunk=8 * 1024 * 1024, public=False, job_id=None, variant='primary',
            generation=None, keep_going=None):
     """Resumable upload into this owner's own Drive; private unless the owner asked otherwise.
@@ -420,9 +471,7 @@ def upload(path, listing_url, user, description='', chunk=8 * 1024 * 1024, publi
     done = receipt(user, job_id, variant)
     if done:
         return set_sharing(user, job_id, True, variant) if public and done['sharing'] != 'public' else done
-    token, conn = _access(user)
-    if generation is not None and conn['generation'] != generation:
-        raise RuntimeError('Google Drive was reconnected or disconnected after this reel started — start it again')
+    token, conn = _pinned(user, generation)
     owner_id, generation = conn['owner_id'], conn['generation']
     headers = {'Authorization': 'Bearer ' + token}
     props = {'owner': owner_id, 'job': str(job_id), 'variant': variant}
@@ -452,47 +501,106 @@ def upload(path, listing_url, user, description='', chunk=8 * 1024 * 1024, publi
                       (owner_id, job_id, variant, file_id, generation, time.time()))
     meta = {'id': file_id, 'name': safe_name(listing_url, '.mp4' if variant == 'primary' else f'-{variant}.mp4'), 'parents': [_folder(owner_id, token, generation)],
             'description': (description or '')[:900], 'appProperties': props}
-    start = _require(_call('upload start', 'POST', UPLOAD, timeout=60, json=meta,
-                           params={'uploadType': 'resumable', 'fields': 'id,name,size,webViewLink,appProperties'},
-                           headers={**headers, 'X-Upload-Content-Type': 'video/mp4',
-                                    'X-Upload-Content-Length': str(size)}), 'upload start')
-    session = start.headers.get('Location')
-    if not session:
-        raise RuntimeError('Google Drive upload start failed (no upload session)')
-    sent, info, stalls = 0, None, 0
-    try:
-        with path.open('rb') as f, _client(600) as h:
-            while info is None:
-                if keep_going and not keep_going():
-                    raise RuntimeError('Upload stopped before it finished — nothing was delivered')
-                f.seek(sent)
-                data = f.read(chunk)
-                end = sent + len(data) - 1
-                r = h.put(session, content=data, headers={'Content-Range': f'bytes {sent}-{end}/{size}',
-                                                          'Content-Type': 'video/mp4'})
-                if r.status_code in (200, 201):
-                    info = _json(r)
-                elif r.status_code == 308:
-                    # Resume from what Google says it holds (no Range = nothing yet). It can never
-                    # hold more than was sent, and a transfer that keeps making no progress stops.
-                    got = r.headers.get('Range', '')
-                    got = int(got.rsplit('-', 1)[1]) + 1 if got.startswith('bytes=0-') else 0
-                    if got > end + 1:
-                        raise RuntimeError('Google Drive reported inconsistent upload progress — upload again')
-                    stalls = stalls + 1 if got <= sent else 0
-                    if stalls > 3:
-                        raise RuntimeError('Google Drive stopped accepting the upload — upload again')
-                    sent = got
-                else:
-                    _require(r, 'upload')
-    except httpx.HTTPError:
-        raise RuntimeError('The upload to Google Drive was interrupted — it will be reconciled on retry') from None
+    with path.open('rb') as f:
+        info = _resumable(headers, meta, f, size, 'video/mp4', chunk, keep_going,
+                          fields='id,name,size,webViewLink,appProperties')
     if not _matches(info, file_id, size, props):
         raise RuntimeError('Google Drive did not confirm the upload — upload again')
     if keep_going and not keep_going():
         raise RuntimeError('Upload stopped before it finished — nothing was delivered')
     result = _confirm(owner_id, job_id, variant, file_id, generation, info)
     return set_sharing(user, job_id, True, variant) if public else result
+
+
+# ---------------- a reel's own photos: in the owner's Drive only, referenced by file id ----------------
+
+INPUT_MAX = 16 * 1024 * 1024  # a cleaned photo is a JPEG at most 2560 px long; anything bigger is not ours
+DRIVE_ID = re.compile(r'[A-Za-z0-9_-]{1,200}')
+
+
+def _subfolder(headers, parent, name, props, find=False):
+    """A folder inside `parent`, found by private appProperties (never by display name) or created."""
+    if find:
+        q = ' and '.join([f"appProperties has {{ key='{k}' and value='{v}' }}" for k, v in props.items()]
+                         + [f"'{parent}' in parents", f"mimeType = '{FOLDER_MIME}'", 'trashed = false'])
+        found = _json(_require(_call('folder lookup', 'GET', API + '/files', headers=headers,
+                                     params={'q': q, 'fields': 'files(id)', 'spaces': 'drive', 'pageSize': 1}),
+                               'folder lookup')).get('files') or []
+        if found:
+            return found[0]['id']
+    fid = _json(_require(_call('folder creation', 'POST', API + '/files', headers=headers, params={'fields': 'id'},
+                               json={'name': name, 'mimeType': FOLDER_MIME, 'parents': [parent], 'appProperties': props}),
+                         'folder creation')).get('id')
+    if not fid:
+        raise RuntimeError('Google Drive folder creation failed (no folder id)')
+    return fid
+
+
+def _check_id(fid):
+    if not DRIVE_ID.fullmatch(str(fid or '')):
+        raise RuntimeError('This reel refers to a Google Drive file it cannot use — start it again')
+    return fid
+
+
+def upload_inputs(user, job_id, images, generation, chunk=8 * 1024 * 1024):
+    """Save a reel's cleaned photos (JPEG bytes) in this owner's Drive under <app folder>/Inputs/<job id>/.
+    Returns (folder id, [file ids]); a failure part-way deletes the folder so nothing half-made is left."""
+    token, conn = _pinned(user, generation)
+    owner_id, headers = conn['owner_id'], {'Authorization': 'Bearer ' + token}
+    inputs = _subfolder(headers, _folder(owner_id, token, generation), 'Inputs', {'owner': owner_id, 'kind': 'inputs'}, find=True)
+    folder = _subfolder(headers, inputs, job_id, {'owner': owner_id, 'kind': 'inputs', 'job': job_id})
+
+    def one(i):
+        meta = {'name': f'photo-{i + 1:02d}.jpg', 'parents': [folder], 'mimeType': 'image/jpeg',
+                'appProperties': {'owner': owner_id, 'job': job_id, 'input': str(i + 1)}}
+        info = _resumable(headers, meta, io.BytesIO(images[i]), len(images[i]), 'image/jpeg', chunk)
+        if not info or not info.get('id') or str(info.get('size')) != str(len(images[i])):
+            raise RuntimeError('Google Drive did not confirm a photo upload — try again')
+        return info['id']
+    try:
+        with ThreadPoolExecutor(4) as pool:  # ponytail: 4 parallel sessions; raise if 40-photo uploads feel slow
+            return folder, list(pool.map(one, range(len(images))))
+    except Exception:
+        try:
+            _call('photo clean-up', 'DELETE', f'{API}/files/{folder}', headers=headers)
+        except RuntimeError:
+            pass  # the original error matters more; the folder holds only this reel's photos
+        raise
+
+
+def download_inputs(user, file_ids, dest, generation, keep_going=None):
+    """Fetch a reel's photos from the owner's Drive into disposable scratch as p01.jpg, p02.jpg, …"""
+    token, _ = _pinned(user, generation)
+    headers, dest, paths = {'Authorization': 'Bearer ' + token}, Path(dest), []
+    dest.mkdir(parents=True, exist_ok=True)
+    try:
+        with _client(120) as h:
+            for i, fid in enumerate(file_ids):
+                if keep_going and not keep_going():
+                    raise RuntimeError('Stopped before the photos were fetched')
+                out = dest / f'p{i + 1:02d}.jpg'
+                with h.stream('GET', f'{API}/files/{_check_id(fid)}', params={'alt': 'media'}, headers=headers) as r:
+                    if r.status_code == 404:
+                        raise RuntimeError('A photo was removed from your Google Drive before the reel was made — start it again')
+                    _require(r, 'photo download')
+                    got = 0
+                    with out.open('wb') as f:
+                        for part in r.iter_bytes():
+                            got += len(part)
+                            if got > INPUT_MAX:
+                                raise RuntimeError('A photo in Google Drive changed after upload — start the reel again')
+                            f.write(part)
+                paths.append(out)
+    except httpx.HTTPError:
+        raise RuntimeError('Google Drive did not respond while fetching your photos — try again shortly') from None
+    return paths
+
+
+def delete_inputs(user, folder_id, generation):
+    """Permanently delete a reel's photo folder and the photos in it from the owner's Drive. Gone already is fine."""
+    token, _ = _pinned(user, generation)
+    _require(_call('photo clean-up', 'DELETE', f'{API}/files/{_check_id(folder_id)}',
+                   headers={'Authorization': 'Bearer ' + token}), 'photo clean-up', ok=(200, 204, 404))
 
 
 def set_sharing(user, job_id, public, variant='primary'):

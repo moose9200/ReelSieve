@@ -9,7 +9,7 @@ import time
 from PIL import Image, PngImagePlugin
 import pytest
 
-from app import jobs, photos
+from app import gdrive, jobs, photos
 from fakes import connect
 from test_saas_routes import client_for, csrf
 
@@ -152,3 +152,54 @@ def test_typed_details_are_validated_and_quotes_carry_no_name():
                      ({'title': 'C', 'location': 'W', 'quotes': [fine] * 4}, '3 guest quotes')]:
         with pytest.raises(photos.PhotoError, match=msg):
             photos.details(bad)
+
+
+def test_room_comes_from_the_choice_or_the_file_name():
+    assert photos.room_of('kitchen', 'IMG_1.jpg') == 'kitchen'
+    assert photos.room_of('auto', 'Living_Room-02.JPG') == 'living'
+    assert photos.room_of('auto', 'master-bedroom.webp') == 'bedroom'
+    assert photos.room_of('nonsense', 'IMG_1234.jpg') == 'other'
+
+
+# ---------------- the customer's Drive holds the inputs; we keep ids only ----------------
+
+def generation(user='alice@example.test'):
+    from app import database
+    with database.connect() as c:
+        return gdrive.usable_generation(c, database.user_id(user, c))
+
+
+def test_inputs_go_to_a_job_folder_in_the_customers_drive_and_come_back_intact(drive, tmp_path):
+    shots = [photos.clean(image(colour=(i * 40, 10, 10)), f'{i}.jpg') for i in range(3)]
+    folder, ids = gdrive.upload_inputs('alice@example.test', 'abc123def456', shots, generation())
+    job_folder = drive.folders[folder]
+    inputs = drive.folders[job_folder['parents'][0]]
+    assert job_folder['name'] == 'abc123def456' and inputs['name'] == 'Inputs'
+    assert inputs['parents'] == [drive.app_folder()]
+    for i, fid in enumerate(ids):
+        meta = drive.metas[fid]
+        assert meta['parents'] == [folder] and meta['mimeType'] == 'image/jpeg' and meta['name'] == f'photo-{i + 1:02d}.jpg'
+        assert meta['appProperties']['job'] == 'abc123def456'
+    # a second reel reuses the one Inputs folder
+    folder2, _ = gdrive.upload_inputs('alice@example.test', 'fff000fff000', shots[:1], generation())
+    assert drive.folders[folder2]['parents'] == job_folder['parents']
+    got = gdrive.download_inputs('alice@example.test', ids, tmp_path / 'in', generation())
+    assert [p.name for p in got] == ['p01.jpg', 'p02.jpg', 'p03.jpg'] and [p.read_bytes() for p in got] == shots
+    gdrive.delete_inputs('alice@example.test', folder, generation())
+    assert folder not in drive.folders and not set(ids) & set(drive.blobs)
+    gdrive.delete_inputs('alice@example.test', folder, generation())  # already gone: nothing to do
+
+
+def test_a_failed_input_upload_leaves_nothing_behind(drive):
+    shots = [photos.clean(image(), 'a.jpg')] * 3
+    drive.fail_upload_after = 1
+    with pytest.raises(RuntimeError, match='Google Drive'):
+        gdrive.upload_inputs('alice@example.test', 'abc123def456', shots, generation())
+    assert not [f for f in drive.folders.values() if f['name'] == 'abc123def456'] and not drive.blobs
+
+
+def test_inputs_stay_with_the_google_account_the_job_was_admitted_on(drive, tmp_path):
+    with pytest.raises(RuntimeError, match='reconnected'):
+        gdrive.upload_inputs('alice@example.test', 'abc123def456', [b'x'], generation() + 1)
+    with pytest.raises(RuntimeError, match='reconnected'):
+        gdrive.download_inputs('alice@example.test', ['some-id'], tmp_path, generation() + 1)
