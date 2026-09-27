@@ -186,7 +186,7 @@ def _drop_inputs(job):
     try:
         gdrive.delete_inputs(job['owner_email'], folder, job['drive_generation'])
         state = 'deleted'
-    except RuntimeError:
+    except Exception:  # clean-up runs in the sweeper: whatever goes wrong must never stop jobs being claimed
         state = 'delete_failed'  # e.g. Drive disconnected: the photos stay in the customer's own Drive
     jobs.set_meta(job['owner_email'], job['id'], inputs=state)
 

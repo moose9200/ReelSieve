@@ -384,6 +384,16 @@ def test_cancelled_queued_photo_reel_has_its_inputs_deleted_by_the_sweeper(drive
     assert not drive.blobs and jobs.get('alice@example.test', job['id'])['meta']['inputs'] == 'deleted'
 
 
+def test_a_broken_clean_up_never_stops_the_sweeper(drive, db, monkeypatch):
+    from app import worker
+    job = photo_job()
+    jobs.cancel('alice@example.test', job['id'])
+    monkeypatch.setattr(gdrive, 'delete_inputs', lambda *a: {}['unexpected'])  # any exception, not only RuntimeError
+    worker.sweep()
+    after = jobs.get('alice@example.test', job['id'])
+    assert after['meta']['inputs'] == 'delete_failed' and after['cleanup_at']
+
+
 def test_render_command_for_photos_carries_the_folder_and_facts_but_no_link(drive, db, tmp_path):
     from app import worker
     photo_job(ai_motion=True)

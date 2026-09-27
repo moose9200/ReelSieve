@@ -238,7 +238,7 @@ LLMS_TXT = """# ReelSieve
 
 > ReelSieve, made by Braivex, turns an Airbnb listing link into a cinematic walkthrough video built from the listing's own photos and real guest reviews.
 
-For now it accepts only Airbnb listing links, the kind with /rooms/ in the address.
+It works from an Airbnb listing link, the kind with /rooms/ in the address, or from 6 to 40 photos the customer uploads.
 Each video has an intro, a rating card, the rooms in walking order with captions, a real guest review card and an outro.
 There are two styles: 16:9 cinematic and 9:16 vertical.
 Every listing photo is scored and the best frame for each room is used.
@@ -822,7 +822,7 @@ _photo_slots = asyncio.Semaphore(int(os.getenv('PHOTO_UPLOAD_SLOTS', '2')))
 
 
 class _PhotoForm(MultiPartParser):
-    spool_max_size = photos.MAX_BYTES + 1  # every photo stays in memory: the web process writes nothing to disk
+    spool_max_size = PHOTO_BODY_MAX  # every part stays in memory (the stream is capped): nothing is written to disk
 
 
 async def _capped(stream, limit):
