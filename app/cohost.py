@@ -9,7 +9,7 @@ and sends it themselves. Airbnb's Terms forbid unsolicited commercial messages â
 make it relevant, stop if asked."""
 import re,html,time,random
 import httpx
-from app import airbnb
+from app import airbnb, store
 from app import search as listing_search
 UA=listing_search.UA
 BASE='https://www.airbnb.co.uk'
@@ -44,7 +44,8 @@ def _listing_host(lid):
 def _operators(city,limit=12):
     """Hosts in this city worth pitching: most-reviewed listings first, one row per host."""
     res=listing_search.search(city,None,None,2,pages=2)
-    items=sorted(res.get('items',[]),key=lambda x:-((x.get('reviews') or 0)*(x.get('rating') or 0)))[:limit*2]
+    # a host's takedown also stops us reading that listing
+    items=sorted(store.without_blocked_listings(res.get('items',[])),key=lambda x:-((x.get('reviews') or 0)*(x.get('rating') or 0)))[:limit*2]
     out=[];seen=set()
     for it in items:
         if len(out)>=limit:break

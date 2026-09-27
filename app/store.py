@@ -211,6 +211,47 @@ def unsuppressed(items):
     return [it for it, k in keyed if not k & hit]
 
 
+# ---------------- listing takedowns: no reels of these listings, and not in co-host or Outreach results ----------------
+
+def listing_ids(item):
+    """Every Airbnb listing an item names: a numeric id, a listing link or a contact-host link."""
+    import re
+    pid = str(item.get('id') or '')
+    found = set(re.findall(r'/(?:rooms(?:/plus)?|contact_host)/(\d{1,20})', f"{item.get('listing_url') or ''} {item.get('url') or ''}"))
+    return found | ({pid} if re.fullmatch(r'\d{1,20}', pid) else set())
+
+
+def blocked_ids(ids, conn=None):
+    ids = sorted({str(i) for i in ids if i})
+    if not ids:
+        return set()
+    with database.transaction(conn) as c:
+        return {r['listing_id'] for r in c.execute('SELECT listing_id FROM blocked_listings WHERE listing_id=ANY(%s)', (ids,)).fetchall()}
+
+
+def without_blocked_listings(items):
+    keyed = [(it, listing_ids(it)) for it in items]
+    hit = blocked_ids(set().union(*(k for _, k in keyed))) if keyed else set()
+    return [it for it, k in keyed if not k & hit]
+
+
+def block_listing(listing_id, reason, conn=None):
+    """True when newly blocked; blocking twice keeps the first reason."""
+    with database.transaction(conn) as c:
+        return bool(c.execute('INSERT INTO blocked_listings(listing_id,reason,ts) VALUES(%s,%s,%s) ON CONFLICT (listing_id) '
+                              'DO NOTHING RETURNING listing_id', (listing_id, reason[:300], time.time())).fetchone())
+
+
+def unblock_listing(listing_id):
+    with database.connect() as c:
+        return bool(c.execute('DELETE FROM blocked_listings WHERE listing_id=%s RETURNING listing_id', (listing_id,)).fetchone())
+
+
+def blocked_listings():
+    with database.connect() as c:
+        return c.execute('SELECT * FROM blocked_listings ORDER BY ts DESC').fetchall()
+
+
 def outreach_stats(user=None):
     with database.connect() as c:
         q = 'SELECT status,count(*) AS n FROM outreach'
@@ -294,13 +335,14 @@ def export(user):
             'drive_oauth_states': rows('SELECT redirect_uri,created,expires_at FROM drive_oauth_states WHERE owner_id=%(o)s'),
             'admin_events': rows('SELECT ts,action,detail,actor_id=%(o)s AS by_you,target_id=%(o)s AS about_you '
                                  'FROM admin_events WHERE actor_id=%(o)s OR target_id=%(o)s ORDER BY ts'),
-            'privacy_requests': rows('SELECT ref,ts,type,name,details,airbnb_profile_id,status,due_at,handled_at FROM privacy_requests '
+            'privacy_requests': rows('SELECT ref,ts,type,name,details,airbnb_profile_id,listing_id,status,due_at,handled_at FROM privacy_requests '
                                      'WHERE lower(email)=(SELECT email FROM users WHERE id=%(o)s) ORDER BY ts'),
         }
 
 
 PRIVACY_REQUEST_TYPES = {'access': 'Access', 'erasure': 'Erasure', 'rectification': 'Rectification',
-                         'objection': 'Objection to outreach', 'complaint': 'Complaint', 'other': 'Other'}
+                         'objection': 'Objection to outreach', 'listing_removal': 'Remove my listing from ReelSieve',
+                         'complaint': 'Complaint', 'other': 'Other'}
 
 
 def one_month_after(ts):
@@ -312,16 +354,16 @@ def one_month_after(ts):
     return d.replace(year=y, month=m, day=min(d.day, calendar.monthrange(y, m)[1])).timestamp()
 
 
-def add_privacy_request(kind, email, name, details, airbnb_profile_id=None):
+def add_privacy_request(kind, email, name, details, airbnb_profile_id=None, listing_id=None):
     """Store a request and return (ref, received ts). The on-screen reference is the acknowledgement."""
     import secrets
     now = time.time()
     for _ in range(6):
         ref = 'PR-' + time.strftime('%y%m%d', time.gmtime(now)) + '-' + secrets.token_hex(3).upper()
         with database.connect() as c:
-            if c.execute('INSERT INTO privacy_requests(ref,ts,type,email,name,details,airbnb_profile_id,due_at) '
-                         'VALUES(%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (ref) DO NOTHING RETURNING ref',
-                         (ref, now, kind, email, name, details, airbnb_profile_id, one_month_after(now))).fetchone():
+            if c.execute('INSERT INTO privacy_requests(ref,ts,type,email,name,details,airbnb_profile_id,listing_id,due_at) '
+                         'VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (ref) DO NOTHING RETURNING ref',
+                         (ref, now, kind, email, name, details, airbnb_profile_id, listing_id, one_month_after(now))).fetchone():
                 return ref, now
     raise RuntimeError('Could not allocate a request reference')
 

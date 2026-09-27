@@ -544,19 +544,28 @@ async def privacy_request_post(request: Request):
     if auth.too_many(ip, 'privacy'):
         return _request_page(request, 429, f=f, error='Too many requests from this network. Try again in 10 minutes, or email hello@braivex.com.')
     profile = linkedin.airbnb_profile(f.get('airbnb_profile', ''))
+    removal = f.get('type') == 'listing_removal'
+    listing = jobs.listing_id(f.get('listing_url', ''))
     error = ('Choose what the request is about' if f.get('type') not in store.PRIVACY_REQUEST_TYPES else
              'Enter a valid email address so we can reply' if not auth.EMAIL.match(f.get('email', '')) else
-             'Tell us what you would like us to do' if not f.get('details') else
+             'Paste the link to your Airbnb listing (airbnb.co.uk/rooms/<number>)' if removal and not listing else
+             'Tell us what you would like us to do' if not f.get('details') and not removal else
              'Paste the link to your Airbnb profile (airbnb.co.uk/users/show/<number>), or leave it empty'
-             if f.get('airbnb_profile') and not profile else None)
+             if f.get('airbnb_profile') and not profile else
+             'Paste the link to your Airbnb listing (airbnb.co.uk/rooms/<number>), or leave it empty'
+             if f.get('listing_url') and not listing else None)
     if error:
         return _request_page(request, 400, f=f, error=error)
     auth.record_fail(ip, 'privacy')  # counts submissions, not failures
-    ref, received = store.add_privacy_request(f['type'], auth.norm(f['email']), f.get('name', '')[:200] or None, f['details'][:4000],
-                                              profile.rsplit('/', 1)[-1] if profile else None)
+    details = f.get('details') or 'Remove my listing from ReelSieve.'
+    ref, received = store.add_privacy_request(f['type'], auth.norm(f['email']), f.get('name', '')[:200] or None, details[:4000],
+                                              profile.rsplit('/', 1)[-1] if profile else None, listing)
     if f['type'] == 'objection' and profile:
         store.suppress({'airbnb_profile': profile})  # stop outreach to them at once, for every user
-    return _request_page(request, ack={'ref': ref, 'received': received, 'due': store.one_month_after(received)})
+    if removal:
+        store.block_listing(listing, 'Removal request ' + ref)  # no more reels of it, for every user, at once
+    return _request_page(request, ack={'ref': ref, 'received': received, 'due': store.one_month_after(received),
+                                       'listing': listing if removal else None})
 
 
 @app.post('/api/privacy-requests/handled')
@@ -566,6 +575,30 @@ async def privacy_request_handled(request: Request):
     if not store.handle_privacy_request(ref):
         raise HTTPException(404, 'No open request with that reference')
     store.admin_event('privacy_request_handled', request.state.user, None, ref=ref)
+    return {'ok': True}
+
+
+@app.post('/api/blocked-listings')
+async def blocked_listing_add(request: Request):
+    """Admin: no reels of this listing, and not in co-host or Outreach results. Takes a /rooms/<id> link or the number."""
+    _require_admin(request)
+    b = await request.json()
+    raw = str(b.get('listing') or '').strip()
+    lid = raw if re.fullmatch(r'\d{1,20}', raw) else jobs.listing_id(raw)
+    if not lid:
+        raise HTTPException(400, 'Paste an Airbnb listing link (airbnb.…/rooms/<number>) or its number')
+    store.block_listing(lid, str(b.get('reason') or '').strip()[:300] or 'Added by an admin')
+    store.admin_event('listing_block', request.state.user, None, listing=lid)
+    return {'ok': True, 'listing_id': lid}
+
+
+@app.post('/api/blocked-listings/remove')
+async def blocked_listing_remove(request: Request):
+    _require_admin(request)
+    lid = str((await request.json()).get('listing_id') or '').strip()
+    if not store.unblock_listing(lid):
+        raise HTTPException(404, 'That listing is not blocked')
+    store.admin_event('listing_unblock', request.state.user, None, listing=lid)
     return {'ok': True}
 
 
@@ -1104,6 +1137,11 @@ def outreach_page(request: Request):
         'daily_cap': DAILY_CAP, 'cap': DAILY_CAP, 'sent_today': store.sent_today(u)})
 
 
+def outreach_allowed(items):
+    """People who objected never reappear, nor do listings taken down from ReelSieve."""
+    return store.unsuppressed(store.without_blocked_listings(items))
+
+
 @app.get('/api/outreach/cohosts')
 def api_cohosts(city: str = ''):
     _airbnb_on()
@@ -1115,7 +1153,7 @@ def api_cohosts(city: str = ''):
         raise HTTPException(503, str(e))
     except Exception:
         raise HTTPException(502, 'Lookup failed — try again')
-    return {**res, 'items': store.unsuppressed(res.get('items') or [])}  # people who objected never reappear
+    return {**res, 'items': outreach_allowed(res.get('items') or [])}
 
 
 @app.get('/api/outreach/linkedin')
@@ -1129,7 +1167,7 @@ def api_linkedin(city: str = '', role: str = 'property manager'):
         raise HTTPException(503, str(e))
     except Exception:
         raise HTTPException(502, 'Lookup failed — try again')
-    return {**res, 'items': store.unsuppressed(res.get('items') or [])}
+    return {**res, 'items': outreach_allowed(res.get('items') or [])}
 
 
 @app.post('/api/outreach/queue')
@@ -1141,7 +1179,7 @@ async def api_queue(request: Request):
                               meta={**{k: it.get(k) for k in ('id', 'listing_title', 'company') if k in it},
                                     'listing_url': str(it.get('listing_url') or '')[:300],
                                     'airbnb_profile': linkedin.airbnb_profile(it.get('airbnb_profile'))})
-           for it in store.unsuppressed([it for it in (b.get('items') or [])[:25] if isinstance(it, dict)])]
+           for it in outreach_allowed([it for it in (b.get('items') or [])[:25] if isinstance(it, dict)])]
     return {'ok': True, 'ids': ids, 'rows': store.outreach_rows(u), 'stats': store.outreach_stats(u)}
 
 
@@ -1194,7 +1232,8 @@ def api_out_csv(request: Request):
 
 EVENT_LABELS = {'plan': 'Plan or credits changed', 'password_reset': 'Password reset', 'deactivate': 'Removed (deactivated)',
                 'erase': 'Account erased', 'order_settle': 'Order marked paid', 'order_cancel': 'Order cancelled',
-                'order_link': 'Pay link set', 'privacy_request_handled': 'Privacy request handled'}
+                'order_link': 'Pay link set', 'privacy_request_handled': 'Privacy request handled',
+                'listing_block': 'Listing blocked', 'listing_unblock': 'Listing unblocked'}
 
 
 def settings_view():
@@ -1216,7 +1255,7 @@ def settings(request: Request, saved: int = 0, flash: str = ''):
         'settings': settings_view(), 'gdrive': gdrive.status(request.state.user), 'saved': bool(saved), 'flash': flash[:400],
         'events': store.admin_events(50), 'event_labels': EVENT_LABELS,
         'requests': store.open_privacy_requests(), 'request_types': store.PRIVACY_REQUEST_TYPES, 'now': time.time(),
-        'airbnb_block': airbnb.last_block(),
+        'blocked': store.blocked_listings(), 'airbnb_block': airbnb.last_block(),
         'redirect_uri': _redirect_uri(request), 'webhook_base': (public_base() or str(request.base_url).rstrip('/'))})
 
 

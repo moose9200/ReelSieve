@@ -22,6 +22,7 @@ TERMINAL = ('done', 'failed', 'cancelled')
 LOG_LINES = 80
 AIRBNB = re.compile(r'^https?://(?:[a-z0-9-]+\.)?airbnb\.[a-z.]{2,12}/rooms/(?:plus/)?(\d{1,20})(?:[/?#].*)?$', re.I)
 JOB_ID = re.compile(r'^[0-9a-f]{6,32}$')
+REMOVED = "This listing has been removed from ReelSieve, so we can't make a reel of it."
 
 
 class AdmissionError(Exception):
@@ -37,11 +38,17 @@ def clean(text, limit=200):
     return re.sub(r'\s+', ' ', t).strip()[:limit]
 
 
-def canonical_listing(url):
+def listing_id(url):
+    """The numeric id of an Airbnb /rooms/<id> link, else None."""
     m = AIRBNB.match((url or '').strip())
-    if not m:
+    return m.group(1) if m else None
+
+
+def canonical_listing(url):
+    lid = listing_id(url)
+    if not lid:
         raise AdmissionError('Paste an Airbnb listing link (airbnb.…/rooms/<number>)')
-    return 'https://www.airbnb.co.uk/rooms/' + m.group(1)
+    return 'https://www.airbnb.co.uk/rooms/' + lid
 
 
 def _request_hash(url, params):
@@ -73,6 +80,8 @@ def admit(user, url, requested, idempotency_key=None, ip=None):
             return get(user, existing['id'])
         if not airbnb.enabled():  # kill switch: refused before anything is charged
             raise AdmissionError(airbnb.DISABLED, 503)
+        if store.blocked_ids([listing_id(url)], c):  # the host (or an admin) took this listing down
+            raise AdmissionError(REMOVED, 403)
         generation = gdrive.usable_generation(c, owner)
         if generation is None:
             raise AdmissionError('Connect your Google Drive in Account first — finished reels are delivered there', 412)

@@ -1,5 +1,5 @@
 """Airbnb fetch safeguards against real isolated PostgreSQL: hard stop on a block, one shared rate limit for every
-process, and the kill switch. Airbnb is always the synthetic fake; nothing reaches the real site."""
+process, the kill switch, and listing takedowns. Airbnb is always the synthetic fake; nothing reaches the real site."""
 import json
 import logging
 from pathlib import Path
@@ -12,7 +12,7 @@ import types
 import pytest
 from fastapi.testclient import TestClient
 
-from app import airbnb, auth, cohost, fetch, jobs, pipeline, search, server, worker
+from app import airbnb, auth, cohost, fetch, jobs, pipeline, search, server, store, worker
 from fakes import CHALLENGE, connect
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -345,3 +345,90 @@ def test_a_blocked_reviews_page_stops_the_job(db, monkeypatch, status, content):
     with pytest.raises(airbnb.Unavailable, match='not serving'):
         pipeline.scrape_reviews(ROOM)
     assert blocks(db)[0]['host'] == 'www.airbnb.co.uk'
+
+
+# ---------------- 5. listing takedowns ----------------
+
+def _request(client, **fields):
+    token = re.search(r'name="csrf" value="([0-9a-f]+)"', client.get('/privacy/request').text).group(1)
+    return client.post('/privacy/request', data={'csrf': token, 'name': 'Pat Host', 'email': 'pat@example.org',
+                                                 'type': 'listing_removal', 'details': '', 'airbnb_profile': '', **fields})
+
+
+def test_takedown_request_blocks_the_listing_at_once_and_is_recorded(web, db):
+    assert 'Remove my listing from ReelSieve' in web['anon'].get('/privacy/request').text
+    r = _request(web['anon'], listing_url=' https://www.airbnb.com/rooms/4242?adults=2 ')
+    assert r.status_code == 200, r.text
+    ref = re.search(r'PR-\d{6}-[0-9A-F]{6}', r.text).group(0)
+    assert '4242' in r.text
+    with db.connect() as c:
+        req = c.execute('SELECT * FROM privacy_requests').fetchone()
+        blocked = c.execute('SELECT * FROM blocked_listings').fetchall()
+    assert (req['type'], req['listing_id'], req['status'], req['email']) == ('listing_removal', '4242', 'open', 'pat@example.org')
+    assert [(b['listing_id'], b['reason']) for b in blocked] == [('4242', 'Removal request ' + ref)]
+    assert abs(blocked[0]['ts'] - time.time()) < 60
+    settings = web['admin'].get('/settings').text
+    assert ref in settings and 'Listing 4242' in settings
+    for bad in ('', 'https://www.airbnb.co.uk/users/show/1', 'https://evil.example.org/rooms/1', 'https://www.airbnb.co.uk.evil.test/rooms/5',
+                'not a link'):
+        assert _request(client_for(), listing_url=bad).status_code == 400, bad
+    with db.connect() as c:
+        assert c.execute('SELECT count(*) AS n FROM blocked_listings').fetchone()['n'] == 1
+
+
+def test_a_listing_link_on_another_request_type_blocks_nothing(web, db):
+    assert _request(web['anon'], type='other', details='Question', listing_url=ROOM).status_code == 200
+    with db.connect() as c:
+        assert c.execute('SELECT count(*) AS n FROM blocked_listings').fetchone()['n'] == 0
+
+
+def test_admission_refuses_a_blocked_listing_without_charge(drive, db):
+    store.block_listing('4242', 'test')
+    with pytest.raises(jobs.AdmissionError) as err:
+        jobs.admit(ALICE, 'https://www.airbnb.com/rooms/4242?adults=2', {})
+    assert err.value.status == 403 and str(err.value) == "This listing has been removed from ReelSieve, so we can't make a reel of it."
+    with db.connect() as c:
+        assert c.execute('SELECT count(*) AS n FROM usage').fetchone()['n'] == 0
+    assert jobs.admit(ALICE, 'https://www.airbnb.co.uk/rooms/4243', {})['status'] == 'queued'
+
+
+def test_admins_add_and_remove_blocked_listings(web, db):
+    assert post(web['alice'], '/api/blocked-listings', {'listing': ROOM}).status_code == 403
+    assert web['admin'].post('/api/blocked-listings', json={'listing': ROOM}).status_code == 403  # CSRF
+    for bad in ('https://evil.example.org/rooms/1', 'abc', ''):
+        assert post(web['admin'], '/api/blocked-listings', {'listing': bad}).status_code == 400, bad
+    assert post(web['admin'], '/api/blocked-listings', {'listing': ROOM, 'reason': 'Airbnb takedown'}).status_code == 200
+    assert post(web['admin'], '/api/blocked-listings', {'listing': '4243'}).status_code == 200
+    card = web['admin'].get('/settings').text.split('id="blocked-card"', 1)[1].split('</section>', 1)[0]
+    assert '4242' in card and 'Airbnb takedown' in card and '4243' in card and 'Added by an admin' in card
+    assert post(web['alice'], '/api/blocked-listings/remove', {'listing_id': '4242'}).status_code == 403
+    assert post(web['admin'], '/api/blocked-listings/remove', {'listing_id': '4242'}).status_code == 200
+    assert post(web['admin'], '/api/blocked-listings/remove', {'listing_id': '4242'}).status_code == 404
+    assert store.blocked_ids(['4242', '4243']) == {'4243'}
+    activity = web['admin'].get('/settings').text.split('id="events-card"', 1)[1].split('</section>', 1)[0]
+    assert 'Listing blocked' in activity and 'Listing unblocked' in activity and '4242' in activity
+
+
+PROSPECTS = [{'id': str(n), 'name': name, 'url': f'https://www.airbnb.co.uk/contact_host/{n}/send_message',
+              'listing_url': f'https://www.airbnb.co.uk/rooms/{n}', 'city': 'Leeds', 'listing_title': 'Flat'}
+             for n, name in ((111, 'Jo'), (222, 'Sam'), (333, 'Kim'))]
+
+
+def test_blocked_listings_never_appear_in_co_host_or_outreach_results(web, db, monkeypatch):
+    store.block_listing('222', 'test')
+    monkeypatch.setattr(cohost, 'discover', lambda city, limit=12: {'city': city, 'items': [dict(p) for p in PROSPECTS],
+                                                                    'source': 'operators', 'note': ''})
+    assert [p['name'] for p in web['alice'].get('/api/outreach/cohosts?city=Leeds').json()['items']] == ['Jo', 'Kim']
+    assert [p['name'] for p in web['alice'].get('/api/outreach/linkedin?city=Leeds').json()['items']] == ['Jo', 'Kim']
+    post(web['alice'], '/api/outreach/queue', {'channel': 'cohost', 'items': [dict(p, message='Hi') for p in PROSPECTS]})
+    assert sorted(r['name'] for r in store.outreach_rows(ALICE)) == ['Jo', 'Kim']
+
+
+def test_co_host_discovery_does_not_fetch_a_blocked_listing(airbnb_net, db, monkeypatch):
+    store.block_listing('2', 'test')
+    airbnb_net.status['/host/'] = 404
+    monkeypatch.setattr(cohost.listing_search, 'search', lambda *a, **k: {'items': [
+        {'id': str(n), 'url': f'https://www.airbnb.co.uk/rooms/{n}', 'reviews': 10 - n, 'rating': 5.0} for n in (1, 2, 3)]})
+    res = cohost.discover('Poole')
+    assert [c for c in airbnb_net.calls if '/rooms/' in c] == ['www.airbnb.co.uk/rooms/1', 'www.airbnb.co.uk/rooms/3']
+    assert '2' not in [i['id'] for i in res['items']]
