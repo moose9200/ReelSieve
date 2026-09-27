@@ -15,7 +15,7 @@ import uuid
 
 from psycopg.types.json import Jsonb
 
-from app import database, gdrive, plans, store
+from app import database, gdrive, plans, referrals, store
 
 ACTIVE = ('queued', 'running', 'uploading')
 TERMINAL = ('done', 'failed', 'cancelled')
@@ -214,6 +214,12 @@ def finish(job_id, token, status, error=None, meta=None):
                          {'done': 'Done', 'failed': 'Failed', 'cancelled': 'Cancelled'}[status], now, now, job_id, token)).fetchone()
         if job and status != 'done':
             _refund(c, job)
+        if job and status == 'done':
+            try:
+                with c.transaction():  # savepoint: a referral error must never undo a delivered reel
+                    referrals.reward_first_delivery(c, job['owner_id'], now)
+            except Exception as e:  # the referral stays waiting and is decided on the account's next delivery
+                print(json.dumps({'referral_reward_error': type(e).__name__}), flush=True)
     return bool(job)
 
 

@@ -23,6 +23,8 @@ ADMIN_EVENT_YEARS = 2
 PRIVACY_REQUEST_YEARS = 2      # after the request was handled
 ERASED_UNPAID_ORDER_DAYS = 90  # a payment reported before erasure that never cleared
 INVOICE_BACKUP_RUN_YEARS = 2   # records of the daily India backup (app/invoices.py); no personal data
+REFERRAL_REWARDED_YEARS = 2    # after the reward
+REFERRAL_UNREWARDED_YEARS = 1  # after signup, when never rewarded
 
 # A job keeps the customer's own reel history; only other people's data goes. Legacy jobs stored the finished
 # host message as the customer's template too.
@@ -48,6 +50,9 @@ def run(now=None):
             ('admin_events', 'DELETE FROM admin_events WHERE ts<%s', now - ADMIN_EVENT_YEARS * YEAR),
             ('privacy_requests', "DELETE FROM privacy_requests WHERE status='handled' AND handled_at<%s",
              now - PRIVACY_REQUEST_YEARS * YEAR),
+            ('referrals_rewarded', 'DELETE FROM referrals WHERE rewarded_at<%s', now - REFERRAL_REWARDED_YEARS * YEAR),
+            ('referrals_unrewarded', 'DELETE FROM referrals WHERE rewarded_at IS NULL AND ts<%s',
+             now - REFERRAL_UNREWARDED_YEARS * YEAR),
             ('legacy_archives', 'DELETE FROM legacy_archives WHERE created<%s', now - keep_archive * DAY),
             ('invoice_backups', 'DELETE FROM invoice_backups WHERE ts<%s', now - INVOICE_BACKUP_RUN_YEARS * YEAR),
         ]}

@@ -1,8 +1,9 @@
 """PostgreSQL business records. Owner IDs are durable; email remains the API boundary.
 
 Usage rows are kept: lifetime free quotas and no-double-charge reruns depend on them.
-Network signals are pseudonymised (keyed HMACs of the /24 or /64 network, never raw addresses), kept only on free
-videos, where the free-tier guard counts them, and cleared after SIGNAL_DAYS (privacy page).
+Network signals are pseudonymised (keyed HMACs of the /24 or /64 network, never raw addresses), kept on free
+videos, where the free-tier guard counts them, and per sign-up/sign-in for the invite self-invite check
+(signin_networks), and cleared after SIGNAL_DAYS (privacy page).
 """
 import time
 import hmac
@@ -17,7 +18,8 @@ from app import database
 conn = database.connect
 
 def _key():
-    """Key for network signals only: derived from SESSION_SECRET under its own purpose label, so it signs nothing else."""
+    """Key for abuse signals only (network hashes; the invite Google-account hash, prefixed "google:"): derived from
+    SESSION_SECRET under its own purpose label, so it signs nothing else."""
     from app import auth;return hmac.new(auth.secret().encode(),b'reelsieve:abuse-signal-key:v1',hashlib.sha256).digest()
 def net_of(ip):
     """Group by network so a phone/office NAT isn't one identity per device, and IPv6 rotation doesn't defeat it."""
@@ -44,6 +46,18 @@ def purge_signals(days=SIGNAL_DAYS):
     with database.connect() as c:
         c.execute('UPDATE usage SET ip_hash=NULL,fp_hash=NULL WHERE ts<%s AND (ip_hash IS NOT NULL OR fp_hash IS NOT NULL)', (cutoff,))
         c.execute('UPDATE accounts SET ip_hash=NULL,fp_hash=NULL WHERE created<%s AND (ip_hash IS NOT NULL OR fp_hash IS NOT NULL)', (cutoff,))
+        c.execute('DELETE FROM signin_networks WHERE ts<%s', (cutoff,))
+
+
+def note_signin(user, ip):
+    """Keep the keyed network hash of a sign-up or sign-in (latest time per network) for the invite programme's
+    self-invite check (app/referrals.py). Paid videos keep no network hash, so this is how a paying inviter's own
+    network is known. Nothing is kept for an unknown address."""
+    if net_of(ip) == 'unknown':
+        return
+    with database.connect() as c:
+        c.execute('INSERT INTO signin_networks(owner_id,ip_hash,ts) VALUES(%s,%s,%s) '
+                  'ON CONFLICT (owner_id,ip_hash) DO UPDATE SET ts=EXCLUDED.ts', (database.user_id(user, c), ip_hash(ip), time.time()))
 
 
 def get_account(user, conn=None):
@@ -85,16 +99,21 @@ def set_blocked(user, blocked=1):
         c.execute('UPDATE accounts SET blocked=%s WHERE owner_id=%s', (int(bool(blocked)), database.user_id(user, c)))
 
 
-def record_usage(user, plan, listing_url, job_id, ip=None, kind='video', credits=1, conn=None, debited=False):
+def record_usage(user, plan, listing_url, job_id, ip=None, kind='video', credits=1, conn=None, debited=False, bonus=False):
     with database.transaction(conn) as c:
-        c.execute('INSERT INTO usage(ts,owner_id,plan,kind,listing_key,job_id,ip_hash,credits,debited) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)',
+        c.execute('INSERT INTO usage(ts,owner_id,plan,kind,listing_key,job_id,ip_hash,credits,debited,bonus) '
+                  'VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',
                   (time.time(), database.user_id(user, c), plan, kind, listing_key(listing_url), job_id,
-                   ip_hash(ip) if ip else None, credits, debited))
+                   ip_hash(ip) if ip else None, credits, debited, bonus))
 
 
-def count_usage(user=None, ip=None, since_days=None, listing_url=None, conn=None):
+def count_usage(user=None, ip=None, since_days=None, listing_url=None, conn=None, bonus=None):
+    """Videos made and not refunded. bonus=False counts only those that used the plan's own allowance."""
     q = "SELECT count(*) AS n FROM usage WHERE kind='video' AND refunded_at IS NULL"
     args = []
+    if bonus is not None:
+        q += ' AND bonus=%s'
+        args.append(bonus)
     with database.transaction(conn) as c:
         for column, value in [('owner_id', database.user_id(user, c) if user else None),
                               ('ip_hash', ip_hash(ip) if ip else None),
@@ -294,6 +313,13 @@ def export(user):
             'drive_oauth_states': rows('SELECT redirect_uri,created,expires_at FROM drive_oauth_states WHERE owner_id=%(o)s'),
             'admin_events': rows('SELECT ts,action,detail,actor_id=%(o)s AS by_you,target_id=%(o)s AS about_you '
                                  'FROM admin_events WHERE actor_id=%(o)s OR target_id=%(o)s ORDER BY ts'),
+            'signin_networks': rows('SELECT ip_hash,ts FROM signin_networks WHERE owner_id=%(o)s ORDER BY ts'),
+            # Both sides of each invite, never who the other account is, and a neutral status only: why a reward was
+            # refused would describe the other account (UK GDPR Art 15(4)). The Google hash is the invited side's own.
+            'referrals': rows("SELECT CASE WHEN referrer_id=%(o)s THEN 'referrer' ELSE 'referee' END AS you_are,ts,rewarded_at,"
+                              "CASE WHEN rewarded_at IS NOT NULL THEN 'rewarded' WHEN reward_reason IS NULL THEN 'pending' "
+                              "ELSE 'not_rewarded' END AS status,CASE WHEN referee_id=%(o)s THEN google_hash END AS google_account_hash "
+                              'FROM referrals WHERE referrer_id=%(o)s OR referee_id=%(o)s ORDER BY ts'),
             'privacy_requests': rows('SELECT ref,ts,type,name,details,airbnb_profile_id,status,due_at,handled_at FROM privacy_requests '
                                      'WHERE lower(email)=(SELECT email FROM users WHERE id=%(o)s) ORDER BY ts'),
         }

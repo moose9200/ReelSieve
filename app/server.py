@@ -24,13 +24,13 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app import admin, auth, billing, cohost, database, fetch, gdrive, hostmsg, invoices, jobs, linkedin, plans, retention, store
+from app import admin, auth, billing, cohost, database, fetch, gdrive, hostmsg, invoices, jobs, linkedin, plans, referrals, retention, store
 from app import search as listing_search
 
 HERE = Path(__file__).resolve().parent
 REQUIRED = ('DATABASE_URL', 'SESSION_SECRET', 'TOKEN_ENCRYPTION_KEY')
 CSRF_COOKIE = 'reelsieve_csrf'
-PUBLIC_PREFIXES = ('/static/', '/oauth/google/callback', '/favicon.ico', '/api/billing/webhook/')
+PUBLIC_PREFIXES = ('/static/', '/oauth/google/callback', '/favicon.ico', '/api/billing/webhook/', '/r/')
 PUBLIC_EXACT = ('/', '/login', '/signup', '/setup', '/forgot', '/healthz', '/privacy', '/terms', '/privacy/request',
                 '/robots.txt', '/sitemap.xml', '/llms.txt')
 DAILY_CAP = int(os.getenv('OUTREACH_DAILY_CAP', '5'))
@@ -335,6 +335,7 @@ async def login_post(request: Request):
         time.sleep(0.6)
         return ctx('Wrong email or password', 401)
     auth.clear_fails(ip)
+    store.note_signin(u, ip)
     return _set_session(RedirectResponse(nxt, status_code=303), request, u, f.get('remember') == '1')
 
 
@@ -350,19 +351,31 @@ def forgot(request: Request):
     return tpl.TemplateResponse(request, 'forgot.html', {})
 
 
+def _ref(code):
+    code = (code or '').strip().lower()
+    return code if referrals.CODE.match(code) else ''
+
+
+@app.get('/r/{code}')
+def referral_link(code: str):
+    """Invite link. The code goes on in the address to a hidden signup field: no cookie, no browser storage (PECR reg 6)."""
+    code = _ref(code)
+    return RedirectResponse('/signup' + ('?ref=' + code if code else ''), status_code=303)
+
+
 @app.get('/signup', response_class=HTMLResponse)
-def signup_page(request: Request, plan: str = '', url: str = ''):
+def signup_page(request: Request, plan: str = '', url: str = '', ref: str = ''):
     if request.state.user:
         return RedirectResponse('/app', status_code=303)
-    return tpl.TemplateResponse(request, 'signup.html', {'plan': plan, 'url': url[:500], 'plans': plans.public_plans()})
+    return tpl.TemplateResponse(request, 'signup.html', {'plan': plan, 'url': url[:500], 'ref': _ref(ref), 'plans': plans.public_plans()})
 
 
 @app.post('/signup')
 async def signup_post(request: Request):
     f = await _form(request)
     u, p1, p2 = (f.get('user') or '').strip(), f.get('password') or '', f.get('password2') or ''
-    plan, url, ip = (f.get('plan') or 'free').strip(), (f.get('url') or '').strip()[:500], _ip(request)
-    ctx = lambda err: tpl.TemplateResponse(request, 'signup.html', {'user': u, 'plan': plan, 'url': url, 'error': err, 'plans': plans.public_plans()}, status_code=400)  # noqa: E731
+    plan, url, ip, ref = (f.get('plan') or 'free').strip(), (f.get('url') or '').strip()[:500], _ip(request), _ref(f.get('ref'))
+    ctx = lambda err: tpl.TemplateResponse(request, 'signup.html', {'user': u, 'plan': plan, 'url': url, 'ref': ref, 'error': err, 'plans': plans.public_plans()}, status_code=400)  # noqa: E731
     if p2 and p1 != p2:
         return ctx('Passwords do not match')
     guard = plans.signup_guard(u, ip)
@@ -373,6 +386,8 @@ async def signup_post(request: Request):
     except ValueError as e:
         return ctx(str(e))
     store.ensure_account(u, 'free')
+    store.note_signin(u, ip)
+    referrals.attribute(u, ref)
     nxt = '/app' + (('?url=' + quote(url)) if url else '')
     if plan in ('starter', 'commercial'):
         nxt = '/upgrade?plan=' + plan
@@ -1192,6 +1207,7 @@ def settings(request: Request, saved: int = 0, flash: str = ''):
         'events': store.admin_events(50), 'event_labels': EVENT_LABELS,
         'requests': store.open_privacy_requests(), 'request_types': store.PRIVACY_REQUEST_TYPES, 'now': time.time(),
         'backup': invoices.status(),
+        'referral_totals': referrals.totals(), 'referral_limit': referrals.MONTHLY_LIMIT,
         'redirect_uri': _redirect_uri(request), 'webhook_base': (public_base() or str(request.base_url).rstrip('/'))})
 
 
@@ -1217,4 +1233,6 @@ def account_page(request: Request, saved: int = 0, flash: str = ''):
     return tpl.TemplateResponse(request, 'account.html', {
         'account': plans.account_view(request.state.user), 'plans': plans.public_plans(),
         'gdrive': gdrive.status(request.state.user), 'saved': bool(saved), 'flash': flash[:400],
-        'records_years': retention.FINANCIAL_RECORDS_YEARS, 'team_changes': store.team_changes(request.state.user)})
+        'records_years': retention.FINANCIAL_RECORDS_YEARS, 'team_changes': store.team_changes(request.state.user),
+        'referral': {'link': site_url() + '/r/' + referrals.code_for(request.state.user),
+                     'rewarded': referrals.rewarded_count(request.state.user), 'monthly_limit': referrals.MONTHLY_LIMIT}})

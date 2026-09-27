@@ -62,6 +62,17 @@
   <p class="form-status" id="req-status" role="status" aria-live="polite"></p>
 </section>
 
+<section class="card" id="referrals-card">
+  <div class="section-head"><h2>Referrals</h2><span class="pill pill-skipped">Read-only</span></div>
+  <p class="hint">Invite links on the Account page. Both accounts get one bonus video when the invited account's first reel is delivered; at most {{ referral_limit }} rewards per inviter a month. Nothing is sent to anyone.</p>
+  <ul class="steps">
+    <li>Signed up through a link: {{ referral_totals.signups }}</li>
+    <li>Rewarded: {{ referral_totals.rewarded }} · waiting for a first reel: {{ referral_totals.pending }}</li>
+    {% for label, n in referral_totals.not_rewarded.items() %}<li>Not rewarded, {{ label|lower }}: {{ n }}</li>{% endfor %}
+    <li>Bonus videos used: {{ referral_totals.bonus_used }} · unused: {{ referral_totals.bonus_unused }}</li>
+  </ul>
+</section>
+
 <section class="card" id="events-card">
   <div class="section-head"><h2>Admin activity</h2><span class="pill pill-skipped">Read-only</span></div>
   <p class="hint">The last 50 changes made to other people's accounts and orders, newest first. Kept for 2 years.</p>
