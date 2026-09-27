@@ -311,6 +311,83 @@ def test_non_airbnb_fetches_are_not_limited(airbnb_net, db):
     assert budgets(db) == {'page': 0, 'image': 0, 'browser': 0}
 
 
+def book_ahead(db, bucket, seconds):
+    """Someone has already booked this many seconds of the budget."""
+    with db.connect() as c:
+        c.execute('UPDATE airbnb_rate SET next_at=extract(epoch FROM clock_timestamp())+%s WHERE bucket=%s', (seconds, bucket))
+
+
+def test_a_long_queue_refuses_web_lookups_at_once_and_books_nothing(web, airbnb_net, db):
+    for bucket, path, params in (('page', '/api/search', {'location': 'Poole'}), ('page', '/api/outreach/cohosts', {'city': 'Poole'}),
+                                 ('image', '/img', {'u': PHOTO})):
+        book_ahead(db, bucket, 60)  # e.g. 12 searches of 5 pages: more than a web lookup may wait, less than a job may
+        before, started = budgets(db)[bucket], time.time()
+        r = web['alice'].get(path, params=params)
+        assert r.status_code == 503 and r.json()['detail'] == airbnb.BUSY, path
+        assert time.time() - started < 3 and budgets(db)[bucket] == before, path  # no web thread asleep, no slot taken
+    assert airbnb_net.calls == []
+
+
+def test_web_lookups_wait_behind_a_short_queue(web, airbnb_net, db):
+    book_ahead(db, 'page', 1.5)
+    started = time.time()
+    assert web['alice'].get('/api/search', params={'location': 'Poole'}).status_code == 502  # the fake has no search page
+    assert time.time() - started >= 1.3 and airbnb_net.calls == ['www.airbnb.co.uk/s/Poole/homes']
+
+
+def test_render_jobs_keep_their_place_behind_web_lookups(airbnb_net, db):
+    """Web lookups can fill the queue only WEB_MAX_WAIT (10 s) ahead; a render job still queues behind that."""
+    assert airbnb.WEB_MAX_WAIT == 10 and airbnb.JOB_MAX_WAIT == 120
+    book_ahead(db, 'page', 1.5)
+    started = time.time()
+    assert pipeline.scrape_listing(ROOM)['city'] == 'Poole' and time.time() - started >= 1.3
+    book_ahead(db, 'page', 30)
+    token = airbnb.max_wait.set(0.5)  # a job would wait up to 120 s here; keep the test short
+    try:
+        with pytest.raises(airbnb.Unavailable, match='busy'):
+            pipeline.scrape_listing(ROOM)
+    finally:
+        airbnb.max_wait.reset(token)
+
+
+def test_one_account_runs_at_most_two_airbnb_lookups_at_once(web, db, monkeypatch):
+    import threading
+    release, running = threading.Event(), []
+
+    def search(location, *a, **k):
+        if location == 'Slow':
+            running.append(location)
+            release.wait(20)
+        return {'items': [], 'count': 0}
+    monkeypatch.setattr(server.listing_search, 'search', search)
+    slow = [threading.Thread(target=web['alice'].get, args=('/api/search',), kwargs={'params': {'location': 'Slow'}}) for _ in range(2)]
+    for t in slow:
+        t.start()
+    try:
+        for _ in range(200):
+            if len(running) == 2:
+                break
+            time.sleep(0.05)
+        assert len(running) == 2
+        r = web['alice'].get('/api/search', params={'location': 'Poole'})
+        assert r.status_code == 429 and 'already' in r.json()['detail']
+        assert web['alice'].get('/api/outreach/cohosts', params={'city': 'Poole'}).status_code == 429
+        assert web['bob'].get('/api/search', params={'location': 'Poole'}).status_code == 200  # other accounts are not held up
+    finally:
+        release.set()
+        for t in slow:
+            t.join(20)
+    assert web['alice'].get('/api/search', params={'location': 'Poole'}).status_code == 200
+
+
+def test_one_account_has_a_limit_on_photos_in_flight(web, airbnb_net, db, monkeypatch):
+    monkeypatch.setitem(server.AT_ONCE, 'img', 0)
+    r = web['alice'].get('/img', params={'u': PHOTO})
+    assert r.status_code == 429 and airbnb_net.calls == []
+    monkeypatch.setitem(server.AT_ONCE, 'img', 24)
+    assert web['alice'].get('/img', params={'u': PHOTO}).status_code == 200
+
+
 # ---------------- 3. kill switch ----------------
 
 def test_switch_off_refuses_listing_links_at_admission_without_charge(drive, db, monkeypatch):
@@ -343,9 +420,31 @@ def test_switch_off_shows_a_notice_on_search_and_co_hosts_only(web, airbnb_net, 
     assert airbnb.DISABLED not in web['alice'].get('/app').text and airbnb.DISABLED not in web['alice'].get('/outreach').text
 
 
-def test_switch_off_leaves_the_image_proxy_alone(web, airbnb_net, monkeypatch):
+def test_switch_off_stops_photo_fetches_too(web, airbnb_net, monkeypatch, tmp_path):
+    """A clean stop after a cease-and-desist: nothing at all goes to Airbnb or its photo CDN."""
     monkeypatch.setenv('AIRBNB_FETCH_ENABLED', '0')
-    assert web['alice'].get('/img', params={'u': PHOTO}).status_code == 200
+    r = web['alice'].get('/img', params={'u': PHOTO})
+    assert r.status_code == 503 and r.json()['detail'] == airbnb.DISABLED
+    with pytest.raises(airbnb.Unavailable, match='not fetching'):
+        pipeline.download_photos({'photos': [{'label': '', 'url': PHOTO}]}, tmp_path / 'img')
+    assert airbnb_net.calls == []
+    hint = {s['key']: s['hint'] for s in server.settings_view()}['AIRBNB_FETCH_ENABLED']
+    assert 'photos' in hint
+
+
+@pytest.mark.parametrize('value', ['0', 'false', 'OFF', ' no '])
+def test_the_switch_understands_the_usual_words_for_off(monkeypatch, value):
+    monkeypatch.setenv('AIRBNB_FETCH_ENABLED', value)
+    assert not airbnb.enabled()
+
+
+@pytest.mark.parametrize('key,value', [('AIRBNB_FETCH_ENABLED', 'maybe'), ('AIRBNB_PAGE_RPS', '0'), ('AIRBNB_IMAGE_RPS', '-1'),
+                                       ('AIRBNB_BROWSER_RPS', 'fast'), ('AIRBNB_PAGE_RPS', 'inf'), ('AIRBNB_BLOCK_COOLDOWN_MIN', 'nan')])
+def test_a_bad_airbnb_setting_refuses_to_start(owners, monkeypatch, key, value):
+    server.validate_config()  # the defaults are fine
+    monkeypatch.setenv(key, value)
+    with pytest.raises(RuntimeError, match=key):
+        server.validate_config()
 
 
 def test_admin_settings_show_the_switch_state_and_the_last_block(web, db, monkeypatch):

@@ -5,12 +5,13 @@ Web process only: identity, jobs, billing and Drive credentials live in PostgreS
 in app.worker. Nothing here writes customer data to local disk.
 Run: .venv/bin/uvicorn app.server:app --port 8787   (DATABASE_URL, SESSION_SECRET, TOKEN_ENCRYPTION_KEY)
 """
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 import hashlib
 import json
 import os
 import re
 import secrets
+import threading
 import time
 from pathlib import Path
 from urllib.parse import quote
@@ -51,11 +52,17 @@ SETTINGS = [('HF_KEY', True, 'Higgsfield API key — enables AI camera motion (b
             ('STRIPE_WEBHOOK_SECRET', True, 'Signing secret (whsec_…) of the Stripe webhook endpoint for checkout.session.completed'),
             ('BILLING_NOTE', False, 'Line shown to customers who choose invoice'),
             ('DEFAULT_MESSAGE', False, 'Default host message template'),
-            ('AIRBNB_FETCH_ENABLED', False, 'Airbnb fetching: 1 on, 0 off. Off refuses new listing-link reels and pauses Find a listing and co-host search'),
+            ('AIRBNB_FETCH_ENABLED', False, 'Airbnb fetching: 1 on, 0 off. Off stops every request to Airbnb and its photo '
+                                            'CDN: new listing-link reels, reels in progress, Find a listing, co-host search and listing photos'),
             ('AIRBNB_BLOCK_COOLDOWN_MIN', False, 'Minutes all Airbnb fetching pauses after Airbnb blocks a request'),
             ('AIRBNB_PAGE_RPS', False, 'Airbnb page requests per second, one budget for the web and every worker'),
-            ('AIRBNB_IMAGE_RPS', False, 'Airbnb photo requests per second, one budget for the web and every worker')]
-SETTING_DEFAULTS = {'AIRBNB_FETCH_ENABLED': '1', 'AIRBNB_BLOCK_COOLDOWN_MIN': '30', 'AIRBNB_PAGE_RPS': '1', 'AIRBNB_IMAGE_RPS': '10'}
+            ('AIRBNB_IMAGE_RPS', False, 'Airbnb photo requests per second, one budget for the web and every worker'),
+            ('AIRBNB_BROWSER_RPS', False, 'Script and data requests per second of the headless reviews page, one budget for every worker')]
+SETTING_DEFAULTS = airbnb.DEFAULTS
+# Airbnb lookups one account may have running at once: searches and co-host lookups, and photos through /img.
+# A person's browser runs one search at a time and loads a screen of thumbnails; a script running more is refused.
+AT_ONCE = {'lookup': 2, 'img': 24}
+_running, _running_lock = {}, threading.Lock()
 
 
 def validate_config():
@@ -64,6 +71,25 @@ def validate_config():
     if missing:
         raise RuntimeError('Missing required configuration: ' + ', '.join(missing))
     gdrive._fernet()
+    airbnb.validate()
+
+
+@contextmanager
+def at_once(user, group):
+    """Refuse (429) when this account already has AT_ONCE[group] Airbnb lookups of this group running.
+    ponytail: counted per web process; with several web replicas each allows its own AT_ONCE."""
+    key = (user, group)
+    with _running_lock:
+        if _running.get(key, 0) >= AT_ONCE[group]:
+            raise HTTPException(429, 'You already have Airbnb lookups running. Wait for them to finish.')
+        _running[key] = _running.get(key, 0) + 1
+    try:
+        yield
+    finally:
+        with _running_lock:
+            _running[key] -= 1
+            if not _running[key]:
+                del _running[key]
 
 
 @asynccontextmanager
@@ -137,6 +163,7 @@ class Gate(BaseHTTPMiddleware):
     """Sign-in gate plus one CSRF policy for every state-changing request (webhook excepted: it is HMAC-signed)."""
 
     async def dispatch(self, request, call_next):
+        airbnb.max_wait.set(airbnb.WEB_MAX_WAIT)  # this request's task only: a web request never queues long for Airbnb
         path = request.url.path
         nonce = request.cookies.get(CSRF_COOKIE, '')
         fresh = '' if nonce else secrets.token_urlsafe(24)
@@ -974,12 +1001,13 @@ def _image_type(body):
 
 
 @app.get('/img')
-def image_proxy(u: str = ''):
+def image_proxy(request: Request, u: str = ''):
     """Signed-in only (the Gate). https to IMG_HOSTS only, every redirect re-checked (app.fetch), size-capped."""
     try:
-        # WebP, not AVIF: the CDN answers AVIF when asked, which Safari before 16 cannot show.
-        _, body = fetch.get(u, headers={'User-Agent': listing_search.UA['User-Agent'], 'Accept': 'image/webp,image/jpeg,image/png'},
-                            timeout=20, max_bytes=IMG_MAX, hosts=IMG_HOSTS)
+        with at_once(request.state.user, 'img'):
+            # WebP, not AVIF: the CDN answers AVIF when asked, which Safari before 16 cannot show.
+            _, body = fetch.get(u, headers={'User-Agent': listing_search.UA['User-Agent'], 'Accept': 'image/webp,image/jpeg,image/png'},
+                                timeout=20, max_bytes=IMG_MAX, hosts=IMG_HOSTS)
     except airbnb.Unavailable as e:
         raise HTTPException(503, str(e))
     except ValueError:
@@ -1042,28 +1070,30 @@ def _airbnb_on():
 
 
 @app.get('/api/search')
-def api_search(location: str, checkin: str = '', checkout: str = '', adults: int = 2, offset: int = 0, pages: int = 3):
+def api_search(request: Request, location: str, checkin: str = '', checkout: str = '', adults: int = 2, offset: int = 0, pages: int = 3):
     """In-app listing picker: public Airbnb search results (no login)."""
     _airbnb_on()
     if not location.strip():
         raise HTTPException(400, 'Enter a location')
-    try:
-        return listing_search.search(location[:120], checkin or None, checkout or None, adults, offset, min(max(pages, 1), 5))
-    except airbnb.Unavailable as e:
-        raise HTTPException(503, str(e))
-    except Exception:
-        raise HTTPException(502, 'Search failed — try again')
+    with at_once(request.state.user, 'lookup'):
+        try:
+            return listing_search.search(location[:120], checkin or None, checkout or None, adults, offset, min(max(pages, 1), 5))
+        except airbnb.Unavailable as e:
+            raise HTTPException(503, str(e))
+        except Exception:
+            raise HTTPException(502, 'Search failed — try again')
 
 
 @app.get('/api/search/more')
-def api_search_more(location: str, page: int, checkin: str = '', checkout: str = '', adults: int = 2):
+def api_search_more(request: Request, location: str, page: int, checkin: str = '', checkout: str = '', adults: int = 2):
     _airbnb_on()
-    try:
-        return listing_search.search_page(location[:120], checkin or None, checkout or None, adults, page)
-    except airbnb.Unavailable as e:
-        raise HTTPException(503, str(e))
-    except Exception:
-        raise HTTPException(502, 'Load more failed — try again')
+    with at_once(request.state.user, 'lookup'):
+        try:
+            return listing_search.search_page(location[:120], checkin or None, checkout or None, adults, page)
+        except airbnb.Unavailable as e:
+            raise HTTPException(503, str(e))
+        except Exception:
+            raise HTTPException(502, 'Load more failed — try again')
 
 
 # ---------------- Google Drive ----------------
@@ -1143,30 +1173,32 @@ def outreach_allowed(items):
 
 
 @app.get('/api/outreach/cohosts')
-def api_cohosts(city: str = ''):
+def api_cohosts(request: Request, city: str = ''):
     _airbnb_on()
     if not city.strip():
         raise HTTPException(400, 'Enter a city')
-    try:
-        res = cohost.discover(city.strip()[:120])
-    except airbnb.Unavailable as e:
-        raise HTTPException(503, str(e))
-    except Exception:
-        raise HTTPException(502, 'Lookup failed — try again')
+    with at_once(request.state.user, 'lookup'):
+        try:
+            res = cohost.discover(city.strip()[:120])
+        except airbnb.Unavailable as e:
+            raise HTTPException(503, str(e))
+        except Exception:
+            raise HTTPException(502, 'Lookup failed — try again')
     return {**res, 'items': outreach_allowed(res.get('items') or [])}
 
 
 @app.get('/api/outreach/linkedin')
-def api_linkedin(city: str = '', role: str = 'property manager'):
+def api_linkedin(request: Request, city: str = '', role: str = 'property manager'):
     _airbnb_on()
     if not city.strip():
         raise HTTPException(400, 'Enter a city')
-    try:
-        res = linkedin.build(city.strip()[:120], (role.strip() or 'property manager')[:80])
-    except airbnb.Unavailable as e:
-        raise HTTPException(503, str(e))
-    except Exception:
-        raise HTTPException(502, 'Lookup failed — try again')
+    with at_once(request.state.user, 'lookup'):
+        try:
+            res = linkedin.build(city.strip()[:120], (role.strip() or 'property manager')[:80])
+        except airbnb.Unavailable as e:
+            raise HTTPException(503, str(e))
+        except Exception:
+            raise HTTPException(502, 'Lookup failed — try again')
     return {**res, 'items': outreach_allowed(res.get('items') or [])}
 
 

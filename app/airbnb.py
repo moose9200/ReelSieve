@@ -4,7 +4,9 @@ the kill switch, the block cool-down, and one rate limit in PostgreSQL shared by
 A block (403, 429, 451, 503 or a challenge page) records the time, pauses all Airbnb fetching everywhere for
 AIRBNB_BLOCK_COOLDOWN_MIN and raises Unavailable, which callers let through: no retry by another route.
 """
+import contextvars
 import logging
+import math
 import os
 import re
 import time
@@ -16,23 +18,45 @@ from app import database
 
 BLOCKED = 'Airbnb is not serving this page to us right now. Try again later.'
 DISABLED = 'ReelSieve is not fetching from Airbnb right now. Try again later.'
+BUSY = 'Airbnb lookups are busy right now. Try again in a minute.'
 BLOCK_STATUSES = (403, 429, 451, 503)
 # Conservative: bot-wall challenge markers only. A normal Airbnb page mentions "datadome" and "recaptcha" in its config.
 CHALLENGE = re.compile(r'captcha-delivery\.com|px-captcha|_Incapsula_Resource|/cdn-cgi/challenge-platform|'
                        r'<title>\s*(?:Access Denied|Pardon Our Interruption|Just a moment\.\.\.)\s*</title>', re.I)
 PAGE_HOST = re.compile(r'(?:[a-z0-9-]+\.)*airbnb\.[a-z]{2,3}(?:\.[a-z]{2})?')
 # Reserve the next slot in one statement (the UPDATE locks the row), on the database clock so hosts need not agree.
-RESERVE = ('UPDATE airbnb_rate SET next_at=GREATEST(next_at, extract(epoch FROM clock_timestamp())) + %s WHERE bucket=%s '
-           'RETURNING next_at - %s - extract(epoch FROM clock_timestamp()) AS wait')
+# No row back = the wait would pass the caller's limit: nothing is booked.
+RESERVE = ('UPDATE airbnb_rate SET next_at=GREATEST(next_at, extract(epoch FROM clock_timestamp())) + %(step)s '
+           'WHERE bucket=%(bucket)s AND next_at - extract(epoch FROM clock_timestamp()) <= %(limit)s '
+           'RETURNING next_at - %(step)s - extract(epoch FROM clock_timestamp()) AS wait')
+# The longest a request may queue for its slot. The web sets WEB_MAX_WAIT for every request it serves, so user
+# lookups never hold a web thread for long and never push a render job back by more than that; jobs queue up to
+# JOB_MAX_WAIT behind them.
+WEB_MAX_WAIT, JOB_MAX_WAIT = 10, 120
+max_wait = contextvars.ContextVar('airbnb_max_wait', default=JOB_MAX_WAIT)
+OFF, ON = ('0', 'false', 'off', 'no'), ('1', 'true', 'on', 'yes')
 log = logging.getLogger('reelsieve.airbnb')
 
 
 class Unavailable(RuntimeError):
-    """Airbnb fetching is stopped: a block, its cool-down, or the kill switch. The message is safe to show."""
+    """Airbnb fetching is stopped: a block, its cool-down, the kill switch or a full queue. The message is safe to show."""
 
 
 def enabled():
-    return os.getenv('AIRBNB_FETCH_ENABLED', '1').strip() != '0'
+    return setting('AIRBNB_FETCH_ENABLED').lower() not in OFF
+
+
+def validate():
+    """At start: refuse a setting that would fail silently (a switch left on) or break every request (a rate of 0)."""
+    if setting('AIRBNB_FETCH_ENABLED').lower() not in OFF + ON:
+        raise RuntimeError('AIRBNB_FETCH_ENABLED must be 1 (on) or 0 (off)')
+    for k in (*RATES.values(), 'AIRBNB_BLOCK_COOLDOWN_MIN'):
+        try:
+            ok = 0 < float(setting(k)) < math.inf
+        except ValueError:
+            ok = False
+        if not ok:
+            raise RuntimeError(f'{k} must be a number above 0')
 
 
 def kind(url):
@@ -76,18 +100,22 @@ def _refuse_if_paused(c):
 
 
 def gate(url, bucket=None):
-    """Before every request: kill switch (pages), cool-down, then wait for this request's slot in the shared budget.
-    bucket: the budget the slot comes from; by default the host's kind ('page' or 'image')."""
+    """Before every request: kill switch, cool-down, then wait for this request's slot in the shared budget, or refuse
+    at once (BUSY, nothing booked) when the queue is longer than max_wait. bucket: the budget the slot comes from; by
+    default the host's kind ('page' or 'image')."""
     k = kind(url)
     if not k:
         return
-    if k == 'page' and not enabled():
+    if not enabled():
         raise Unavailable(DISABLED)
     bucket = bucket or k
     step = interval(bucket)
     with database.connect() as c:
         _refuse_if_paused(c)
-        wait = c.execute(RESERVE, (step, bucket, step)).fetchone()['wait']
+        row = c.execute(RESERVE, {'step': step, 'bucket': bucket, 'limit': max_wait.get()}).fetchone()
+    if not row:
+        raise Unavailable(BUSY)
+    wait = row['wait']
     if wait > 0:
         time.sleep(wait)
         with database.connect() as c:  # a block may have happened while this request waited its turn
