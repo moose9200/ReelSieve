@@ -118,20 +118,22 @@ def test_public_form_posts_never_write_a_file_part_to_disk(owners, monkeypatch):
 
 # ---------------- medium: upload slots cannot be held by slow or repeated uploads ----------------
 
-def _asgi_post(session, body_chunks, stall=None):
-    """POST /api/jobs/photos through the real ASGI app; the body stops after the first chunk until `stall` is set."""
+def _asgi_post(session, body_chunks, stall=None, headers=None, pause=0):
+    """POST /api/jobs/photos through the real ASGI app; the body stops after the first chunk until `stall` is set.
+    pause: seconds between later chunks (a client that trickles)."""
     from app import server
     async def gen():
         yield body_chunks[0]
         if stall is not None:
             await stall.wait()
         for c in body_chunks[1:]:
+            await asyncio.sleep(pause)
             yield c
     async def go():
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=server.app), base_url='http://t') as c:
             return await c.post('/api/jobs/photos', content=gen(), headers={
                 **csrf(session), 'Cookie': f'{auth.COOKIE}={session}', 'Content-Length': str(sum(map(len, body_chunks))),
-                'Content-Type': 'multipart/form-data; boundary=xyz'})
+                'Content-Type': 'multipart/form-data; boundary=xyz', **(headers or {})})
     return go()
 
 
@@ -170,6 +172,7 @@ def test_a_stalled_upload_is_dropped_and_a_full_house_answers_busy(drive, db, ow
     monkeypatch.setattr(server, '_uploading', set())
     monkeypatch.setattr(server, 'PHOTO_SLOT_WAIT', 0.3)
     monkeypatch.setattr(server, 'PHOTO_READ_GRACE', 1.0)
+    connect(owners, drive, 'bob')  # bob passes the Drive check (made before a slot is taken) and is on another network
     body = _body()[0]
     chunks = [body[:1000], body[1000:]]
 
@@ -177,7 +180,7 @@ def test_a_stalled_upload_is_dropped_and_a_full_house_answers_busy(drive, db, ow
         stall = asyncio.Event()  # never set: the client stops sending
         slow = asyncio.create_task(_asgi_post(owners['alice'], chunks, stall))
         await asyncio.sleep(0.2)
-        busy = await asyncio.wait_for(_asgi_post(owners['bob'], chunks), 5)
+        busy = await asyncio.wait_for(_asgi_post(owners['bob'], chunks, headers={'X-Forwarded-For': '198.51.100.9'}), 5)
         return busy, await asyncio.wait_for(slow, 10)
     started = time.time()
     busy, slow = asyncio.run(scenario())

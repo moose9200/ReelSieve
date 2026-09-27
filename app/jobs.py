@@ -133,6 +133,24 @@ def admit_photos(user, fields, files, idempotency_key=None, ip=None):
     return job
 
 
+def precheck_photos(user, idempotency_key=None, ip=None):
+    """admit_photos' cheap refusals, run before an upload takes a slot or its body is read: Drive, then credit.
+    A retried request (a key already used) is left to admit_photos, and so is an account that has made photo reels
+    before and is out of credit: the same photos again would be a free remake, known only once they are read."""
+    key = str(idempotency_key or '')[:120]
+    with database.connect() as c:
+        owner = database.user_id(user, c)
+        if key and c.execute('SELECT 1 FROM jobs WHERE owner_id=%s AND idempotency_key=%s', (owner, key)).fetchone():
+            return
+        if gdrive.usable_generation(c, owner) is None:
+            raise AdmissionError(DRIVE_FIRST, 412)
+        made = c.execute("SELECT 1 FROM usage WHERE owner_id=%s AND kind='video' AND refunded_at IS NULL "
+                         "AND listing_key LIKE 'photos:%%' LIMIT 1", (owner,)).fetchone()
+    ok, reason, meta = plans.can_generate(user, 'photos:', ip)  # a photo set nobody has made yet
+    if not ok and not (made and meta.get('upgrade')):
+        raise AdmissionError(reason, 402)
+
+
 def _forget_inputs(user, folder, ids, generation):
     try:
         gdrive.delete_inputs(user, folder, generation, ids)

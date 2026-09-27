@@ -284,3 +284,114 @@ def test_a_failed_delete_is_retried_hourly_for_7_days_then_reported_on_the_job_p
     assert page.index('id="inputs-state"') < page.index('id="video-card"')  # shown for a cancelled reel, not in the hidden video card
     js = alice.get('/static/app.js').text
     assert '"left"' in js and 'keep trying for 7 days' in js
+
+
+# ---------------- S2: cheap refusals first, a hard deadline and one upload per network ----------------
+
+def test_drive_and_credit_are_checked_before_an_upload_slot_or_the_body(drive, db, owners, monkeypatch):
+    import asyncio
+    from app import server, store
+    monkeypatch.setattr(server, '_photo_slots', asyncio.Semaphore(0))  # every slot taken
+    monkeypatch.setattr(server, 'PHOTO_SLOT_WAIT', 0.2)
+    parsed = []
+    original = server._PhotoForm.parse
+    monkeypatch.setattr(server._PhotoForm, 'parse', lambda self: (parsed.append(1), original(self))[1])
+    send = lambda who, **kw: client_for(owners[who]).post('/api/jobs/photos', data=multipart(N)[0], files=multipart(N)[1],  # noqa: E731
+                                                          headers={**csrf(owners[who]), **kw})
+    r = send('bob')
+    assert r.status_code == 412 and 'Google Drive' in r.json()['detail']  # no Drive: refused at once, not "busy"
+    store.set_plan(ALICE, 'starter', 0)
+    r = send('alice')
+    assert r.status_code == 402 and parsed == [] and usage(db) == []  # no credit: refused before reading a byte
+    store.set_plan(ALICE, 'starter', 1)
+    assert send('alice').status_code == 503 and parsed == []  # passes the checks, then waits for a slot
+
+
+def test_a_retried_upload_and_a_free_remake_are_not_refused_early(drive, db, owners):
+    from app import store
+    store.set_plan(ALICE, 'starter', 1)
+    alice = client_for(owners['alice'])
+    data, files = multipart(N)
+    first = alice.post('/api/jobs/photos', data=data, files=files, headers={**csrf(owners['alice']), 'Idempotency-Key': 'k1'})
+    assert first.status_code == 200 and store.get_account(ALICE)['credits'] == 0
+    again = alice.post('/api/jobs/photos', data=data, files=files, headers={**csrf(owners['alice']), 'Idempotency-Key': 'k1'})
+    assert again.status_code == 200 and again.json()['id'] == first.json()['id']  # the same request, answered again
+    remake = alice.post('/api/jobs/photos', data=data, files=files, headers={**csrf(owners['alice']), 'Idempotency-Key': 'k2'})
+    assert remake.status_code == 200 and remake.json()['id'] != first.json()['id']  # the same photos again are free
+
+
+def test_only_one_upload_at_a_time_from_one_network(drive, db, owners, monkeypatch):
+    import asyncio
+    from app import server, store
+    from test_own_photos_review import _asgi_post, _body
+    monkeypatch.setattr(server, '_photo_slots', asyncio.Semaphore(2))
+    monkeypatch.setattr(server, '_uploading', set())
+    connect(owners, drive, 'bob')
+    paid(BOB)
+    body = _body()[0]
+    chunks = [body[:1000], body[1000:]]
+
+    async def scenario():
+        stall = asyncio.Event()
+        slow = asyncio.create_task(_asgi_post(owners['alice'], chunks, stall, {'X-Forwarded-For': '203.0.113.5'}))
+        await asyncio.sleep(0.3)
+        same = await asyncio.wait_for(_asgi_post(owners['bob'], chunks, headers={'X-Forwarded-For': '203.0.113.77'}), 5)
+        other = await asyncio.wait_for(_asgi_post(owners['bob'], chunks, headers={'X-Forwarded-For': '198.51.100.9'}), 20)
+        stall.set()
+        return same, other, await asyncio.wait_for(slow, 20)
+    same, other, slow = asyncio.run(scenario())
+    assert same.status_code == 429 and 'network' in same.json()['detail']
+    assert other.status_code == 200, other.text
+    assert slow.status_code == 200, slow.text
+    assert not server._uploading and not server._uploading_nets and store.count_usage(user=BOB) == 1
+
+
+def test_an_upload_that_keeps_trickling_is_stopped_at_the_hard_deadline(drive, db, owners, monkeypatch):
+    import asyncio
+    import time
+    from app import server
+    from test_own_photos_review import _asgi_post, _body
+    monkeypatch.setattr(server, '_photo_slots', asyncio.Semaphore(1))
+    monkeypatch.setattr(server, '_uploading', set())
+    monkeypatch.setattr(server, 'PHOTO_MIN_RATE', 1)  # fast enough for the rate check the whole time
+    monkeypatch.setattr(server, 'PHOTO_DEADLINE', 1.0)
+    body = _body()[0]
+    chunks = [body[i:i + 500] for i in range(0, len(body), 500)]  # about 4 s at 0.2 s a chunk
+    started = time.time()
+    r = asyncio.run(_asgi_post(owners['alice'], chunks, pause=0.2))
+    assert r.status_code == 408 and time.time() - started < 5 and usage(db) == []
+    assert server._photo_slots._value == 1 and not server._uploading and not server._uploading_nets
+
+
+def test_upload_limits_are_configurable_with_safe_defaults():
+    from app import server
+    assert server.PHOTO_DEADLINE == 600 and server.PHOTO_PER_NETWORK == 1  # PHOTO_UPLOAD_DEADLINE, PHOTO_UPLOADS_PER_NETWORK
+    src = open(server.__file__).read()
+    assert "os.getenv('PHOTO_UPLOAD_DEADLINE'" in src and "os.getenv('PHOTO_UPLOADS_PER_NETWORK'" in src
+
+
+# ---------------- S4: the body is held once, and pixel limits fit a 1080p reel ----------------
+
+def test_photo_parts_go_straight_into_the_files_list_never_through_a_spooled_copy(drive, db, owners, monkeypatch):
+    import tempfile
+    from app import server
+    written, seen = [], []
+    original = tempfile.SpooledTemporaryFile.write
+    monkeypatch.setattr(tempfile.SpooledTemporaryFile, 'write', lambda self, b: (written.append(len(b)), original(self, b))[1])
+    admit = jobs.admit_photos
+    monkeypatch.setattr(jobs, 'admit_photos', lambda user, fields, files, *a: (seen.extend(files), admit(user, fields, files, *a))[1])
+    data, files = multipart(N)
+    r = client_for(owners['alice']).post('/api/jobs/photos', data=data, files=files, headers=csrf(owners['alice']))
+    assert r.status_code == 200, r.text
+    assert written == [] and len(seen) == N and all(isinstance(d, bytearray) and d[:8] == b'\x89PNG\r\n\x1a\n' for _, d in seen)
+
+
+def test_a_60_megapixel_photo_is_refused_and_the_limit_fits_a_1080p_reel():
+    import io
+    import pytest
+    from PIL import Image
+    assert 20_000_000 < photos.MAX_PIXELS <= 26_000_000
+    buf = io.BytesIO()
+    Image.new('L', (10000, 6000)).save(buf, 'PNG')
+    with pytest.raises(photos.PhotoError, match='too many pixels. Use a photo under 26 megapixels'):
+        photos.clean(buf.getvalue(), 'huge.png')
