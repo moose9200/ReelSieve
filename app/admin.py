@@ -31,8 +31,9 @@ def erase(email, by=None, via=None):
     """Erase an account (UK/EU GDPR Art 17, DPDP s12), also one already deactivated. Returns a warning or None.
 
     Sign-in ends, jobs stop, the Drive grant is revoked, then one transaction deletes jobs, outreach, Drive
-    receipts, OAuth states and unpaid orders; strips accounts, usage and paid orders to what accounting and the
-    statutory record period need; and anonymises the users row (the email becomes free for a new signup).
+    receipts, OAuth states and unpaid orders; removes their side of every referral and retires their invite code;
+    strips accounts, usage and paid orders to what accounting and the statutory record period need; and anonymises
+    the users row (the email becomes free for a new signup).
     by: the admin, the account itself (self-service) or None (operator console / retention)."""
     via = via or ('console' if by is None else 'self' if auth.norm(by) == auth.norm(email) else 'admin')
     owner = auth.begin_erase(email, by)
@@ -52,10 +53,15 @@ def erase(email, by=None, via=None):
         store.admin_event('erase', by, address, conn=c, via=via)
         for table in ('jobs', 'outreach', 'drive_uploads', 'drive_oauth_states'):
             c.execute(f'DELETE FROM {table} WHERE owner_id=%s', (owner,))
+        # Referrals: the erased side goes, the other account keeps its own record; a waiting reward is closed.
+        for side in ('referrer_id', 'referee_id'):
+            c.execute(f"UPDATE referrals SET {side}=NULL,reward_reason=COALESCE(reward_reason,'account_erased') "
+                      f'WHERE {side}=%s', (owner,))
+        c.execute('DELETE FROM referrals WHERE referrer_id IS NULL AND referee_id IS NULL')
         c.execute("UPDATE drive_connections SET status='disconnected',credentials=NULL,google_sub=NULL,google_email=NULL,"
                   'scope=NULL,folder_id=NULL,connected_at=NULL,updated=%s WHERE owner_id=%s', (now, owner))
         c.execute('UPDATE usage SET listing_key=NULL,fp_hash=NULL WHERE owner_id=%s', (owner,))  # ip_hash: 90-day abuse window
-        c.execute('UPDATE accounts SET ip_hash=NULL,fp_hash=NULL,note=NULL WHERE owner_id=%s', (owner,))
+        c.execute('UPDATE accounts SET ip_hash=NULL,fp_hash=NULL,note=NULL,referral_code=NULL WHERE owner_id=%s', (owner,))
         c.execute("DELETE FROM orders WHERE owner_id=%s AND status IN ('pending','cancelled')", (owner,))
         # Paid, or reported paid and awaiting confirmation: the tax record needs the payer's email if the money clears.
         c.execute("UPDATE orders SET note=NULL,meta=NULL,pay_link=NULL,billing_email=COALESCE(billing_email,%s) WHERE owner_id=%s",

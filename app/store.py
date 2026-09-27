@@ -85,16 +85,21 @@ def set_blocked(user, blocked=1):
         c.execute('UPDATE accounts SET blocked=%s WHERE owner_id=%s', (int(bool(blocked)), database.user_id(user, c)))
 
 
-def record_usage(user, plan, listing_url, job_id, ip=None, kind='video', credits=1, conn=None, debited=False):
+def record_usage(user, plan, listing_url, job_id, ip=None, kind='video', credits=1, conn=None, debited=False, bonus=False):
     with database.transaction(conn) as c:
-        c.execute('INSERT INTO usage(ts,owner_id,plan,kind,listing_key,job_id,ip_hash,credits,debited) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)',
+        c.execute('INSERT INTO usage(ts,owner_id,plan,kind,listing_key,job_id,ip_hash,credits,debited,bonus) '
+                  'VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)',
                   (time.time(), database.user_id(user, c), plan, kind, listing_key(listing_url), job_id,
-                   ip_hash(ip) if ip else None, credits, debited))
+                   ip_hash(ip) if ip else None, credits, debited, bonus))
 
 
-def count_usage(user=None, ip=None, since_days=None, listing_url=None, conn=None):
+def count_usage(user=None, ip=None, since_days=None, listing_url=None, conn=None, bonus=None):
+    """Videos made and not refunded. bonus=False counts only those that used the plan's own allowance."""
     q = "SELECT count(*) AS n FROM usage WHERE kind='video' AND refunded_at IS NULL"
     args = []
+    if bonus is not None:
+        q += ' AND bonus=%s'
+        args.append(bonus)
     with database.transaction(conn) as c:
         for column, value in [('owner_id', database.user_id(user, c) if user else None),
                               ('ip_hash', ip_hash(ip) if ip else None),
@@ -294,6 +299,9 @@ def export(user):
             'drive_oauth_states': rows('SELECT redirect_uri,created,expires_at FROM drive_oauth_states WHERE owner_id=%(o)s'),
             'admin_events': rows('SELECT ts,action,detail,actor_id=%(o)s AS by_you,target_id=%(o)s AS about_you '
                                  'FROM admin_events WHERE actor_id=%(o)s OR target_id=%(o)s ORDER BY ts'),
+            # Both sides of each invite, never who the other account is.
+            'referrals': rows("SELECT CASE WHEN referrer_id=%(o)s THEN 'referrer' ELSE 'referee' END AS you_are,"
+                              'ts,rewarded_at,reward_reason FROM referrals WHERE referrer_id=%(o)s OR referee_id=%(o)s ORDER BY ts'),
             'privacy_requests': rows('SELECT ref,ts,type,name,details,airbnb_profile_id,status,due_at,handled_at FROM privacy_requests '
                                      'WHERE lower(email)=(SELECT email FROM users WHERE id=%(o)s) ORDER BY ts'),
         }

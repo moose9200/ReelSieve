@@ -56,12 +56,12 @@ def plan_of(user):
     return PLANS.get(a.get('plan') or 'free',PLANS['free'])
 def account_view(user):
     a=store.ensure_account(user,_default_plan(user));p=PLANS.get(a.get('plan') or 'free',PLANS['free'])
-    used=store.count_usage(user=user)
-    if p['key']=='free':remaining=max(0,FREE_LIFETIME-used)
+    used=store.count_usage(user=user);bonus=int(a.get('bonus_videos') or 0)  # bonus: rewarded invites (app/referrals.py)
+    if p['key']=='free':remaining=max(0,FREE_LIFETIME-store.count_usage(user=user,bonus=False))+bonus
     elif p['videos'] is None:remaining=None
-    else:remaining=max(0,int(a.get('credits') or 0))
+    else:remaining=max(0,int(a.get('credits') or 0))+bonus
     return {'user':user,'plan':p['key'],'plan_name':p['name'],'credits':a.get('credits') or 0,'used':used,'remaining':remaining,
-            'max_seconds':p['max_seconds'],'ai_motion':p['ai_motion'],'blocked':bool(a.get('blocked'))}
+            'bonus_videos':bonus,'max_seconds':p['max_seconds'],'ai_motion':p['ai_motion'],'blocked':bool(a.get('blocked'))}
 def check_email(email):
     e=(email or '').strip().lower()
     if not re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]{2,}',e):return 'Enter a valid email address'
@@ -86,12 +86,13 @@ def can_generate(user,listing_url,ip=None,conn=None):
     if a.get('blocked'):return False,'This account is on hold. Email hello@braivex.com.',{}
     if store.count_usage(user=user,listing_url=listing_url,conn=conn)>0:
         return True,None,{'free_rerun':True,'reason':'same listing already generated — no credit used'}
+    bonus=int(a.get('bonus_videos') or 0)
     if p['key']!='free':
         if p['videos'] is None:return True,None,{}
-        if int(a.get('credits') or 0)<=0:return False,f'No credits left on {p["name"]}. Top up to keep going.',{'upgrade':True}
+        if int(a.get('credits') or 0)+bonus<=0:return False,f'No credits left on {p["name"]}. Top up to keep going.',{'upgrade':True}
         return True,None,{}
-    used=store.count_usage(user=user,conn=conn)
-    if used>=FREE_LIFETIME:
+    used=store.count_usage(user=user,bonus=False,conn=conn)  # bonus videos never use up the free allowance
+    if used>=FREE_LIFETIME and not bonus:
         return False,f'Free plan covers {FREE_LIFETIME} videos and you have used them. Starter is $100 for 3 with AI camera motion.',{'upgrade':True}
     if ip and store.count_usage(ip=ip,since_days=30,conn=conn)>=FREE_PER_NET:
         return False,'A lot of free videos have come from this network. Choose a plan, or email hello@braivex.com and we will lift it.',{'upgrade':True}
@@ -99,7 +100,7 @@ def can_generate(user,listing_url,ip=None,conn=None):
     if last and (time.time()-last)<FREE_COOLDOWN_H*3600:
         wait=FREE_COOLDOWN_H-(time.time()-last)/3600
         return False,f'Free plan makes one video every {int(FREE_COOLDOWN_H)} hours — next one in about {max(1,int(wait))} h. Starter removes the wait.',{'upgrade':True}
-    return True,None,{'free_remaining':FREE_LIFETIME-used-1}
+    return True,None,{'free_remaining':max(0,FREE_LIFETIME-used)+bonus-1}
 def reserve(user, listing_url, job_id, ip=None, conn=None):
     """Validate and reserve once. A caller can atomically insert its job using conn."""
     if not job_id:
@@ -131,13 +132,17 @@ def reserve(user, listing_url, job_id, ip=None, conn=None):
             raise ValueError(reason)
         p = PLANS.get(a['plan'], PLANS['free'])
         rerun = bool(meta.get('free_rerun'))
-        debited = not rerun and p['key'] != 'free' and p['videos'] is not None
+        metered = not rerun and p['videos'] is not None
+        bonus = metered and int(a['bonus_videos'] or 0) > 0  # bonus videos go first, on every metered plan
+        debited = metered and not bonus and p['key'] != 'free'
+        if bonus:
+            c.execute('UPDATE accounts SET bonus_videos=bonus_videos-1 WHERE owner_id=%s', (owner,))
         if debited:
             c.execute('UPDATE accounts SET credits=credits-1 WHERE owner_id=%s', (owner,))
         # The network hash is kept only where the free-tier guard counts it: free videos, not reruns or paid plans.
         store.record_usage(user, p['key'], listing_url, job_id, ip if p['key'] == 'free' and not rerun else None,
                            kind='rerun' if rerun else 'video', credits=0 if rerun else 1,
-                           debited=debited, conn=c)
+                           debited=debited, bonus=bonus, conn=c)
         return {**meta, 'reserved': True}
 
 
@@ -156,6 +161,8 @@ def refund(job_id, conn=None):
             return False
         if row['debited']:
             c.execute('UPDATE accounts SET credits=credits+%s WHERE owner_id=%s', (row['credits'], row['owner_id']))
+        if row['bonus']:
+            c.execute('UPDATE accounts SET bonus_videos=bonus_videos+1 WHERE owner_id=%s', (row['owner_id'],))
         return True
 
 def public_plans():
