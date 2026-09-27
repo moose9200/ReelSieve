@@ -748,6 +748,80 @@
         .then(function () { liBuild.disabled = false; });
     });
 
+    // --- D. UK property companies (Companies House register, business to business) ---
+    var b2bFind = document.getElementById("b2b-find"), b2bPlace = document.getElementById("b2b-place"), b2bCat = document.getElementById("b2b-category");
+    var b2bResults = document.getElementById("b2b-results"), b2bStatus = document.getElementById("b2b-status"), b2bPager = document.getElementById("b2b-pager");
+    var b2bPrev = document.getElementById("b2b-prev"), b2bNext = document.getElementById("b2b-next"), b2bPageEl = document.getElementById("b2b-page");
+    var b2bTpl = document.getElementById("b2b-template"), b2bPage = 1, b2bPages = 1;
+    var b2bSender = { name: "b2b-sender-name", business: "b2b-sender-business", email: "b2b-sender-email" };
+    // the sender's own details are remembered in this browser only, never on our server until they queue an email
+    Object.keys(b2bSender).forEach(function (k) {
+      var el = document.getElementById(b2bSender[k]);
+      if (!el) return;
+      try { var v = localStorage.getItem("rs-" + b2bSender[k]); if (v) el.value = v; } catch (e) {}
+      el.addEventListener("change", function () { try { localStorage.setItem("rs-" + b2bSender[k], el.value.trim()); } catch (e) {} });
+    });
+    function b2bSenderNow() {
+      var out = {};
+      Object.keys(b2bSender).forEach(function (k) { var el = document.getElementById(b2bSender[k]); out[k] = el ? el.value.trim() : ""; });
+      return out;
+    }
+    function b2bRender(d) {
+      var items = (d && d.items) || [];
+      b2bResults.innerHTML = "";
+      if (!items.length) b2bResults.innerHTML = '<p class="empty">No companies match. Try the postcode area (for example BH), or all categories.</p>';
+      items.forEach(function (it) {
+        var row = document.createElement("div");
+        row.className = "or-row";
+        row.innerHTML =
+          '<div class="or-row-body"><span class="or-name">' + orEsc(it.name) + "</span>" +
+          '<span class="or-sub">' + orEsc([it.town, it.category].filter(Boolean).join(" · ")) + "</span></div>" +
+          '<div class="or-row-actions">' +
+          '<a class="btn btn-secondary btn-sm" href="' + orEsc(it.record_url) + '" target="_blank" rel="noopener">Companies House record ↗</a>' +
+          '<a class="btn btn-secondary btn-sm" href="' + orEsc(it.search_url) + '" target="_blank" rel="noopener">Find website ↗</a>' +
+          '<button type="button" class="btn btn-primary btn-sm b2b-queue">Queue</button>' +
+          '<button type="button" class="btn btn-danger btn-sm b2b-suppress" title="They asked not to be contacted: hides this company from every ReelSieve user">Do not contact</button></div>';
+        row.querySelector(".b2b-queue").addEventListener("click", function (e) {
+          var b = e.currentTarget;
+          b.disabled = true;
+          orPost("/api/outreach/companies/queue", { company_number: it.company_number, template: b2bTpl ? b2bTpl.value : "", sender: b2bSenderNow() })
+            .then(function (r) { orStats(r && r.stats); b.textContent = "Queued"; orSay(b2bStatus, it.name + " added to the tracker with its email — reload to see the row."); })
+            .catch(function (err) { orSay(b2bStatus, err.message, true); b.disabled = false; });
+        });
+        row.querySelector(".b2b-suppress").addEventListener("click", function (e) {
+          if (!window.confirm(it.name + " asked not to be contacted? It will not appear for any ReelSieve user again.")) return;
+          var b = e.currentTarget;
+          b.disabled = true;
+          orPost("/api/outreach/companies/suppress", { company_number: it.company_number })
+            .then(function () { if (row.parentNode) row.parentNode.removeChild(row); orSay(b2bStatus, it.name + " will not be shown again."); })
+            .catch(function (err) { orSay(b2bStatus, err.message, true); b.disabled = false; });
+        });
+        b2bResults.appendChild(row);
+      });
+      b2bPage = (d && d.page) || 1; b2bPages = (d && d.pages) || 1;
+      if (b2bPager) b2bPager.classList.toggle("hidden", b2bPages < 2);
+      if (b2bPageEl) b2bPageEl.textContent = "Page " + b2bPage + " of " + b2bPages;
+      if (b2bPrev) b2bPrev.disabled = b2bPage <= 1;
+      if (b2bNext) b2bNext.disabled = b2bPage >= b2bPages;
+    }
+    function b2bLoad(page) {
+      var place = ((b2bPlace && b2bPlace.value) || "").trim();
+      if (b2bFind) b2bFind.disabled = true;
+      orSay(b2bStatus, "Searching the register…");
+      getJSON("/api/outreach/companies?place=" + encodeURIComponent(place) + "&category=" + encodeURIComponent(b2bCat ? b2bCat.value : "") + "&page=" + page)
+        .then(function (d) {
+          b2bRender(d);
+          var n = (d && d.total) || 0;
+          orSay(b2bStatus, n.toLocaleString("en-GB") + (n === 1 ? " company" : " companies") + (place ? " in " + place : " across the UK"));
+        })
+        .catch(function (err) { orSay(b2bStatus, err.message, true); })
+        .then(function () { if (b2bFind) b2bFind.disabled = false; });
+    }
+    if (b2bFind) b2bFind.addEventListener("click", function () { b2bLoad(1); });
+    if (b2bPlace) b2bPlace.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); b2bLoad(1); } });
+    if (b2bPrev) b2bPrev.addEventListener("click", function () { if (b2bPage > 1) b2bLoad(b2bPage - 1); });
+    if (b2bNext) b2bNext.addEventListener("click", function () { if (b2bPage < b2bPages) b2bLoad(b2bPage + 1); });
+
     // --- C. Tracker ---
     // rows carry scraped URLs: never let a non-http(s) scheme stay clickable
     Array.prototype.forEach.call(document.querySelectorAll("#tracker-card a[href]"), function (a) {

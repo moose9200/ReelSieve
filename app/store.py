@@ -178,9 +178,13 @@ def _suppression_key():
 
 
 def suppression_keys(item):
-    """How a prospect is known: their Airbnb user id when we have it, and their name with a listing."""
+    """How a prospect is known: a company by its Companies House number; a host by their Airbnb user id when we have
+    it, and their name with a listing."""
     import re
     ids, pid = [], str(item.get('id') or '')
+    company = str(item.get('company_number') or '').strip().upper()
+    if re.fullmatch(r'[A-Z0-9]{8}', company):
+        ids.append('company:' + company)  # app/companies.py matches this key in SQL: change both together
     m = re.search(r'/users/show/(\d{1,20})', str(item.get('airbnb_profile') or item.get('profile_url') or ''))
     uid = m.group(1) if m else (pid[1:] if re.fullmatch(r'u\d{1,20}', pid) else None)
     if uid:

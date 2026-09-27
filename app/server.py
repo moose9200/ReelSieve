@@ -24,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app import admin, auth, billing, cohost, database, fetch, gdrive, hostmsg, jobs, linkedin, plans, retention, store
+from app import admin, auth, billing, cohost, companies, database, fetch, gdrive, hostmsg, jobs, linkedin, plans, retention, store
 from app import search as listing_search
 
 HERE = Path(__file__).resolve().parent
@@ -1080,7 +1080,8 @@ def outreach_page(request: Request):
     return tpl.TemplateResponse(request, 'outreach.html', {
         'csrf': csrf_for(request), 'stats': store.outreach_stats(u), 'cities': store.cities(u), 'rows': rows,
         'default_message': os.getenv('COHOST_MESSAGE') or COHOST_MESSAGE, 'linkedin_default': linkedin.CONNECT_DEFAULT,
-        'daily_cap': DAILY_CAP, 'cap': DAILY_CAP, 'sent_today': store.sent_today(u)})
+        'daily_cap': DAILY_CAP, 'cap': DAILY_CAP, 'sent_today': store.sent_today(u),
+        'b2b_template': companies.TEMPLATE, 'b2b_categories': companies.CATEGORIES, 'b2b_snapshot': companies.meta().get('snapshot')})
 
 
 @app.get('/api/outreach/cohosts')
@@ -1116,6 +1117,37 @@ async def api_queue(request: Request):
                                     'airbnb_profile': linkedin.airbnb_profile(it.get('airbnb_profile'))})
            for it in store.unsuppressed([it for it in (b.get('items') or [])[:25] if isinstance(it, dict)])]
     return {'ok': True, 'ids': ids, 'rows': store.outreach_rows(u), 'stats': store.outreach_stats(u)}
+
+
+@app.get('/api/outreach/companies')
+def api_companies(place: str = '', category: str = '', page: int = 1):
+    """UK property companies from the Companies House register (business to business; app/companies.py)."""
+    try:
+        return companies.search(place, category, page)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post('/api/outreach/companies/queue')
+async def api_company_queue(request: Request):
+    b, u = await request.json(), request.state.user
+    try:
+        rid = companies.queue(u, b.get('company_number'), b.get('template'), b.get('sender'))
+    except LookupError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {'ok': True, 'id': rid, 'stats': store.outreach_stats(u)}
+
+
+@app.post('/api/outreach/companies/suppress')
+async def api_company_suppress(request: Request):
+    """Do not contact: the company never appears in anyone's results again (a keyed hash of its number is kept)."""
+    n = companies.number((await request.json()).get('company_number'))
+    if not n:
+        raise HTTPException(400, 'That is not a company number')
+    store.suppress({'company_number': n})
+    return {'ok': True}
 
 
 @app.post('/api/outreach/suppress')
@@ -1184,6 +1216,7 @@ def settings(request: Request, saved: int = 0, flash: str = ''):
         'settings': settings_view(), 'gdrive': gdrive.status(request.state.user), 'saved': bool(saved), 'flash': flash[:400],
         'events': store.admin_events(50), 'event_labels': EVENT_LABELS,
         'requests': store.open_privacy_requests(), 'request_types': store.PRIVACY_REQUEST_TYPES, 'now': time.time(),
+        'companies': companies.status(),
         'redirect_uri': _redirect_uri(request), 'webhook_base': (public_base() or str(request.base_url).rstrip('/'))})
 
 

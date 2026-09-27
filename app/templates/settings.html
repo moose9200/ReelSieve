@@ -62,6 +62,12 @@
   {% else %}<p class="hint">No admin activity yet.</p>{% endif %}
 </section>
 
+<section class="card" id="companies-card">
+  <div class="section-head"><h2>Companies House data</h2><span class="pill {{ 'pill-done' if companies.snapshot else 'pill-neg' }}">{{ ('Snapshot ' ~ companies.snapshot) if companies.snapshot else 'Not loaded yet' }}</span></div>
+  <p class="hint">UK property companies for Outreach, from the Companies House Free Company Data Product. The worker checks every hour and loads each new monthly snapshot once; each load replaces the company rows and removes companies no longer on the register. Company details only, never people.</p>
+  {% if companies.snapshot %}<p class="hint">Last snapshot {{ companies.snapshot }}, loaded {{ companies.ingested_at|when }}. Held now: {{ '{:,}'.format(companies.rows) }} companies.</p>{% endif %}
+</section>
+
 {% include '_gdrive_card.html' %}
 
 <section class="card" id="config-card">
