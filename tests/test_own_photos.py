@@ -143,7 +143,7 @@ def test_upload_count_and_size_limits(monkeypatch):
 
 def test_typed_details_are_validated_and_quotes_carry_no_name():
     good = photos.details({'title': '  Sea View Cottage ', 'location': 'Whitby, UK', 'highlights': 'Hot tub, Sea view\nFree parking, , ',
-                           'quotes': [{'text': 'Spotless cottage with a lovely view of the harbour.', 'stars': '5', 'name': 'Jane Guest'},
+                           'quotes': [{'text': ' , Spotless cottage with a lovely view of the harbour.', 'stars': '5', 'name': 'Jane Guest'},
                                       {'text': '', 'stars': 5}]})
     assert good == {'title': 'Sea View Cottage', 'location': 'Whitby, UK', 'highlights': ['Hot tub', 'Sea view', 'Free parking'],
                     'quotes': [{'text': 'Spotless cottage with a lovely view of the harbour.', 'stars': 5}]}
@@ -412,9 +412,14 @@ def test_own_photo_manifest_uses_rooms_quotes_and_highlights_and_never_says_airb
     assert not [s['subtitle'] for s in m['scenes'] if 'sleeps' in s['subtitle'].lower() or 'beds' in s['subtitle'].lower()]
     assert m['outro']['eyebrow'] == 'HARBOUR COTTAGE'  # the location is already in the outro's subtitle
     assert m['intro']['title'] == 'Harbour Cottage' and m['intro']['eyebrow'] == 'WHITBY, UK' and 'Hot tub' in m['intro']['subtitle']
-    # the customer's own words, in quotation marks, with no invented date (a typed quote has none)
-    quote = '“Stayed a week. Spotless cottage with a lovely view of the harbour.”'
-    assert m['reviews']['items'] == [{'stars': 5, 'date': '', 'text': quote}]
+    # the customer's own words as typed (the renderers add the quote marks), with no invented date. The scraped-review
+    # lint that rejects a leading 'Stayed …' trip tag must not fail a quote the customer typed that way.
+    quote = 'Stayed a week. Spotless cottage with a lovely view of the harbour.'
+    assert m['reviews']['items'] == [{'stars': 5, 'date': '', 'text': quote}] and m['reviews']['typed'] is True
+    scraped = json.loads(json.dumps(m))
+    del scraped['reviews']['typed']
+    with pytest.raises(pipeline.ManifestError, match='not sanitised'):
+        pipeline.lint_manifest(scraped)  # the guard still catches an unsanitised scraped review
     assert m['overlays']['review'] == quote and m['overlays']['review_by'] == 'Guest review' and 'trust' not in m
     rk = [s['room'] for s in m['scenes']]
     assert rk == sorted(rk, key=[k for k, _ in pipeline.ROUTE].index) and {'living', 'kitchen', 'bedroom', 'view'} <= set(rk)

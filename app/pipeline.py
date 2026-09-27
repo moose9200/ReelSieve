@@ -218,7 +218,8 @@ def lint_manifest(m,min_images=6):
         if len(parts)!=len(set(parts)):probs.append(f'{k} subtitle repeats a fact: {m[k]["subtitle"]}')
     for rv in (m.get('reviews') or {}).get('items',[]):
         t=rv['text']
-        if re.match(r'^[\s,·•]',t) or re.match(r'^(Stayed |Group trip|Family trip|Solo trip|Business trip)',t,re.I):probs.append(f'review text not sanitised: {t[:40]!r}')
+        typed=(m.get('reviews') or {}).get('typed')   # the customer's own words (own-photo reel), not a scraped trip tag
+        if re.match(r'^[\s,·•]',t) or (not typed and re.match(r'^(Stayed |Group trip|Family trip|Solo trip|Business trip)',t,re.I)):probs.append(f'review text not sanitised: {t[:40]!r}')
         if len(t)<20:probs.append('review text too short')
     if m.get('brand'):probs.append('brand watermark is on (must be off by default)')
     for pth in list(imgs)+[v for v in bgs.values() if v]:
@@ -322,14 +323,14 @@ def photo_listing(facts,names):
     revs=[{'stars':int(q['stars']),'date':'','text':q['text']} for q in facts.get('quotes') or []]
     return d,revs
 def own_photos_manifest(m,d):
-    """Replace the wording that only fits an Airbnb listing. A typed guest quote is shown in quotation marks as the
-    customer wrote it, with no date (none is known) and never a name."""
+    """Replace the wording that only fits an Airbnb listing. A typed guest quote is shown as the customer wrote it
+    (the renderers add the quote marks), with no date (none is known) and never a name."""
     m['intro']['eyebrow']=(d.get('city') or '').upper() or 'YOUR NEXT STAY'
     m['outro']['eyebrow']=m['intro']['title'].upper()   # the outro subtitle already names the place
     m['outro']['cta']=m['overlays']['cta_pill']='BOOK YOUR STAY'
     if m.get('reviews'):
-        for it in m['reviews']['items']:it['date']='';it['text']=f'“{it["text"]}”'
-        m['overlays']['review']=m['reviews']['items'][0]['text'];m['overlays']['review_by']='Guest review'
+        for it in m['reviews']['items']:it['date']=''
+        m['reviews']['typed']=True;m['overlays']['review_by']='Guest review'
     return m
 def run_photos(images_dir,facts,out_dir,ai_motion=False,cb=None,renderer='v2',max_seconds=None,ai_resolution='1080p'):
     """Reel from the customer's own photos (already in disposable scratch as p01.jpg…) and typed facts: the same scoring,

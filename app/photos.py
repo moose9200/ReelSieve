@@ -85,7 +85,7 @@ def details(fields):
     highlights = [h for h in dict.fromkeys(_one_line(x)[:40] for x in items) if h][:8]
     quotes = []
     for q in fields.get('quotes') or []:
-        text = _one_line((q or {}).get('text'))
+        text = _one_line((q or {}).get('text')).lstrip(',·• ')  # the reel's review card must not open on punctuation
         if not text:
             continue
         if not 20 <= len(text) <= 300:
