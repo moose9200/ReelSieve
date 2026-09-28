@@ -647,7 +647,7 @@ async def privacy_request_post(request: Request):
     details = f.get('details') or 'Remove my listing from ReelSieve.'
     ref, received = store.add_privacy_request(f['type'], auth.norm(f['email']), f.get('name', '')[:200] or None, details[:4000],
                                               profile.rsplit('/', 1)[-1] if profile else None, company_number=company,
-                                              listing_id=listing)
+                                              listing_id=listing, user=request.state.user)
     # An objection to direct marketing is honoured at once, for every user. Nothing proves who sent it, so each entry
     # carries the request reference: Settings shows it next to the request and an admin can undo an abusive one.
     if f['type'] == 'objection' and profile:
@@ -865,6 +865,13 @@ async def billing_webhook(provider: str, request: Request):
     ref = billing.ref_from_payload(payload)
     if not ref:
         raise HTTPException(400, 'No order reference in payload')
+    order = billing.get_order(ref)
+    if not order:
+        raise HTTPException(404, 'No such order')
+    # The signature says the provider sent it; these checks say the money arrived for this order (28 Sep review F1).
+    problems = billing.settlement_problems(payload, order)
+    if problems:
+        raise HTTPException(400, 'Payload does not confirm payment of ' + ref + ': ' + ', '.join(problems))
     try:
         o = billing.settle(ref, by=f'webhook:{provider}', provider=provider)
     except ValueError as e:
@@ -1166,7 +1173,9 @@ def job_video(request: Request, jid: str, variant: str = 'primary', download: in
             yield from r.iter_bytes()
         finally:
             stream.__exit__(None, None, None)
-    headers = {k: r.headers[k] for k in ('content-type', 'content-length', 'content-range', 'accept-ranges') if k in r.headers}
+    headers = {k: r.headers[k] for k in ('content-length', 'content-range', 'accept-ranges') if k in r.headers}
+    # Our own reels only, so the type is ours to state: Drive's header is never forwarded to the browser (28 Sep review F7).
+    headers['content-type'] = 'video/mp4'
     headers['cache-control'] = 'private, no-store'
     if download:
         name = re.sub(r'[^A-Za-z0-9._-]+', '-', ((j['meta'] or {}).get('listing') or {}).get('title') or 'reel')[:60].strip('-')

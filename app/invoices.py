@@ -73,7 +73,8 @@ def _utc(ts, fmt):
     return datetime.fromtimestamp(ts, timezone.utc).strftime(fmt) if ts is not None else ''
 
 
-def _cell(v):
+def csv_cell(v):
+    """One CSV cell no spreadsheet will run as a formula (also used by the outreach export, app/linkedin.py)."""
     return FORMULA.sub(r"\1'", '' if v is None else str(v))
 
 
@@ -82,7 +83,7 @@ def csv_text(rows):
     w = csv.writer(b, quoting=csv.QUOTE_ALL)  # quoted, so a ';' in an email never splits it into two cells
     w.writerow(COLUMNS)
     for r in rows:
-        w.writerow([_cell(v) for v in (r['ref'], _utc(r['ts'], '%Y-%m-%d'), r['plan'], f"{float(r['amount_usd']):.2f}", 'USD',
+        w.writerow([csv_cell(v) for v in (r['ref'], _utc(r['ts'], '%Y-%m-%d'), r['plan'], f"{float(r['amount_usd']):.2f}", 'USD',
                                        r['provider'], r['status'], _utc(r['paid_at'], '%Y-%m-%dT%H:%M:%SZ'), r['billing_email'])])
     return b.getvalue()
 

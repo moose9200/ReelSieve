@@ -237,6 +237,51 @@ def fulfil_stripe_session(session, by='stripe'):
     return settle(o['ref'], by=f"{by}:{session['id']}", provider='stripe')
 
 
+# A webhook payload settles an order only when it says the money arrived, for that order's amount, in its currency.
+# Providers name those fields differently and nest them differently, so we look for each one anywhere in the payload.
+PAID_STATUSES = {'paid', 'succeeded', 'success', 'successful', 'completed', 'complete', 'captured', 'settled', 'confirmed'}
+STATUS_KEYS = {'status', 'payment_status', 'payment_state', 'state', 'order_status', 'transaction_status'}
+AMOUNT_KEYS = {'amount', 'amount_paid', 'amount_total', 'amount_received', 'total', 'total_amount', 'paid_amount', 'value', 'price'}
+CURRENCY_KEYS = {'currency', 'currency_code', 'amount_currency'}
+
+
+def _fields(payload):
+    """Every value in the payload, by lower-case key name, however deeply the provider nested it."""
+    found = {}
+
+    def walk(node):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                found.setdefault(str(k).lower(), []).append(v)
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+    walk(payload)
+    return found
+
+
+def _same_amount(value, usd):
+    """True only for exactly this order's price, in dollars ('100', '100.00') or in minor units (10000)."""
+    try:
+        n = float(str(value).replace(',', '').strip())
+    except (TypeError, ValueError):
+        return False
+    return n == round(float(usd), 2) or n == round(float(usd) * 100)
+
+
+def settlement_problems(payload, order):
+    """What stops this payload settling that order: a signature only proves who sent it, not what it says.
+    Anything missing counts as a problem, so a 'refund', 'failed' or bare-reference payload grants nothing."""
+    found = _fields(payload)
+    values = lambda keys: [v for k in keys for v in found.get(k, [])]  # noqa: E731
+    return [name for name, ok in (
+        ('payment status', any(str(v).strip().lower().rsplit('.', 1)[-1] in PAID_STATUSES for v in values(STATUS_KEYS))),
+        ('amount', any(_same_amount(v, order['amount_usd']) for v in values(AMOUNT_KEYS))),
+        ('currency', any(str(v).strip().upper() == 'USD' for v in values(CURRENCY_KEYS))),
+    ) if not ok]
+
+
 def ref_from_payload(payload):
     """Find our order ref wherever the provider hid it."""
     def walk(o):

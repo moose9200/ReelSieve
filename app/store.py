@@ -462,8 +462,9 @@ def export(user):
                               "CASE WHEN rewarded_at IS NOT NULL THEN 'rewarded' WHEN reward_reason IS NULL THEN 'pending' "
                               "ELSE 'not_rewarded' END AS status,CASE WHEN referee_id=%(o)s THEN google_hash END AS google_account_hash "
                               'FROM referrals WHERE referrer_id=%(o)s OR referee_id=%(o)s ORDER BY ts'),
+            # By account, never by the email typed on the public form: anyone can type an address they do not own.
             'privacy_requests': rows('SELECT ref,ts,type,name,details,airbnb_profile_id,company_number,listing_id,status,due_at,handled_at '
-                                     'FROM privacy_requests WHERE lower(email)=(SELECT email FROM users WHERE id=%(o)s) ORDER BY ts'),
+                                     'FROM privacy_requests WHERE owner_id=%(o)s ORDER BY ts'),
             # when you marked someone "Do not contact"; the keyed hash identifies them, not you, so it stays out
             'outreach_suppressions': rows('SELECT ts FROM outreach_suppressions WHERE owner_id=%(o)s ORDER BY ts'),
         }
@@ -483,16 +484,19 @@ def one_month_after(ts):
     return d.replace(year=y, month=m, day=min(d.day, calendar.monthrange(y, m)[1])).timestamp()
 
 
-def add_privacy_request(kind, email, name, details, airbnb_profile_id=None, company_number=None, listing_id=None):
-    """Store a request and return (ref, received ts). The on-screen reference is the acknowledgement."""
+def add_privacy_request(kind, email, name, details, airbnb_profile_id=None, company_number=None, listing_id=None, user=None):
+    """Store a request and return (ref, received ts). The on-screen reference is the acknowledgement.
+    user: the signed-in account that sent it, so the export can tell it from a request that merely names its email."""
     import secrets
     now = time.time()
     for _ in range(6):
         ref = 'PR-' + time.strftime('%y%m%d', time.gmtime(now)) + '-' + secrets.token_hex(3).upper()
         with database.connect() as c:
-            if c.execute('INSERT INTO privacy_requests(ref,ts,type,email,name,details,airbnb_profile_id,company_number,listing_id,due_at) '
-                         'VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (ref) DO NOTHING RETURNING ref',
-                         (ref, now, kind, email, name, details, airbnb_profile_id, company_number, listing_id, one_month_after(now))).fetchone():
+            owner = database.user_id(user, c) if user else None
+            if c.execute('INSERT INTO privacy_requests(ref,ts,type,email,name,details,airbnb_profile_id,company_number,listing_id,due_at,owner_id) '
+                         'VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) ON CONFLICT (ref) DO NOTHING RETURNING ref',
+                         (ref, now, kind, email, name, details, airbnb_profile_id, company_number, listing_id, one_month_after(now),
+                          owner)).fetchone():
                 return ref, now
     raise RuntimeError('Could not allocate a request reference')
 

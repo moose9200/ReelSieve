@@ -12,6 +12,7 @@ import json
 import re
 from urllib.parse import quote
 from app import cohost
+from app.invoices import csv_cell
 CONNECT_DEFAULT=("Hi {name} — I make short cinematic walkthrough videos for short-let listings from the photos that are "
                  "already on them. Made one for a {city} place this week. Happy to do one of yours free, no strings.")
 FOLLOWUP_DEFAULT=("Thanks for connecting, {name}. I built a 60-second walkthrough of {company} from its own listing photos "
@@ -67,11 +68,13 @@ def render(template,item,limit=None):
     s=s.replace('{listings}',str(item.get('listings') or ''))
     return s[:limit] if limit else s
 def csv_rows(rows):
-    b=io.StringIO();w=csv.writer(b)
+    """Prospect names, notes and messages are other people's text, so every cell goes through the same OWASP
+    formula guard the invoice CSV uses (app/invoices.py), quoted like it too."""
+    b=io.StringIO();w=csv.writer(b,quoting=csv.QUOTE_ALL)
     w.writerow(['when','channel','name','city','status','link_type','link_url','airbnb_profile','message','note','sent_at'])
     for r in rows:
         when=dt.datetime.fromtimestamp(r.get('ts') or 0).strftime('%Y-%m-%d %H:%M')
         sent=dt.datetime.fromtimestamp(r['sent_at']).strftime('%Y-%m-%d %H:%M') if r.get('sent_at') else ''
-        w.writerow([when,r.get('channel'),r.get('name'),r.get('city'),r.get('status'),link_type(r.get('url')),r.get('url'),
-                    airbnb_profile_of(r),(r.get('message') or '').replace('\n',' '),r.get('note') or '',sent])
+        w.writerow([csv_cell(v) for v in (when,r.get('channel'),r.get('name'),r.get('city'),r.get('status'),link_type(r.get('url')),r.get('url'),
+                    airbnb_profile_of(r),(r.get('message') or '').replace('\n',' '),r.get('note') or '',sent)])
     return b.getvalue()

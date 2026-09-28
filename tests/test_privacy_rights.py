@@ -100,6 +100,7 @@ def seed(db, email, marker, drive=True):
     store.set_b2b_sender(email, marker + ' Sender', marker + ' Lets', marker + '@sender.test')           # business email sender
     store.admin_event('plan', None, email, plan='starter', credits=3)
     store.note_signin(email, '198.51.100.' + str(len(marker)))
+    store.add_privacy_request('access', email, None, 'Please send me a copy of my data.', user=email)  # sent while signed in
     with db.connect() as c:
         c.execute("INSERT INTO jobs(id,owner_id,idempotency_key,request_hash,url,params,status,log,meta,drive_generation,created,updated,"
                   "finished_at) VALUES(%s,%s,%s,'h','https://www.airbnb.co.uk/rooms/7',%s,'done',%s,%s,1,%s,%s,%s)",
@@ -161,7 +162,8 @@ def test_erase_removes_or_anonymises_every_table(web, owners, google, db):
     after = dump(db)
     everything = ''.join(after.values())
     assert 'alicemark' not in everything and 'google-alice' not in everything
-    assert everything.count(ALICE) == 1  # the billing email snapshot on the paid order
+    # the billing email snapshot on the paid order, and her privacy request, which the notice keeps for 2 years
+    assert everything.count(ALICE) == 2
     with db.connect() as c:
         u = c.execute('SELECT * FROM users WHERE id=%s', (owner,)).fetchone()
         assert u['email'] == f'deleted-{owner}@erased.invalid' and not u['active'] and u['erased_at'] and u['role'] == 'member'
@@ -589,7 +591,7 @@ def test_privacy_requests_are_rate_limited_per_network(web):
 
 def test_own_privacy_requests_are_in_the_export_and_leave_two_years_after_handling(web, db):
     from app import retention
-    _request(client_for(), email=ALICE, type='access', details='Copy of my data please')
+    _request(web['alice'], email=ALICE, type='access', details='Copy of my data please')  # signed in: her own request
     _request(client_for(), email=BOB, type='access', details='Bob asks too')
     data = web['alice'].get('/api/account/export').json()
     assert [r['details'] for r in data['privacy_requests']] == ['Copy of my data please'] and BOB not in json.dumps(data)
