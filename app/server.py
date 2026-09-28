@@ -135,6 +135,7 @@ def site_url():
 tpl.env.globals['site_url'] = site_url
 tpl.env.globals['airbnb_enabled'] = airbnb.enabled
 tpl.env.globals['airbnb_disabled'] = airbnb.DISABLED
+tpl.env.globals['current_year'] = lambda: time.strftime('%Y', time.gmtime())  # the footer's copyright line
 tpl.env.filters['day'] = lambda ts: time.strftime('%d %b %Y', time.gmtime(ts or 0))
 tpl.env.filters['when'] = lambda ts: time.strftime('%d %b %Y %H:%M UTC', time.gmtime(ts or 0))
 
@@ -652,7 +653,7 @@ def default_message():
 def landing(request: Request):
     return tpl.TemplateResponse(request, 'landing.html', {
         'signed_in': bool(request.state.user), 'user': request.state.user, 'plans': plans.public_plans(),
-        'products': plans.PRODUCTS, 'sample_video': os.getenv('SAMPLE_VIDEO_URL') or None,
+        'sample_video': os.getenv('SAMPLE_VIDEO_URL') or None,
         'sample_poster': os.getenv('SAMPLE_POSTER_URL') or None, 'limits': photos})
 
 

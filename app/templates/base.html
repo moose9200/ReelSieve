@@ -23,6 +23,7 @@
   <link rel="preload" href="/static/fonts/assistant-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/static/fonts.css?v={{ asset_version }}">
   <link rel="stylesheet" href="/static/style.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/static/footer.css?v={{ asset_version }}">
 </head>
 <body>
   <header class="site-header">
@@ -55,9 +56,7 @@
     {% block content %}{% endblock %}
   </main>
 
-  <footer class="site-footer">
-    ReelSieve is a Braivex product · <a href="https://braivex.com" target="_blank" rel="noopener">braivex.com</a> · <a href="/privacy">Privacy</a> · <a href="/terms">Terms</a> · <a href="/privacy/request">Privacy requests</a> · ReelSieve is an independent third party and is not endorsed by or associated with Airbnb, Inc. or its affiliates.
-  </footer>
+  {% include "_site_footer.html" %}
 
   <script src="/static/app.js?v={{ asset_version }}" defer></script>
 </body>

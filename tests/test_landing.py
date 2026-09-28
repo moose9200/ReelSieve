@@ -94,7 +94,9 @@ def test_prices_come_from_plans(web, monkeypatch):
 
 def test_disclaimer_and_one_sentence_per_line(web):
     page = landing(web[0])
-    assert 'ReelSieve is independent and is not endorsed by or associated with Airbnb, Inc.' in page
+    # the shared footer's legal bar (templates/_site_footer.html), the same sentence on every page
+    assert ('ReelSieve is an independent third party and is not endorsed by or associated with Airbnb, Inc. '
+            'or its affiliates.') in page
     parser = BodyText()
     parser.feed(page)
     joined = [t for t in parser.nodes if re.search(r'[.!?]\s+["A-Z0-9$]', t)]

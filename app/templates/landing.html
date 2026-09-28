@@ -1,4 +1,4 @@
-{#- Public landing page. Standalone: loads landing.css only, not style.css or app.js.
+{#- Public landing page. Standalone: loads landing.css and the shared footer.css, not style.css or app.js.
     Owner rule: one sentence per line, so body copy goes through lines() or one element per sentence.
     Pricing and every number in the copy come from `plans`; the FAQ JSON-LD is built from the same `faqs` list as the visible FAQ. -#}
 {%- set canonical = 'https://www.reelsieve.braivex.com/' -%}
@@ -111,6 +111,7 @@
   <link rel="stylesheet" href="/static/fonts.css?v={{ asset_version }}">
   <link rel="preload" as="image" href="{{ poster_src }}">
   <link rel="stylesheet" href="/static/landing.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/static/footer.css?v={{ asset_version }}">
   <script type="application/ld+json">
   {"@context": "https://schema.org", "@graph": [
     {"@type": "Organization", "@id": "https://braivex.com/#organization", "name": "Braivex", "url": "https://braivex.com"},
@@ -436,51 +437,7 @@
 
 </main>
 
-<footer class="lp-footer">
-  <div class="lp-wrap">
-    <div class="lp-footer-grid">
-      <div class="lp-footer-brand">
-        <a class="lp-brand" href="/" aria-label="ReelSieve by Braivex, home">
-          <svg class="lp-mark" width="30" height="30" viewBox="0 0 100 100" aria-hidden="true"><rect x="6" y="6" width="88" height="88" rx="24" fill="currentColor" fill-opacity=".08"/><g fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round"><path d="M29 50h42M50 29v42"/><path d="M22 36h56M22 64h56M36 22v56M64 22v56" stroke-opacity=".35"/></g><circle cx="64" cy="36" r="10" fill="#00f0ff"/></svg>
-          <span class="lp-word">ReelSieve</span>
-        </a>
-        {{ lines([
-          'ReelSieve is a Braivex product.',
-          'ReelSieve is independent and is not endorsed by or associated with Airbnb, Inc.'], 'lp-lines lp-footer-note') }}
-      </div>
-      <nav aria-label="ReelSieve">
-        <p class="lp-footer-title">ReelSieve</p>
-        <ul>
-          <li><a href="#how">How it works</a></li>
-          <li><a href="#sample">Sample reel</a></li>
-          <li><a href="#pricing">Pricing</a></li>
-          <li><a href="#faq">FAQ</a></li>
-          <li><a href="/login">Sign in</a></li>
-          <li><a href="/signup">Start free</a></li>
-        </ul>
-      </nav>
-      {% if products %}
-      <nav aria-label="More from Braivex">
-        <p class="lp-footer-title">More from Braivex</p>
-        <ul>
-          {% for pr in products %}
-          <li><a href="{{ pr.url }}" target="_blank" rel="noopener">{{ pr.name }}</a> <span class="lp-tagline">{{ pr.tagline }}</span></li>
-          {% endfor %}
-        </ul>
-      </nav>
-      {% endif %}
-      <nav aria-label="Legal">
-        <p class="lp-footer-title">Legal</p>
-        <ul>
-          <li><a href="/privacy">Privacy</a></li>
-          <li><a href="/terms">Terms</a></li>
-          <li><a href="/privacy/request">Privacy requests</a></li>
-        </ul>
-      </nav>
-    </div>
-    <p class="lp-copy">&copy; 2026 <a href="https://braivex.com" target="_blank" rel="noopener">Braivex</a></p>
-  </div>
-</footer>
+{% include "_site_footer.html" %}
 
 <script>
 (function () {

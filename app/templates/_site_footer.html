@@ -1,0 +1,46 @@
+{# The one footer, on every page: base.html includes it for the app and legal pages, landing.html for the landing
+   page. Structure and values follow the Loculens SiteFooter so every Braivex product looks the same. #}
+<footer class="lp-footer">
+  <div class="lp-footer__inner">
+    <div class="lp-footer__brand">
+      <a class="lp-brand" href="/" aria-label="ReelSieve, home">
+        <svg class="lp-mark" width="22" height="22" viewBox="0 0 100 100" aria-hidden="true"><rect x="6" y="6" width="88" height="88" rx="24" fill="currentColor" fill-opacity=".08"/><g fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round"><path d="M29 50h42M50 29v42"/><path d="M22 36h56M22 64h56M36 22v56M64 22v56" stroke-opacity=".35"/></g><circle cx="64" cy="36" r="10" fill="#00f0ff"/></svg>
+        <span>ReelSieve</span>
+      </a>
+      <p class="lp-footer__tagline">Let&rsquo;s build something that matters.</p>
+      <p>Request a tailored briefing for your enterprise AI project.</p>
+      <a class="lp-footer__cta" href="https://braivex.com/pages/contact" rel="noreferrer noopener">Initiate RFP <span aria-hidden="true">&rarr;</span></a>
+    </div>
+    <nav class="lp-footer__col" aria-label="Product">
+      <h3>Product</h3>
+      <a href="/#how">How it works</a>
+      <a href="/#sample">Sample reel</a>
+      <a href="/#pricing">Pricing</a>
+      <a href="/#faq">FAQ</a>
+      <a href="/signup">Start free</a>
+      <a href="/login">Sign in</a>
+    </nav>
+    <nav class="lp-footer__col" aria-label="Company">
+      <h3>Company</h3>
+      <a href="https://braivex.com" rel="noreferrer noopener">Braivex</a>
+      <a href="https://braivex.com/pages/about-us" rel="noreferrer noopener">About us</a>
+      <a href="https://braivex.com/pages/contact" rel="noreferrer noopener">Contact</a>
+    </nav>
+    <nav class="lp-footer__col" aria-label="Legal">
+      <h3>Legal</h3>
+      {# ReelSieve has its own notice and terms: they describe this product's data handling (Google OAuth verification). #}
+      <a href="/privacy">Privacy policy</a>
+      <a href="/terms">Terms of service</a>
+      <a href="/privacy/request">Privacy requests</a>
+      <a href="https://braivex.com/policies/refund-policy" rel="noreferrer noopener">Refund policy</a>
+      <a href="https://braivex.com/policies/contact-information" rel="noreferrer noopener">Contact information</a>
+      <a href="https://braivex.com/policies/legal-notice" rel="noreferrer noopener">Legal notice</a>
+    </nav>
+  </div>
+  <div class="lp-footer__legal">
+    {# house rule (also Loculens'): one sentence per line in the source #}
+    <p class="lp-lines"><span>&copy; {{ current_year() }} Braivex.</span>
+      <span>All trademarks are property of their respective owners.</span></p>
+    <p>ReelSieve is an independent third party and is not endorsed by or associated with Airbnb, Inc. or its affiliates.</p>
+  </div>
+</footer>

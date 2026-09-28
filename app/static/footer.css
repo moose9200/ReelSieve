@@ -1,0 +1,102 @@
+/* The one site footer (templates/_site_footer.html), loaded by base.html and by the standalone landing page.
+   Values from the Loculens SiteFooter (globals.css .lp-footer*), so every Braivex product's footer matches:
+   padding 64px 40px 28px, a 1.7fr 1fr 1fr 1.1fr grid with a 40px gap, 13px links, an 11px .18em heading.
+   The dark theme uses Loculens' colours as they are; the light theme swaps them for readable equivalents.
+   It depends on no other stylesheet: both pages that load it define different tokens. */
+.lp-footer {
+  --ft-ink: #fff;
+  --ft-70: #b0b0b0;
+  --ft-55: #999;
+  --ft-38: #888;
+  --ft-line: rgba(255, 255, 255, .06);
+  --ft-ground: #000;
+  --ft-cyan: #00f0ff;
+  padding: 64px 40px 28px;
+  border-top: 1px solid var(--ft-line);
+  background: var(--ft-ground);
+  font-family: "Assistant", system-ui, sans-serif;
+  line-height: 1.5;
+}
+:root[data-theme="light"] .lp-footer {
+  --ft-ink: #121212;
+  --ft-70: #4a4a4a;
+  --ft-55: #565656;
+  --ft-38: #606060;
+  --ft-line: rgba(0, 0, 0, .1);
+  --ft-ground: #e8e8e8;
+  --ft-cyan: #036672;
+}
+.lp-footer__inner {
+  display: grid;
+  grid-template-columns: 1.7fr 1fr 1fr 1.1fr;
+  gap: 40px;
+  align-items: start;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+.lp-footer p { margin: 12px 0 0; color: var(--ft-38); font-size: 13px; }
+.lp-footer__brand p { max-width: 34ch; }
+.lp-footer__tagline { font-size: 15px; color: var(--ft-70); }
+.lp-footer .lp-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--ft-ink);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -.01em;
+  text-decoration: none;
+}
+.lp-footer .lp-brand:hover { text-decoration: none; }
+.lp-footer__cta {
+  display: inline-block;
+  margin-top: 14px;
+  color: var(--ft-cyan);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: .04em;
+  text-decoration: none;
+  transition: color .3s cubic-bezier(.22, 1, .36, 1);
+}
+.lp-footer__cta:hover { color: var(--ft-ink); text-decoration: none; }
+.lp-footer__col { display: flex; flex-direction: column; gap: 10px; }
+.lp-footer__col h3 {
+  margin: 0 0 4px;
+  color: var(--ft-38);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+}
+.lp-footer__col a {
+  color: var(--ft-55);
+  font-size: 13px;
+  letter-spacing: .04em;
+  text-decoration: none;
+  transition: color .3s cubic-bezier(.22, 1, .36, 1);
+}
+.lp-footer__col a:hover { color: var(--ft-ink); text-decoration: none; }
+.lp-footer__legal {
+  max-width: 1200px;
+  margin: 44px auto 0;
+  padding-top: 20px;
+  border-top: 1px solid var(--ft-line);
+}
+.lp-footer__legal p:first-child { margin: 0; }
+/* Loculens' legal bar puts each sentence on its own line (.sent { display: block }); so does the landing page's
+   .lp-lines. Stated here so the app pages, which do not load landing.css, look the same. */
+.lp-footer__legal .lp-lines span { display: block; }
+
+/* Loculens' own phone rules: two columns with the brand across both, bigger text.
+   The 44px hit area on each link is this product's rule (WCAG 2.5.8), not Loculens'. */
+@media (max-width: 650px) {
+  .lp-footer { padding: 40px 16px 32px; }
+  .lp-footer__inner { grid-template-columns: 1fr 1fr; gap: 28px; }
+  .lp-footer__brand { grid-column: 1 / -1; max-width: none; }
+  .lp-footer__legal { margin-top: 30px; }
+  .lp-footer p, .lp-footer__col a, .lp-footer__cta { font-size: 14px; }
+  .lp-footer__tagline { font-size: 16px; }
+  .lp-footer__col h3 { font-size: 12px; }
+  .lp-footer__col { gap: 2px; }
+  .lp-footer__col a, .lp-footer .lp-brand, .lp-footer__cta { min-height: 44px; display: inline-flex; align-items: center; }
+}

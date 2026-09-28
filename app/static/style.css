@@ -88,7 +88,7 @@ button, input, select, textarea { font: inherit; }
 .flash { margin-top: 10px; color: var(--muted); font-size: 13px; }
 
 /* ---------- layout ---------- */
-.site-header, .site-main, .site-footer {
+.site-header, .site-main {
   width: 100%;
   max-width: 880px;
   margin: 0 auto;
@@ -104,14 +104,6 @@ button, input, select, textarea { font: inherit; }
   padding-bottom: 20px;
 }
 .site-main { flex: 1; padding-top: 20px; padding-bottom: 48px; }
-.site-footer {
-  padding-top: 18px;
-  padding-bottom: 28px;
-  color: var(--faint);
-  font-size: 12px;
-  text-align: center;
-}
-.site-footer a { color: var(--muted); }
 
 /* brand */
 .brand {
@@ -729,27 +721,11 @@ body.lp-page { display: block; font-size: 15px; }
 .lp-cta .lp-form { margin: 0 auto; }
 .lp-cta .lp-micro { text-align: center; }
 
-/* footer */
-.lp-footer { padding: 48px 0 32px; }
-.lp-footer-grid { display: grid; grid-template-columns: 1fr 1.25fr; gap: 32px; }
-.lp-footer-note { margin-top: 12px; color: var(--faint); font-size: 12px; line-height: 1.6; max-width: 360px; }
-.lp-footer h2 { font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--faint); margin-bottom: 14px; }
-.lp-products { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
-.lp-product {
-  display: block; padding: 14px 15px; border-radius: var(--radius-control);
-  background: var(--surface); box-shadow: var(--raise-sm); text-decoration: none;
-  transition: box-shadow .35s var(--ease);
-}
-.lp-product:hover { box-shadow: var(--raise); text-decoration: none; }
-.lp-product b { display: block; color: var(--ink); font-size: 13px; font-weight: 700; }
-.lp-product span { display: block; margin-top: 3px; color: var(--faint); font-size: 12px; line-height: 1.4; }
-.lp-bottom { margin-top: 36px; padding-top: 18px; color: var(--faint); font-size: 12px; box-shadow: inset 0 1px 0 var(--shadow-light); }
-.lp-bottom a { color: var(--muted); }
+/* The footer lives in its own stylesheet (static/footer.css), because the landing page does not load this one. */
 
 /* responsive */
 @media (max-width: 1000px) {
   .lp-grid-4, .lp-plans { grid-template-columns: repeat(2, 1fr); }
-  .lp-footer-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 860px) {
   .lp-nav-links { display: none; }
@@ -840,8 +816,6 @@ body.lp-page { display: block; font-size: 15px; }
   .or-actions .btn { min-height: 44px; flex: 1 1 auto; }
 }
 
-/* landing: footer legal links need a 44px hit area at 390px */
-.lp-bottom a { display: inline-block; padding: 10px 4px; line-height: 24px; }
 
 .plan-strip { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 14px; margin-bottom: 14px; border-radius: var(--radius-control); box-shadow: var(--sink-sm); font-size: 13px; }
 .plan-strip .plan-left { color: var(--muted); } .plan-strip.is-empty .plan-left { color: var(--neg); }
