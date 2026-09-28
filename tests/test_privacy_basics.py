@@ -17,7 +17,7 @@ def test_privacy_notice_keeps_the_items_the_law_requires(db):
     from app import server
     text = TestClient(server.app).get('/privacy').text
     for required in ['Hemant Kumar Sain', 'Alwar, Rajasthan', 'hello@braivex.com', '/privacy/request',
-                     'Lawful basis', 'How long we keep it', 'Railway', 'Higgsfield', 'Stripe',
+                     'Lawful basis', 'How long we keep it', 'Railway', 'Higgsfield', 'Stripe', 'Resend',
                      'International Data Transfer Addendum', 'Standard Contractual Clauses',
                      'ico.org.uk/make-a-complaint', 'within one month', 'Object to outreach',
                      'strictly necessary', 'Limited Use requirements', 'drive.file', 'under 18']:
@@ -161,6 +161,19 @@ def test_sign_in_throttle_counts_a_whole_ipv6_network_but_keeps_ipv4_addresses_a
     for i in range(5):
         auth.record_fail('203.0.113.7')
     assert auth.too_many('203.0.113.7') and not auth.too_many('203.0.113.8')  # shared offices are not locked out
+
+
+def test_the_notice_names_resend_as_the_processor_that_sends_reset_emails(pages, monkeypatch):
+    """28 Sep 2026: self-service password reset. The notice says who sends that email, and when nobody does."""
+    for k in ('RESEND_API_KEY', 'RESEND_FROM'):
+        monkeypatch.delenv(k, raising=False)
+    notice = pages('/privacy')
+    assert 'Resend is the email service that delivers the password-reset email when you ask for one' in notice
+    assert 'it receives your email address and the reset link, only to send that message on our instructions' in notice
+    assert 'password-reset emails are switched off at the moment, so nothing is sent to Resend' in notice
+    monkeypatch.setenv('RESEND_API_KEY', 'synthetic-resend-key')
+    monkeypatch.setenv('RESEND_FROM', 'ReelSieve <no-reply@example.test>')
+    assert 'switched off at the moment' not in pages('/privacy')
 
 
 def test_default_host_message_does_not_claim_the_sender_runs_reelsieve():

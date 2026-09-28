@@ -101,6 +101,7 @@ def seed(db, email, marker, drive=True):
     store.admin_event('plan', None, email, plan='starter', credits=3)
     store.note_signin(email, '198.51.100.' + str(len(marker)))
     store.add_privacy_request('access', email, None, 'Please send me a copy of my data.', user=email)  # sent while signed in
+    auth.start_reset(email)  # a live password-reset link
     with db.connect() as c:
         c.execute("INSERT INTO jobs(id,owner_id,idempotency_key,request_hash,url,params,status,log,meta,drive_generation,created,updated,"
                   "finished_at) VALUES(%s,%s,%s,'h','https://www.airbnb.co.uk/rooms/7',%s,'done',%s,%s,1,%s,%s,%s)",
@@ -173,7 +174,7 @@ def test_erase_removes_or_anonymises_every_table(web, owners, google, db):
         assert len(marks) == 2 and [m['owner_id'] for m in marks].count(None) == 1 and owner not in str(marks)
         usage = c.execute('SELECT listing_key,fp_hash FROM usage WHERE owner_id=%s', (owner,)).fetchall()
         assert usage and all(r['listing_key'] is None and r['fp_hash'] is None for r in usage)
-        for table in ('jobs', 'outreach', 'drive_uploads', 'drive_oauth_states', 'signin_networks'):
+        for table in ('jobs', 'outreach', 'drive_uploads', 'drive_oauth_states', 'signin_networks', 'password_resets'):
             assert c.execute(f'SELECT count(*) AS n FROM {table} WHERE owner_id=%s', (owner,)).fetchone()['n'] == 0, table
         d = c.execute('SELECT * FROM drive_connections WHERE owner_id=%s', (owner,)).fetchone()
         assert d['status'] == 'disconnected' and not any(d[k] for k in ('credentials', 'google_sub', 'google_email', 'folder_id', 'connected_at'))

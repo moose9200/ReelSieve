@@ -72,7 +72,7 @@ def erase(email, by=None, via=None):
             return warning  # another worker finished erasing it first
         address = row['email']
         store.admin_event('erase', by, address, conn=c, via=via)
-        for table in ('jobs', 'outreach', 'drive_uploads', 'drive_oauth_states', 'signin_networks'):
+        for table in ('jobs', 'outreach', 'drive_uploads', 'drive_oauth_states', 'signin_networks', 'password_resets'):
             c.execute(f'DELETE FROM {table} WHERE owner_id=%s', (owner,))
         # Referrals: a row with no reward holds nothing the other account needs, so it goes. A rewarded row keeps only
         # the other account's side (its own bonus). Nothing new is written about the erased account.

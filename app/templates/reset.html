@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Choose a new password{% endblock %}
+{% block content %}
+<section class="login-wrap">
+  <section class="card login-card">
+    <p class="eyebrow">Account recovery</p>
+    <h1 class="login-title">Choose a new password</h1>
+    {% if not live %}
+    <p class="sub">That reset link has expired or has already been used. Links last 60 minutes and work once.</p>
+    <p class="login-foot"><a href="/forgot">Ask for a new link</a> · <a href="/login">Back to sign in</a></p>
+    {% else %}
+    <p class="sub">Setting a new password signs you out everywhere else.</p>
+    <form method="post" action="/reset" autocomplete="on" novalidate>
+      <input type="hidden" name="csrf" value="{{ csrf_for(request) }}">
+      <input type="hidden" name="token" value="{{ token }}">
+      <div class="field"><label for="password">New password</label>
+        <div class="pw-row"><input type="password" id="password" name="password" autocomplete="new-password" required minlength="8" autofocus><button type="button" class="pw-toggle" data-for="password" aria-label="Show password">Show</button></div>
+        <p class="hint">At least 8 characters.</p></div>
+      <div class="field"><label for="password2">Repeat new password</label>
+        <div class="pw-row"><input type="password" id="password2" name="password2" autocomplete="new-password" required minlength="8"><button type="button" class="pw-toggle" data-for="password2" aria-label="Show password">Show</button></div></div>
+      {% if error %}<p class="hint hint-warn" role="alert">{{ error }}</p>{% endif %}
+      <div class="actions"><button type="submit" class="btn btn-primary btn-wide">Set new password</button></div>
+    </form>
+    <p class="login-foot"><a href="/login">Back to sign in</a></p>
+    {% endif %}
+  </section>
+</section>
+{% endblock %}

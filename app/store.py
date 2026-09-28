@@ -453,6 +453,8 @@ def export(user):
             'drive_uploads': rows('SELECT job_id,variant,file_id,status,name,web_view_link,size,sharing,created,confirmed_at '
                                   'FROM drive_uploads WHERE owner_id=%(o)s ORDER BY created'),
             'drive_oauth_states': rows('SELECT redirect_uri,created,expires_at FROM drive_oauth_states WHERE owner_id=%(o)s'),
+            # when a reset link was asked for and when it expires; never the token hash, which would let it be used
+            'password_resets': rows('SELECT created,expires_at FROM password_resets WHERE owner_id=%(o)s ORDER BY created'),
             'admin_events': rows('SELECT ts,action,detail,actor_id=%(o)s AS by_you,target_id=%(o)s AS about_you '
                                  'FROM admin_events WHERE actor_id=%(o)s OR target_id=%(o)s ORDER BY ts'),
             'signin_networks': rows('SELECT ip_hash,ts FROM signin_networks WHERE owner_id=%(o)s ORDER BY ts'),

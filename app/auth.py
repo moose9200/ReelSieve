@@ -119,6 +119,53 @@ def set_password(user, pw):
                         (salt, _hash(pw, salt), ITERATIONS, time.time(), norm(user))).fetchone()
         if not row:
             raise ValueError('No such user')
+        c.execute('DELETE FROM password_resets WHERE owner_id=%s', (row['id'],))  # a new password voids any reset link
+
+
+RESET_TTL = 60 * 60  # a reset link lives one hour
+
+
+def _reset_hash(token):
+    """The link carries the random bytes; the database keeps only this hash of them."""
+    return hashlib.sha256((token or '').encode()).hexdigest()
+
+
+def start_reset(user):
+    """A single-use reset token for an account that can sign in, or None. Asking again voids the earlier links."""
+    with database.connect() as c:
+        row = c.execute('SELECT id FROM users WHERE email=%s AND active', (norm(user),)).fetchone()
+        if not row:
+            return None
+        c.execute('DELETE FROM password_resets WHERE owner_id=%s', (row['id'],))
+        token, now = secrets.token_urlsafe(32), time.time()
+        c.execute('INSERT INTO password_resets(token_hash,owner_id,created,expires_at) VALUES(%s,%s,%s,%s)',
+                  (_reset_hash(token), row['id'], now, now + RESET_TTL))
+        return token
+
+
+def reset_token_live(token):
+    """True while that exact link is unused and unexpired. Nothing else about the account is revealed."""
+    with database.connect() as c:
+        return bool(c.execute('SELECT 1 FROM password_resets WHERE token_hash=%s AND expires_at>%s',
+                              (_reset_hash(token), time.time())).fetchone())
+
+
+def finish_reset(token, pw):
+    """Spend the link and set the password. Every session of that account ends (session_version), and every other
+    reset link it has is deleted. Raises ValueError for a weak password, or a used, expired or unknown link."""
+    validate_password(pw)
+    with database.connect() as c:
+        row = c.execute('DELETE FROM password_resets WHERE token_hash=%s AND expires_at>%s RETURNING owner_id',
+                        (_reset_hash(token), time.time())).fetchone()
+        if not row:
+            raise ValueError('That reset link has expired or has already been used. Ask for a new one.')
+        salt = secrets.token_hex(16)
+        done = c.execute('UPDATE users SET salt=%s,hash=%s,iterations=%s,changed=%s,session_version=session_version+1 '
+                         'WHERE id=%s AND active RETURNING email', (salt, _hash(pw, salt), ITERATIONS, time.time(), row['owner_id'])).fetchone()
+        c.execute('DELETE FROM password_resets WHERE owner_id=%s', (row['owner_id'],))
+        if not done:
+            raise ValueError('That account can no longer be reset here. Email hello@braivex.com.')
+        return done['email']
 
 
 def role(user):

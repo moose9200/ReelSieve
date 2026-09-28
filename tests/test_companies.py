@@ -474,7 +474,9 @@ def test_a_company_can_object_through_the_public_privacy_form(web, db):
     token = re.search(r'name="csrf" value="([0-9a-f]+)"', form).group(1)
     base = {'csrf': token, 'email': ALICE, 'type': 'objection', 'details': 'Please stop.', 'airbnb_profile': ''}
     assert anon.post('/privacy/request', data={**base, 'company_number': 'not a number'}).status_code == 400
-    assert anon.post('/privacy/request', data={**base, 'company_number': ' 1 '}).status_code == 200  # leading zeros optional
+    # Alice sends this one while signed in, so it is hers in the export below; the form itself takes both.
+    signed_in = re.search(r'name="csrf" value="([0-9a-f]+)"', web['alice'].get('/privacy/request').text).group(1)
+    assert web['alice'].post('/privacy/request', data={**base, 'csrf': signed_in, 'company_number': ' 1 '}).status_code == 200  # leading zeros optional
     assert web['bob'].get('/api/outreach/companies').json()['total'] == 0
     with db.connect() as c:
         assert c.execute('SELECT company_number FROM privacy_requests').fetchone()['company_number'] == '00000001'

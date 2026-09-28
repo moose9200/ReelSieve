@@ -29,14 +29,14 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.formparsers import MultiPartException, MultiPartParser
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app import admin, airbnb, auth, billing, cohost, companies, database, fetch, gdrive, hostmsg, invoices, jobs, linkedin, photos, plans, referrals, retention, store
+from app import admin, airbnb, auth, billing, cohost, companies, database, fetch, gdrive, hostmsg, invoices, jobs, linkedin, mail, photos, plans, referrals, retention, store
 from app import search as listing_search
 
 HERE = Path(__file__).resolve().parent
 REQUIRED = ('DATABASE_URL', 'SESSION_SECRET', 'TOKEN_ENCRYPTION_KEY')
 CSRF_COOKIE = 'reelsieve_csrf'
 PUBLIC_PREFIXES = ('/static/', '/oauth/google/callback', '/favicon.ico', '/api/billing/webhook/', '/r/')
-PUBLIC_EXACT = ('/', '/login', '/signup', '/setup', '/forgot', '/healthz', '/privacy', '/terms', '/privacy/request',
+PUBLIC_EXACT = ('/', '/login', '/signup', '/setup', '/forgot', '/reset', '/healthz', '/privacy', '/terms', '/privacy/request',
                 '/robots.txt', '/sitemap.xml', '/llms.txt')
 DAILY_CAP = int(os.getenv('OUTREACH_DAILY_CAP', '5'))
 TRUSTED_HOPS = int(os.getenv('TRUSTED_PROXY_HOPS', '1'))
@@ -60,6 +60,8 @@ SETTINGS = [('HF_KEY', True, 'Higgsfield API key — enables AI camera motion (b
             ('INVOICE_BACKUP_SECRET_ACCESS_KEY', True, 'Worker service: secret access key of that IAM user'),
             ('INVOICE_BACKUP_ENDPOINT', False, 'Worker service, optional: https:// S3 endpoint. An AWS one must name the region (https://s3.ap-south-1.amazonaws.com); any other needs INVOICE_BACKUP_ENDPOINT_IN_INDIA'),
             ('INVOICE_BACKUP_ENDPOINT_IN_INDIA', False, 'Worker service: set to 1 to confirm a non-AWS INVOICE_BACKUP_ENDPOINT keeps files on servers in India; the app cannot check this'),
+            ('RESEND_API_KEY', True, 'Resend API key; with RESEND_FROM it switches on self-service password-reset emails'),
+            ('RESEND_FROM', False, 'From address the reset email is sent from, on a domain verified in Resend'),
             ('BILLING_NOTE', False, 'Line shown to customers who choose invoice'),
             ('DEFAULT_MESSAGE', False, 'Default host message template'),
             ('AIRBNB_FETCH_ENABLED', False, 'Airbnb fetching: 1 on, 0 off. Off stops every request to Airbnb and its photo '
@@ -223,6 +225,8 @@ async def security_headers(request, call_next):
     response = await call_next(request)
     for k, v in SECURITY_HEADERS.items():
         response.headers.setdefault(k, v)
+    if request.url.path == '/reset':  # the reset token is in the address: never hand it to another site in a Referer
+        response.headers['Referrer-Policy'] = 'no-referrer'
     if _secure(request):  # browsers only honour HSTS over HTTPS; one year, this host only
         response.headers.setdefault('Strict-Transport-Security', 'max-age=31536000')
     if os.getenv('SEO_NOINDEX') == '1':  # staging and previews: never compete with the real site in search
@@ -407,9 +411,70 @@ def logout():
     return r
 
 
+RESET_EMAIL = """Someone asked to reset the password of the ReelSieve account for this address.
+
+Choose a new password here:
+{link}
+
+The link works once and expires in 60 minutes. Asking for another one cancels this link.
+
+If this was not you, ignore this email: your password has not changed, and nobody can sign in with this link
+unless they can read this mailbox.
+
+ReelSieve by Braivex · {site}
+"""
+
+
+def _forgot_page(request, status=200, **ctx):
+    return tpl.TemplateResponse(request, 'forgot.html', {'email_reset': mail.enabled(), **ctx}, status_code=status)
+
+
 @app.get('/forgot', response_class=HTMLResponse)
 def forgot(request: Request):
-    return tpl.TemplateResponse(request, 'forgot.html', {})
+    return _forgot_page(request)
+
+
+@app.post('/forgot')
+async def forgot_post(request: Request):
+    """Same answer for an address with an account and one without: this page never tells anyone who has one."""
+    if not mail.enabled():  # nothing is sent and nothing is stored until Resend is configured
+        return _forgot_page(request)
+    f = await _form(request)
+    email = auth.norm(f.get('user') or '')
+    if not email:
+        return _forgot_page(request, 400, error='Enter the email you signed up with')
+    ip = _ip(request)
+    # Per network (IPv6 /64, as sign-in counts it) and per address, so neither a network nor one mailbox can be flooded.
+    if auth.too_many(ip, 'reset') or auth.too_many(email, 'reset-email'):
+        return _forgot_page(request, 429, user=email, error='Too many reset requests — wait 10 minutes')
+    auth.record_fail(ip, 'reset')
+    auth.record_fail(email, 'reset-email')
+    token = auth.start_reset(email)
+    if token:
+        # The link is built from the configured site address, never from this request's Host header.
+        link = site_url() + '/reset?token=' + quote(token)
+        mail.send(email, 'Reset your ReelSieve password', RESET_EMAIL.format(link=link, site=site_url()))
+    return _forgot_page(request, sent=True, user=email)
+
+
+@app.get('/reset', response_class=HTMLResponse)
+def reset_page(request: Request, token: str = ''):
+    return tpl.TemplateResponse(request, 'reset.html', {'token': token, 'live': auth.reset_token_live(token)})
+
+
+@app.post('/reset')
+async def reset_post(request: Request):
+    f = await _form(request)
+    token, p1, p2 = f.get('token') or '', f.get('password') or '', f.get('password2') or ''
+    page = lambda err: tpl.TemplateResponse(request, 'reset.html', {'token': token, 'live': auth.reset_token_live(token),  # noqa: E731
+                                                                    'error': err}, status_code=400)
+    if p1 != p2:
+        return page('Passwords do not match')
+    try:
+        auth.finish_reset(token, p1)  # spends the link, signs every session of that account out
+    except ValueError as e:
+        return page(str(e))
+    return RedirectResponse('/login?notice=pw', status_code=303)
 
 
 def _ref(code):
@@ -596,7 +661,7 @@ def _notice_facts():
     from urllib.parse import urlsplit
     links = sorted({urlsplit(billing.checkout_link(p)).hostname for p in ('starter', 'commercial') if billing.checkout_link(p)})
     backup = invoices.config() or {}
-    return {'payments': {'stripe': billing.stripe_enabled(), 'links': links},
+    return {'payments': {'stripe': billing.stripe_enabled(), 'links': links}, 'email_reset': mail.enabled(),
             'backup_aws': not backup.get('endpoint') or '.amazonaws.com' in backup['endpoint']}  # AWS unless a non-AWS endpoint is set
 
 
