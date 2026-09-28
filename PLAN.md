@@ -111,4 +111,31 @@ Target: every finding below has a failing-first test (or a pinned notice fact) a
 - Evidence 27 Sep: pytest `tests` -> 538 passed, 2 skipped (29 new: 23 in test_final_review.py, 6 in test_privacy_basics.py); compileall exit 0; node --check app.js exit 0. Local run port 8820, schema final_fix (synthetic, dropped): 8 pages x 1440/390 all 200, 0 px horizontal overflow; screenshots /Users/hemant/Higgsfield-Airbnb/.playwright-mcp/2026-09-27_final-review-{privacy,terms,account,photos-mode,job-link,job-photos,settings,request}-{1440,390}.png.
 - Open (owner): transfer safeguard for Higgsfield and for payment-link providers is Unknown, so the notice names them without claiming one. Login throttling still keys on the exact IP (auth.too_many(ip)): the same IPv6 /64 gap S1 closed for the privacy form; not changed here (it would lock out a shared office network).
 - [x] N3-N20 notice and copy fixes, pinned in tests/test_privacy_basics.py. Evidence: 6 new tests red against the pre-edit templates (stash check), green after; Higgsfield policy fetched 27 Sep 2026 (last updated 26 Jul 2026) and quoted from its section 5.9
+## Braivex product consistency + password reset + security review (28 Sep 2026, branch braivex/consistency-2026-09-28)
+Spec: /Users/hemant/.braivex-audit/2026-09-28/spec-common.md. Baseline before the work: 540 passed, 2 skipped.
+- [x] One footer partial on every page. Evidence: `gate-reelsieve.sh -k site_footer` exit 0, 15 passed (8 public pages,
+      5 signed-in pages, both templates include `_site_footer.html` and load `/static/footer.css`).
+      app/templates/_site_footer.html + app/static/footer.css; base.html includes it for the app, auth and legal pages,
+      landing.html for the landing page (its own footer and the "More from Braivex" product list are gone). Loculens
+      values: padding 64px 40px 28px, 1.7fr 1fr 1fr 1.1fr / 40px, 13px links, 11px .18em headings, cyan CTA; the light
+      theme swaps the greys; two columns and 44px hit areas at <= 650px.
+      UNVERIFIED: no screenshots - this session could not start a local server or drive Playwright (sandbox refused).
+- [x] Self-service password reset. Evidence: `gate-reelsieve.sh -k password_reset` exit 0, 14 passed.
+      /forgot and /reset, app/schema/010_password_resets.sql, app/mail.py (Resend), 60-minute single-use links, a new
+      request or any password change voids the old ones, sessions revoked on reset, per-network (/64) and per-address
+      limits, CSRF, Referrer-Policy no-referrer, link from site_url() and never the Host header, honest fallback page
+      while RESEND_API_KEY is unset. Retention deletes expired rows, erasure deletes the account's rows, the export
+      shows the times only.
+- [x] F1 webhook settlement needs a paid status, the order's amount and USD. Evidence: 3 tests red before the fix
+      (13 failed of 14 on the first run of tests/test_security_review.py), green after; app/billing.py settlement_problems.
+- [x] F2 privacy_requests.owner_id; the export reads it, not the typed email. Evidence: 2 tests red before the fix
+      (app/schema/010_privacy_request_owner.sql); test_own_privacy_requests... and test_a_company_can_object... sign in now.
+- [x] F6 outreach CSV uses the invoice CSV's formula guard and QUOTE_ALL. Evidence: 8 tests red before the fix, green after.
+- [x] F7 reel stream pins video/mp4. Evidence: 1 test red before the fix (Drive header text/html was forwarded).
+- [x] Prices already USD everywhere; nothing changed. Evidence: `grep -rn "priceCurrency|GBP|£|EUR|€"` -> 1 hit,
+      landing.html:122 `"priceCurrency": "USD"`; plans.PLANS price_label $0/$100/$500.
+- Not done (spec says so): F4 signup wording, F5 CSP. Auth-card logo (spec 2) is not in this task.
+- Open (owner): Resend's location and transfer safeguard are Unknown, so the notice names it without claiming one.
+- Full gate after the batch: `zsh gate-reelsieve.sh` -> compileall 0, node --check 0, pytest 0, 583 passed, 2 skipped.
+
 - 27 Sep 15:41 BST LIVE (293483f): web 1b2f065a build 245b44b7419d (= local fingerprint), worker 05f106ed (2 replicas running app.worker). S1-S4 and N1-N21 fixed on fix/final-review (538 passed) + sign-in /64 throttle and neutral host message (540 passed, 2 skipped). Live: public pages 200, /setup 303, /app 303 anon, export 401 anon, HSTS on, 0 Google/Airbnb asset refs, privacy form offers listing_removal; signed in: both reel modes, no required tick box, photos mode AI motion off with reason, Account invite/download (16 sections, no secrets)/delete, Plans buttons, Outreach companies + business email + consent copy. Companies House snapshot 2026-09-01 loaded: 140,010 rows (worker log 14:39:20Z).
