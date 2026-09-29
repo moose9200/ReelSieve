@@ -6,8 +6,10 @@ in app.worker. Nothing here writes customer data to local disk.
 Run: .venv/bin/uvicorn app.server:app --port 8787   (DATABASE_URL, SESSION_SECRET, TOKEN_ENCRYPTION_KEY)
 """
 import asyncio
+import base64
 from contextlib import asynccontextmanager, contextmanager
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -15,7 +17,7 @@ import secrets
 import threading
 import time
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from xml.sax.saxutils import escape
 
 import httpx
@@ -29,13 +31,14 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.formparsers import MultiPartException, MultiPartParser
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from app import admin, airbnb, auth, billing, cohost, companies, database, fetch, gdrive, hostmsg, invoices, jobs, linkedin, mail, photos, plans, referrals, retention, store
+from app import (admin, airbnb, auth, billing, braivex_sso, cohost, companies, database, fetch, gdrive, hostmsg, invoices,
+                 jobs, linkedin, mail, photos, plans, referrals, retention, store)
 from app import search as listing_search
 
 HERE = Path(__file__).resolve().parent
 REQUIRED = ('DATABASE_URL', 'SESSION_SECRET', 'TOKEN_ENCRYPTION_KEY')
 CSRF_COOKIE = 'reelsieve_csrf'
-PUBLIC_PREFIXES = ('/static/', '/oauth/google/callback', '/favicon.ico', '/api/billing/webhook/', '/r/')
+PUBLIC_PREFIXES = ('/static/', '/oauth/google/callback', '/favicon.ico', '/api/billing/webhook/', '/r/', '/auth/braivex/')
 PUBLIC_EXACT = ('/', '/login', '/signup', '/setup', '/forgot', '/reset', '/healthz', '/privacy', '/terms', '/privacy/request',
                 '/robots.txt', '/sitemap.xml', '/llms.txt')
 DAILY_CAP = int(os.getenv('OUTREACH_DAILY_CAP', '5'))
@@ -133,6 +136,7 @@ def site_url():
 
 
 tpl.env.globals['site_url'] = site_url
+tpl.env.globals['braivex'] = braivex_sso.view  # {'on', 'passwords', 'sunset'}: the sign-in cards and the notice read it
 tpl.env.globals['airbnb_enabled'] = airbnb.enabled
 tpl.env.globals['airbnb_disabled'] = airbnb.DISABLED
 tpl.env.globals['current_year'] = lambda: time.strftime('%Y', time.gmtime())  # the footer's copyright line
@@ -193,7 +197,10 @@ class Gate(BaseHTTPMiddleware):
                 return JSONResponse({'detail': 'Sign in required'}, status_code=401)
             target = path + ('?' + request.url.query if request.url.query else '')
             return RedirectResponse('/login?next=' + quote(target), status_code=303)
-        if request.method not in ('GET', 'HEAD', 'OPTIONS') and not path.startswith('/api/billing/webhook/'):
+        # Exempt: the payment webhook (HMAC-signed) and the Braivex callback (a cross-site POST from
+        # accounts.braivex.com, proved by the assertion's signature and by the state cookie this browser holds).
+        if request.method not in ('GET', 'HEAD', 'OPTIONS') and not path.startswith('/api/billing/webhook/') \
+                and path != braivex_sso.CALLBACK_PATH:
             sent = request.headers.get('x-csrf-token', '')
             # /api/ callers are the page's scripts, which always send the header: the body is never read here.
             if not sent and not path.startswith('/api/') and \
@@ -400,6 +407,9 @@ async def login_post(request: Request):
         auth.record_fail(ip)
         time.sleep(0.6)
         return ctx('Wrong email or password', 401)
+    if not braivex_sso.passwords_allowed() and auth.role(u) != 'admin':
+        # Past the sunset a customer signs in with Braivex only. Operators keep this path: break-glass.
+        return ctx('Password sign-in has ended. Use Continue with Braivex.', 403)
     auth.clear_fails(ip)
     store.note_signin(u, ip)
     return _set_session(RedirectResponse(nxt, status_code=303), request, u, f.get('remember') == '1')
@@ -432,12 +442,16 @@ def _forgot_page(request, status=200, **ctx):
 
 @app.get('/forgot', response_class=HTMLResponse)
 def forgot(request: Request):
+    if not braivex_sso.passwords_allowed():  # past the sunset there is no customer password to recover
+        return RedirectResponse('/login', status_code=303)
     return _forgot_page(request)
 
 
 @app.post('/forgot')
 async def forgot_post(request: Request):
     """Same answer for an address with an account and one without: this page never tells anyone who has one."""
+    if not braivex_sso.passwords_allowed():
+        return RedirectResponse('/login', status_code=303)
     if not mail.enabled():  # nothing is sent and nothing is stored until Resend is configured
         return _forgot_page(request)
     f = await _form(request)
@@ -502,7 +516,9 @@ async def signup_post(request: Request):
     f = await _form(request)
     u, p1, p2 = (f.get('user') or '').strip(), f.get('password') or '', f.get('password2') or ''
     plan, url, ip, ref = (f.get('plan') or 'free').strip(), (f.get('url') or '').strip()[:500], _ip(request), _ref(f.get('ref'))
-    ctx = lambda err: tpl.TemplateResponse(request, 'signup.html', {'user': u, 'plan': plan, 'url': url, 'ref': ref, 'error': err, 'plans': plans.public_plans()}, status_code=400)  # noqa: E731
+    ctx = lambda err, code=400: tpl.TemplateResponse(request, 'signup.html', {'user': u, 'plan': plan, 'url': url, 'ref': ref, 'error': err, 'plans': plans.public_plans()}, status_code=code)  # noqa: E731
+    if not braivex_sso.passwords_allowed():  # past the sunset a new customer account is created by Braivex only
+        return ctx('New accounts are created with Continue with Braivex.', 403)
     if p2 and p1 != p2:
         return ctx('Passwords do not match')
     guard = plans.signup_guard(u, ip)
@@ -519,6 +535,141 @@ async def signup_post(request: Request):
     if plan in ('starter', 'commercial'):
         nxt = '/upgrade?plan=' + plan
     return _set_session(RedirectResponse(nxt, status_code=303), request, u, True)
+
+
+# ---------------- Continue with Braivex ----------------
+# accounts.braivex.com verifies the mailbox with a 6-digit code through Shopify customer accounts and posts a signed,
+# 120-second assertion back here. Contract: /Users/hemant/braivex-accounts/docs/PRODUCT-INTEGRATION.md (29 Sep 2026).
+
+STATE_COOKIE = 'braivex_sso_state'   # this browser's sign-in, 10 minutes, Path=/auth/braivex
+NEW_COOKIE = 'braivex_sso_new'       # the verified claims of a customer with no account yet, 15 minutes
+NEW_TTL = 15 * 60
+
+
+def _seal(ttl, **data):
+    """A cookie only this server can have written: the values, then an HMAC of them under SESSION_SECRET."""
+    body = base64.urlsafe_b64encode(json.dumps({**data, 'exp': int(time.time()) + ttl}, separators=(',', ':'))
+                                    .encode()).decode().rstrip('=')
+    return body + '.' + hmac.new(auth.secret().encode(), body.encode(), hashlib.sha256).hexdigest()
+
+
+def _unseal(cookie):
+    """What _seal put there, or None: a wrong signature, a mangled cookie and an expired one are all None."""
+    body, _, sig = (cookie or '').partition('.')
+    if not sig or not hmac.compare_digest(hmac.new(auth.secret().encode(), body.encode(), hashlib.sha256).hexdigest(), sig):
+        return None
+    try:
+        data = json.loads(base64.urlsafe_b64decode(body + '=' * (-len(body) % 4)))
+    except (ValueError, TypeError, UnicodeError):
+        return None
+    return data if isinstance(data, dict) and data.get('exp', 0) > time.time() else None
+
+
+def _sso_off():
+    """With BRAIVEX_SSO unset the product is exactly what it was: these routes do not exist."""
+    if not braivex_sso.enabled():
+        raise HTTPException(404, 'Not found')
+
+
+def _sso_refused(request, message, nxt='/app'):
+    """The sign-in page again, saying what went wrong and nothing about why. Never signs anyone in."""
+    r = tpl.TemplateResponse(request, 'login.html', {'next': _safe_next(nxt), 'error': message}, status_code=401)
+    return _drop(r, STATE_COOKIE)
+
+
+def _drop(response, name):
+    response.delete_cookie(name, path='/auth/braivex')
+    return response
+
+
+@app.get('/auth/braivex/start')
+def braivex_start(request: Request, next: str = '/app', login_hint: str = '', ref: str = ''):
+    """Mint this browser's state, remember where it was going, and hand the sign-in to Braivex Accounts."""
+    _sso_off()
+    state = secrets.token_urlsafe(32)
+    query = {'client': braivex_sso.CLIENT, 'return_to': braivex_sso.callback_url(site_url()), 'state': state}
+    hint = auth.norm(login_hint)
+    if auth.EMAIL.match(hint):
+        query['login_hint'] = hint
+    r = RedirectResponse(braivex_sso.accounts_url() + '/start?' + urlencode(query), status_code=302)
+    r.set_cookie(STATE_COOKIE, _seal(600, state=state, next=_safe_next(next), ref=_ref(ref)), max_age=600,
+                 httponly=True, samesite='lax', secure=_secure(request), path='/auth/braivex')
+    return r
+
+
+@app.post(braivex_sso.CALLBACK_PATH)
+async def braivex_callback(request: Request):
+    """The only route the CSRF check skips: this POST is a cross-site form submit from accounts.braivex.com, and
+    what proves it is the assertion's signature plus the state cookie this browser was given."""
+    _sso_off()
+    sealed = _unseal(request.cookies.get(STATE_COOKIE, ''))  # read once, then gone whatever happens below
+    form = await _form(request)
+    if not sealed:
+        return _sso_refused(request, 'That sign-in did not start in this browser. Try again.')
+    nxt, ref = _safe_next(sealed.get('next')), _ref(sealed.get('ref'))
+    try:
+        claims = braivex_sso.verify(form.get('assertion') or '', sealed.get('state') or '')
+    except braivex_sso.BraivexAssertionError:
+        return _sso_refused(request, 'Braivex could not sign you in. Try again.', nxt)
+    if not braivex_sso.spend_jti(claims['jti']):
+        return _sso_refused(request, 'That sign-in has already been used. Try again.', nxt)
+    email = auth.norm(claims['email'])
+    row = auth.by_braivex(claims['sub']) or auth.identity(email)
+    if not row:
+        # Somebody Braivex has verified who has never had a ReelSieve account: name the business, then sign up.
+        r = _drop(RedirectResponse('/auth/braivex/workspace', status_code=303), STATE_COOKIE)
+        r.set_cookie(NEW_COOKIE, _seal(NEW_TTL, email=email, sub=claims['sub'], next=nxt, ref=ref), max_age=NEW_TTL,
+                     httponly=True, samesite='lax', secure=_secure(request), path='/auth/braivex')
+        return r
+    if row['role'] != 'member':
+        # Braivex sign-in never grants operator rights, so an operator account keeps its own path.
+        return _sso_refused(request, 'This account signs in with its password.', nxt)
+    # Linking by email is safe only because the assertion says email_verified: Shopify proved the mailbox. A row that
+    # already carries another Shopify customer is never re-pointed at this one.
+    if row['braivex_customer_id'] != claims['sub'] and not auth.link_braivex(row['email'], claims['sub']):
+        return _sso_refused(request, 'That Braivex account is already linked elsewhere. Email hello@braivex.com.', nxt)
+    store.note_signin(row['email'], _ip(request))
+    return _drop(_set_session(RedirectResponse(nxt, status_code=303), request, row['email'], True), STATE_COOKIE)
+
+
+def _workspace_page(request, new, status=200, error=''):
+    return tpl.TemplateResponse(request, 'braivex_workspace.html', {'email': new['email'], 'error': error},
+                                status_code=status)
+
+
+@app.get('/auth/braivex/workspace', response_class=HTMLResponse)
+def braivex_workspace(request: Request):
+    _sso_off()
+    new = _unseal(request.cookies.get(NEW_COOKIE, ''))
+    if not new:
+        return _sso_refused(request, 'That sign-in has expired. Start again.')
+    return _workspace_page(request, new)
+
+
+@app.post('/auth/braivex/workspace')
+async def braivex_workspace_post(request: Request):
+    """Creates the account exactly as password sign-up does — same plan, same invite attribution, same session —
+    with no usable password, because Braivex holds the sign-in."""
+    _sso_off()
+    new = _unseal(request.cookies.get(NEW_COOKIE, ''))
+    if not new:
+        return _sso_refused(request, 'That sign-in has expired. Start again.')
+    f = await _form(request)
+    business, ip = (f.get('business') or '').strip()[:120], _ip(request)
+    guard = plans.signup_guard(new['email'], ip)
+    if guard:
+        return _workspace_page(request, new, 400, guard)
+    try:
+        auth.create_sso_user(new['email'], new['sub'])
+    except ValueError as e:
+        return _workspace_page(request, new, 400, str(e))
+    store.ensure_account(new['email'], 'free')
+    store.note_signin(new['email'], ip)
+    referrals.attribute(new['email'], new.get('ref'))
+    if business:
+        store.set_b2b_sender(new['email'], '', business, new['email'])
+    r = _set_session(RedirectResponse(_safe_next(new.get('next')), status_code=303), request, new['email'], True)
+    return _drop(r, NEW_COOKIE)
 
 
 @app.post('/api/account/password')

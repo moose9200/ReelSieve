@@ -92,8 +92,10 @@ def erase(email, by=None, via=None):
         # Paid, or reported paid and awaiting confirmation: the tax record needs the payer's email if the money clears.
         c.execute("UPDATE orders SET note=NULL,meta=NULL,pay_link=NULL,billing_email=COALESCE(billing_email,%s) WHERE owner_id=%s",
                   (address, owner))
+        # braivex_customer_id goes with the email: it is the erased person's Shopify customer number, and clearing it
+        # also frees them to sign up again with Continue with Braivex.
         c.execute("UPDATE users SET email=%s,salt=%s,hash=%s,role='member',active=FALSE,erased_at=%s,"
-                  'session_version=session_version+1 WHERE id=%s',
+                  'braivex_customer_id=NULL,session_version=session_version+1 WHERE id=%s',
                   (f'deleted-{owner}@erased.invalid', secrets.token_hex(16), 'erased:' + secrets.token_hex(32), now, owner))
     return warning
 

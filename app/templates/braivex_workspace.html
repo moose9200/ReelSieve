@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Name your business{% endblock %}
+{% block content %}
+<section class="login-wrap">
+  <section class="card login-card">
+    <p class="eyebrow">One more step</p>
+    <h1 class="login-title">Name your business</h1>
+    <p class="sub">Braivex verified <strong>{{ email }}</strong>. Your ReelSieve account is free: two videos, no card.</p>
+    {% if error %}<p class="hint hint-warn" role="alert">{{ error }}</p>{% endif %}
+    <form method="post" action="/auth/braivex/workspace" autocomplete="on" novalidate>
+      <input type="hidden" name="csrf" value="{{ csrf_for(request) }}">
+      <div class="field">
+        <label for="business">Business name (optional)</label>
+        <input type="text" id="business" name="business" autocomplete="organization" maxlength="120" placeholder="Reel Studio" autofocus>
+        <p class="hint">Used on the business emails you write in Outreach. You can change it in Outreach later.</p>
+      </div>
+      <p class="hint">By creating an account you agree to the <a href="/terms">Terms</a> and confirm you have read the <a href="/privacy">Privacy notice</a>.</p>
+      <div class="actions"><button type="submit" class="btn btn-primary btn-wide">Create my account</button></div>
+    </form>
+    <p class="login-foot">Not you? <a href="/login">Back to sign in</a></p>
+  </section>
+</section>
+{% endblock %}

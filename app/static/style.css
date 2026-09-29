@@ -556,6 +556,12 @@ select { width: 100%; color: var(--ink); background: var(--surface); border: 0; 
 .link-muted { color: var(--muted); font-size: 12px; text-decoration: none; } .link-muted:hover { color: var(--accent-text); }
 .btn-wide { width: 100%; min-height: 46px; }
 .login-foot { color: var(--muted); font-size: 13px; margin: 16px 0 0; text-align: center; } .login-foot a { color: var(--accent-text); text-decoration: none; font-weight: 600; }
+/* Continue with Braivex: the primary button keeps .btn-primary; only the note and the password disclosure are new. */
+.sso-note { text-align: center; margin: 10px 0 0; }
+.sso-pw { margin-top: 18px; }
+.sso-pw > summary { cursor: pointer; color: var(--accent-text); font-size: 13px; font-weight: 600; min-height: 44px; display: flex; align-items: center; justify-content: center; list-style: none; }
+.sso-pw > summary::-webkit-details-marker { display: none; }
+.sso-pw[open] > summary { color: var(--muted); }
 .hint-ok { color: var(--pos-text); }
 .steps { color: var(--muted); font-size: 13px; padding-left: 18px; line-height: 1.6; }
 .grid-3 { display: grid; grid-template-columns: 1.4fr 1fr .7fr; gap: 12px; }

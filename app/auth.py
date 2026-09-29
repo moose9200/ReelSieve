@@ -69,6 +69,53 @@ def create_user(user, pw, role='member'):
         raise ValueError('That email already has an account') from None
 
 
+# A hash no PBKDF2 output can equal (those are 64 hex characters), so verify() can never match one: an account that
+# signs in with Braivex has no usable password until it asks for a reset link.
+SSO_ONLY_HASH = 'braivex-sso:'
+
+
+def create_sso_user(user, braivex_customer_id):
+    """A customer Braivex Accounts verified who has never had a ReelSieve account. Always a member: signing in with
+    Braivex never grants operator rights, whatever the address."""
+    user = norm(user)
+    if not EMAIL.match(user):
+        raise ValueError('Enter a valid email address')
+    try:
+        with database.connect() as c:
+            c.execute('INSERT INTO users(id,email,salt,hash,iterations,role,created,braivex_customer_id) '
+                      'VALUES(%s,%s,%s,%s,%s,%s,%s,%s)',
+                      (str(uuid.uuid4()), user, secrets.token_hex(16), SSO_ONLY_HASH + secrets.token_hex(32),
+                       ITERATIONS, 'member', time.time(), braivex_customer_id))
+    except UniqueViolation:
+        raise ValueError('That email already has an account') from None
+
+
+def identity(user):
+    """The signed-in-able account for that address, or None."""
+    with database.connect() as c:
+        return c.execute('SELECT email,role,braivex_customer_id FROM users WHERE email=%s AND active',
+                         (norm(user),)).fetchone()
+
+
+def by_braivex(braivex_customer_id):
+    """The account that Shopify customer already has, or None. `sub` is the identity; an email can change."""
+    with database.connect() as c:
+        return c.execute('SELECT email,role,braivex_customer_id FROM users WHERE braivex_customer_id=%s AND active',
+                         (braivex_customer_id,)).fetchone()
+
+
+def link_braivex(user, braivex_customer_id):
+    """Attach a Shopify customer id to an account that has none. False when the row already carries another one, or
+    another account claimed this id first: neither may be overwritten, so nobody can take over an account."""
+    try:
+        with database.connect() as c:
+            return bool(c.execute('UPDATE users SET braivex_customer_id=%s WHERE email=%s AND active '
+                                  'AND braivex_customer_id IS NULL RETURNING id',
+                                  (braivex_customer_id, norm(user))).fetchone())
+    except UniqueViolation:
+        return False
+
+
 def delete_user(user, by):
     """Deactivate login while retaining the durable owner and business audit history.
     by=None is the operator console (a shell in the service), which has no admin account."""

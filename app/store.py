@@ -440,7 +440,8 @@ def export(user):
         o = {'o': database.user_id(user, c)}
         rows = lambda q: c.execute(q, o).fetchall()  # noqa: E731
         return {
-            'users': rows('SELECT id,email,role,created,changed,active,deactivated_at,erased_at FROM users WHERE id=%(o)s'),
+            'users': rows('SELECT id,email,role,created,changed,active,deactivated_at,erased_at,braivex_customer_id '
+                          'FROM users WHERE id=%(o)s'),
             'accounts': rows('SELECT * FROM accounts WHERE owner_id=%(o)s'),
             'usage': rows('SELECT * FROM usage WHERE owner_id=%(o)s ORDER BY ts'),
             'jobs': rows('SELECT id,url,params,status,progress,step,log,meta,error,created,updated,finished_at '
