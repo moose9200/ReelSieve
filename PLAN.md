@@ -138,4 +138,36 @@ Spec: /Users/hemant/.braivex-audit/2026-09-28/spec-common.md. Baseline before th
 - Open (owner): Resend's location and transfer safeguard are Unknown, so the notice names it without claiming one.
 - Full gate after the batch: `zsh gate-reelsieve.sh` -> compileall 0, node --check 0, pytest 0, 583 passed, 2 skipped.
 
+## Continue with Braivex (29 Sep 2026, branch braivex/sso-2026-09-29)
+Spec: /Users/hemant/.braivex-audit/2026-09-28/sso-reelsieve.md. Contract: /Users/hemant/braivex-accounts/docs/
+PRODUCT-INTEGRATION.md (read 29 Sep 2026, including "Login-CSRF binding"). Baseline before the work: 583 passed, 2 skipped.
+- [x] Assertion verifier, no new dependency. Evidence: `gate-reelsieve.sh -q -k braivex` exit 0, 53 passed.
+      `app/braivex_sso.py` mirrors packages/verify-ts/index.ts claim for claim using `cryptography` (RS256 over the
+      JWS signing input) and httpx, not PyJWT: JWKS cached 10 minutes and refetched on an unknown kid (30 s cooldown
+      so a forged kid is not an outbound request), iss, aud, exp/nbf +-30 s, required claims, email_verified,
+      Shopify GID sub, constant-time state. 14 flawed-claim cases plus tamper, wrong key, unknown kid and dead broker.
+- [x] Routes. Evidence: `gate-reelsieve.sh -q -k braivex` exit 0; 52 of the 53 are tests/test_braivex_sso.py.
+      `GET /auth/braivex/start` (state = 32 random bytes, HttpOnly/Lax/Path=/auth/braivex/Max-Age=600 cookie sealed
+      with SESSION_SECRET and carrying next + invite code, 302 with the exact registered return_to built from
+      site_url()), `POST /auth/braivex/callback` (the only route exempt from the CSRF check; cookie read then deleted,
+      jti spent once for 10 minutes in PostgreSQL), `GET/POST /auth/braivex/workspace` (business name, then the same
+      account a password sign-up creates). 404 on all three while BRAIVEX_SSO is off.
+- [x] Linking. Evidence: 5 tests (by sub after an email change, by verified email keeping plan and credits, a row
+      already holding another Shopify customer refused, operator refused, new customer created as a member).
+      An operator account can never be signed in by Braivex, so SSO cannot grant admin.
+- [x] Sunset. Evidence: 5 tests (before, on the day, after, operator break-glass, switch off). Before it the
+      password form is a disclosure under the Braivex button with the date; on or after it customer sign-in,
+      password sign-up and /forgot are closed and an operator's password still works.
+- [x] Schema `app/schema/011_braivex_sso.sql`. Evidence: 3 tests (jti row expiry 600 s, retention deletes it,
+      erasure clears braivex_customer_id and frees the Shopify customer to sign up again); the export shows it.
+- [x] Privacy notice. Evidence: `gate-reelsieve.sh -q -k privacy_basics` exit 0, 14 passed including the new
+      Braivex/Shopify pin; "Last updated 29 Sep 2026"; test_own_photos_review date pin updated.
+- Gate: `zsh gate-reelsieve.sh` -> compileall 0, node --check 0, pytest 0, 636 passed, 2 skipped (+53).
+- Mutation checks (each reverted): state check off -> 1 failure; aud check off -> 3; jti always fresh -> 1;
+  CSRF exemption widened to /auth/braivex/ -> 2.
+- UNVERIFIED: no screenshots. This session could not start a local server or drive Playwright (both refused), so the
+  auth cards were only rendered through the TestClient and checked as HTML/CSS, not looked at.
+- Open (owner): Shopify Inc. and Braivex Accounts are named in the notice as sign-in processors without a transfer
+  safeguard claim - where they sit and which tool covers them is Unknown.
+
 - 27 Sep 15:41 BST LIVE (293483f): web 1b2f065a build 245b44b7419d (= local fingerprint), worker 05f106ed (2 replicas running app.worker). S1-S4 and N1-N21 fixed on fix/final-review (538 passed) + sign-in /64 throttle and neutral host message (540 passed, 2 skipped). Live: public pages 200, /setup 303, /app 303 anon, export 401 anon, HSTS on, 0 Google/Airbnb asset refs, privacy form offers listing_removal; signed in: both reel modes, no required tick box, photos mode AI motion off with reason, Account invite/download (16 sections, no secrets)/delete, Plans buttons, Outreach companies + business email + consent copy. Companies House snapshot 2026-09-01 loaded: 140,010 rows (worker log 14:39:20Z).
