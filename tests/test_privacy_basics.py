@@ -70,7 +70,7 @@ def pages(owners, monkeypatch):
 
 def test_notice_pins_google_permissions_tokens_and_in_app_playback(pages):
     notice = pages('/privacy')
-    assert 'Last updated 27 Sep 2026' in notice
+    assert 'Last updated 29 Sep 2026' in notice
     ask = "your Google account's email address and ID to show which account is connected"
     assert 'drive.file' in notice and ask in notice                                                          # N4
     assert ask in pages('/account', 'alice') and ask in pages('/')                                           # N4 card, landing
@@ -174,6 +174,27 @@ def test_the_notice_names_resend_as_the_processor_that_sends_reset_emails(pages,
     monkeypatch.setenv('RESEND_API_KEY', 'synthetic-resend-key')
     monkeypatch.setenv('RESEND_FROM', 'ReelSieve <no-reply@example.test>')
     assert 'switched off at the moment' not in pages('/privacy')
+
+
+def test_the_notice_names_braivex_accounts_and_shopify_as_the_sign_in_provider(pages, monkeypatch):
+    """29 Sep 2026: Continue with Braivex. The notice says who runs sign-in, and when nobody does."""
+    monkeypatch.delenv('BRAIVEX_SSO', raising=False)
+    off = pages('/privacy')
+    assert 'Braivex sign-in is not switched on, so nothing is sent to it' in off
+    assert 'We set these cookies, all strictly necessary' in off and 'Sign-in cookies:' not in off
+    assert 'You need to give us an email address and password to create an account' in off
+    monkeypatch.setenv('BRAIVEX_SSO', 'on')
+    notice = pages('/privacy')
+    assert ('Braivex Accounts provides "Continue with Braivex" sign-in using Shopify customer accounts, so when you '
+            'sign in that way accounts.braivex.com and Shopify Inc. process your sign-in email address and the '
+            'one-time 6-digit code Shopify emails you') in notice
+    assert ('Braivex Accounts tells ReelSieve your email address, whether Shopify verified it, your Shopify customer '
+            'number and your name') in notice
+    assert 'ReelSieve never sees your one-time code' in notice and 'is not switched on, so nothing is sent' not in notice
+    assert ('Your email address, a salted hash of your password if you have one, and, if you sign in with Braivex, '
+            'your Shopify customer number') in notice
+    assert 'one cookie ties that sign-in to this browser for 10 minutes' in notice
+    assert 'You need to give us an email address and either a password or a Braivex sign-in' in notice
 
 
 def test_default_host_message_does_not_claim_the_sender_runs_reelsieve():

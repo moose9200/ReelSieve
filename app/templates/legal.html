@@ -5,7 +5,7 @@
 <section class="hero"><p class="eyebrow">ReelSieve by Braivex</p><h1>{{ 'Privacy notice' if kind == 'privacy' else 'Terms of use' }}</h1></section>
 {% if kind == 'privacy' %}
 <section class="card legal">
-  <p class="sub">Last updated 27 Sep 2026.</p>
+  <p class="sub">Last updated 29 Sep 2026.</p>
   <p>This notice explains what personal data ReelSieve uses, why, how long we keep it and what you can do about it. It covers people who use ReelSieve, visitors to this site, Airbnb hosts and guests whose public listing details pass through the service (including guests whose reviews our customers quote), and UK companies on the Companies House register that ReelSieve shows to its users.</p>
 
   <h2>Who we are</h2>
@@ -17,7 +17,7 @@
   <table class="or-table">
     <thead><tr><th>Data</th><th>Why we use it</th><th>Lawful basis</th><th>How long we keep it</th></tr></thead>
     <tbody>
-      <tr><td>Your email address and a salted hash of your password</td><td>To run your account and sign you in</td><td>Contract</td><td>While your account is open. Deleted when you delete your account. An account an admin deactivates is erased 30 days later.</td></tr>
+      <tr><td>Your email address, a salted hash of your password if you have one, and, if you sign in with Braivex, your Shopify customer number</td><td>To run your account and sign you in</td><td>Contract</td><td>While your account is open. Deleted when you delete your account. An account an admin deactivates is erased 30 days later.</td></tr>
       <tr><td>Your plan, credits and which listings you have made reels from</td><td>To count your videos and apply your plan's limits</td><td>Contract</td><td>While your account is open</td></tr>
       <tr><td>Your reels: listing links, job status, progress log and Drive delivery records</td><td>To make your videos, deliver them and show your reel history</td><td>Contract</td><td>While your account is open. Host names, messages drafted for hosts and review details are removed from job records 30 days after the job ends.</td></tr>
       <tr><td>Photos you upload for a reel (they may show people or places)</td><td>To make the reel you asked for</td><td>Contract</td><td>We check and clean them in our web server's memory only, removing location data, camera details and other metadata. The cleaned photos are saved in an Inputs folder inside the ReelSieve folder in your Google Drive, which you control. Our video worker reads them back into scratch copies that are deleted as soon as the job ends. If you tick "Delete these photos", we delete them from your Drive when the reel is finished, fails or is cancelled, when you disconnect Google Drive, or when your account is deleted. If a deletion fails, we try again every hour for 7 days, then say on the reel's page where the photos are. Our database keeps only their Drive file IDs, never the photos or their file names.</td></tr>
@@ -40,7 +40,7 @@
     </tbody>
   </table>
   </div>
-  <p>You need to give us an email address and password to create an account, and connect Google Drive to receive videos. Without them we cannot provide the service. We make no decisions about you by purely automated means that have legal or similarly significant effects. If the free-plan limit stops you, <a href="/privacy/request">tell us</a> and a person will look at it.</p>
+  <p>You need to give us an email address and {% if braivex().on %}either a password or a Braivex sign-in{% else %}password{% endif %} to create an account, and connect Google Drive to receive videos. Without them we cannot provide the service. We make no decisions about you by purely automated means that have legal or similarly significant effects. If the free-plan limit stops you, <a href="/privacy/request">tell us</a> and a person will look at it.</p>
 
   <h2>Listing content and your videos</h2>
   <p>When you paste a listing link, our servers fetch the public listing page: its photos, title, town, rating, host first name and Airbnb user number, and public guest reviews. We use them only to build that video. The photos and review text are deleted from our servers when the job ends. Your reel history keeps the listing's title, town, rating and link, and the link to its main photo that the reel's page shows. The host's name and user number are removed after 30 days. Videos show the text, star rating and month of a guest review, but not the reviewer's name. Finished videos go to your own Google Drive and stay there under your control. We fetch these public pages logged out and at a limited rate, shared by all of ReelSieve. When Airbnb blocks us we pause all fetching at once. If it blocks us again within a day of a pause, or refuses a page for legal reasons, we stop until a person has checked. A host can ask us to stop making reels of their listing with the <a href="/privacy/request">privacy request form</a> (choose "Remove my listing from ReelSieve").</p>
@@ -48,10 +48,11 @@
   <p>Listing photos shown inside ReelSieve are loaded through our own server, so Airbnb does not receive your IP address when you look at them. Our fonts are served from our own server too.</p>
 
   <h2>Cookies</h2>
-  <p>We set two cookies, both strictly necessary, so we do not ask for consent:</p>
+  <p>We set these cookies, all strictly necessary, so we do not ask for consent:</p>
   <ul class="steps">
     <li><strong>Session cookie:</strong> keeps you signed in. It is deleted when you close your browser and stops working after 12 hours at most, or lasts 30 days if you choose to stay signed in.</li>
     <li><strong>Security cookie:</strong> protects forms against cross-site request forgery. It lasts 30 days.</li>
+    {% if braivex().on %}<li><strong>Sign-in cookies:</strong> when you choose "Continue with Braivex", one cookie ties that sign-in to this browser for 10 minutes, and if you are new here a second cookie carries your verified email address and Shopify customer number to the last step for 15 minutes. Both are deleted the moment you are signed in.</li>{% endif %}
   </ul>
   <p>If you use the light/dark switch, your browser remembers the choice in its local storage (under the name <code>lr-theme</code>). It stays on your device and is never sent to us. If you do not want it stored, do not use the switch, or clear this site's data in your browser settings.</p>
   <p>We use no analytics, advertising or tracking cookies, and we do not sell personal data.</p>
@@ -61,6 +62,7 @@
     <li><strong>Railway</strong> hosts the website, the video workers and the database, in the United States. Railway processes data only on our instructions under its data processing agreement.</li>
     <li><strong>Google</strong> receives your finished videos, and any photos you upload for a reel, when we save them to your Drive. Google acts as an independent controller under its own terms.</li>
     <li><strong>Higgsfield</strong> (Higgsfield Inc., in the United States) receives a listing's photos only if you switch on AI camera motion for a listing-link reel. It uses them to generate the video clips. Photos you upload for a reel are never sent to Higgsfield. Higgsfield acts as its own controller, and its privacy policy says it may use what it receives to train and improve its AI models. We do not delete these photos from Higgsfield after use. Higgsfield's privacy policy (last updated 26 Jul 2026) says anything removed from an account "may remain on our active servers for 30 days, and copies of the content may be held in backups of our application databases after that", and that content "already incorporated into our AI models before deletion cannot feasibly be removed from models that are already trained". Leave AI camera motion off if you do not want a listing's photos shared.</li>
+    <li><strong>Braivex Accounts</strong> provides "Continue with Braivex" sign-in using Shopify customer accounts, so when you sign in that way accounts.braivex.com and Shopify Inc. process your sign-in email address and the one-time 6-digit code Shopify emails you, and Braivex Accounts tells ReelSieve your email address, whether Shopify verified it, your Shopify customer number and your name{% if not braivex().on %} (Braivex sign-in is not switched on, so nothing is sent to it){% endif %}. ReelSieve never sees your one-time code.</li>
     <li><strong>Resend</strong> is the email service that delivers the password-reset email when you ask for one: it receives your email address and the reset link, only to send that message on our instructions{% if not email_reset %} (password-reset emails are switched off at the moment, so nothing is sent to Resend){% endif %}.</li>
     <li><strong>Photon</strong> (a map search service run by komoot) receives the place names you type into the listing search. The request comes from our server, so it never receives your IP address.</li>
     <li><strong>Stripe</strong> takes card payments when card checkout is switched on{% if not payments.stripe %} (it is off at the moment){% endif %}. We send Stripe your account email, the order reference and an internal account number. Your card details go to Stripe directly and never reach our servers. Stripe acts as its own controller for payment data.</li>
