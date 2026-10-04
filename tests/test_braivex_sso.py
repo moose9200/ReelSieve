@@ -257,7 +257,7 @@ def test_an_admin_adds_customers_without_a_password_and_operators_only_with_one(
     assert auth.identity('ops2@example.test') is None
 
 
-VENDORED_SHA256 = 'fe51ee42a4aa59b39f5152d9d77d788a67f69923d7aa9f1a5a8ad00f9464eb09'   # verify-py at 7463ece
+VENDORED_SHA256 = '6d8ca8fb43861ea1e53e397ab7ade85c6f1b2ff06ea307a305a0b6228f3bd1f1'   # verify-py at e0a35ec
 
 
 def test_the_assertion_verifier_is_the_shared_one_byte_for_byte():
@@ -265,7 +265,7 @@ def test_the_assertion_verifier_is_the_shared_one_byte_for_byte():
     body = text[text.index(b'"""Braivex Accounts assertion verifier (Python).'):]
     assert hashlib.sha256(body).hexdigest() == VENDORED_SHA256
     header = text[:text.index(body)]
-    assert b'7463ece' in header and b'packages/verify-py/braivex_verify.py' in header
+    assert b'e0a35ec' in header and b'packages/verify-py/braivex_verify.py' in header
 
 
 # ---------------- 2. starting the sign-in ----------------
@@ -433,7 +433,7 @@ def test_the_key_set_is_fetched_once_and_again_only_when_a_kid_is_unknown(web, b
         assert finish(client, broker.assertion(state=state, email=ALICE)).status_code == 303
     assert broker.fetches == 1                               # cached (PyJWKClient: five minutes)
     broker.kid, broker.key = 'test-key-2', OTHER_KEY         # the broker rotates its signing key
-    braivex_verify._clients[BROKER]._last_successful_fetch -= 31   # past PyJWKClient's 30-second refetch cooldown
+    braivex_verify._clients[BROKER]._fetched_at -= braivex_verify.JWKS_REFETCH_COOLDOWN_SECONDS + 1  # past the cooldown
     client = client_for()
     _, state = start(client)
     assert finish(client, broker.assertion(state=state, email=ALICE)).status_code == 303
@@ -449,6 +449,19 @@ def test_a_forged_kid_cannot_make_this_server_fetch_the_key_set_again_and_again(
         _, s = start(other)
         assert finish(other, broker.assertion(state=s, kid=f'forged-{i}')).status_code == 401
     assert broker.fetches == 1
+
+
+def test_a_key_the_broker_withdraws_stops_verifying_once_the_key_set_expires(web, broker):
+    client = client_for()
+    _, state = start(client)
+    assert finish(client, broker.assertion(state=state, email=ALICE)).status_code == 303   # signed with test-key-1
+    broker.kid, broker.key = 'test-key-2', OTHER_KEY            # the broker withdraws test-key-1 (compromise, rotation)
+    cache = braivex_verify._clients[BROKER].jwk_set_cache
+    cache.jwk_set_with_timestamp.timestamp -= 301                 # past the five-minute key-set lifespan
+    client = client_for()
+    _, state = start(client)
+    withdrawn = broker.assertion(state=state, email=ALICE, kid='test-key-1', sign_with=KEY)
+    assert finish(client, withdrawn).status_code == 401 and broker.fetches == 2
 
 
 def test_a_broker_that_cannot_be_reached_signs_nobody_in(web, broker):
@@ -731,14 +744,11 @@ def test_setting_or_creating_an_operator_password_never_hashes_on_the_event_loop
 # ---------------- 12. classes confirmed in sibling products (04 Oct 2026) ----------------
 # (2) sub is immutable: test_an_account_that_is_already_somebody_elses_shopify_customer_is_never_taken_over.
 
-RELEASE = '2026-10-04 braivex-only'
-
-
 def test_the_braivex_only_release_ends_every_customer_session_and_password_once(db, owners):
     legacy_password(db, ALICE)
     auth.create_user(OPS, 'operator-password', 'admin')
     with db.connect() as c:                                     # as it was before this release was deployed
-        c.execute('DELETE FROM migrations WHERE name=%s', (RELEASE,))
+        c.execute("DELETE FROM schema_ledger WHERE name='012_braivex_only.sql'")
     alice, bob, ops = auth.issue(ALICE)[0], auth.issue(BOB)[0], auth.issue(OPS)[0]
     db.initialize()                                             # the deploy
     assert auth.check(alice) is None and auth.check(bob) is None and auth.check(ops) == OPS
@@ -753,9 +763,9 @@ def test_the_braivex_only_release_ends_every_customer_session_and_password_once(
 def test_every_braivex_sign_in_leaves_the_account_without_a_usable_password(web, broker, db):
     with db.connect() as c:
         c.execute('UPDATE users SET braivex_customer_id=%s WHERE email=%s', (SUB, ALICE))
-    legacy_password(db, ALICE)                                   # linked, yet a hash is still there
+    client = client_for()                                        # (its start wipes hashes: set one after it)
+    legacy_password(db, ALICE)                                   # linked, yet a hash is there (an older build wrote it)
     old = auth.issue(ALICE)[0]
-    client = client_for()
     _, state = start(client)
     assert finish(client, broker.assertion(state=state, email=ALICE)).status_code == 303
     with db.connect() as c:
@@ -826,3 +836,167 @@ def test_refused_braivex_sign_ins_are_limited_per_ipv6_64(web, broker):
     r = client.post('/auth/braivex/callback', data={'assertion': broker.assertion(state=state)},
                     headers={'x-forwarded-for': '2001:db8:1:3::1'}, follow_redirects=False)  # another /64
     assert r.status_code == 303
+
+
+# ---------------- 13. review round 1 (04 Oct 2026) ----------------
+
+def on_the_loop():
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
+
+
+def test_r1_deleting_an_account_needs_a_braivex_sign_in_from_the_last_ten_minutes(web, broker, db):
+    stale = auth.issue(BOB, auth_time=time.time() - 601)[0]
+    head = {'X-CSRF-Token': auth.csrf_token(stale)}
+    r = client_for(stale).post('/api/account/delete', json={'confirm': 'DELETE'}, headers=head)
+    assert r.status_code == 403 and r.json()['reauth'] == '/auth/braivex/start?next=/settings'
+    assert auth.identity(BOB) is not None
+    client = client_for()                                        # Braivex authenticated 11 minutes ago: still stale
+    _, state = start(client)
+    old = int(time.time()) - 660
+    assert finish(client, broker.assertion(state=state, email=BOB, iat=old)).status_code == 303
+    assert auth.unseal('session', client.cookies[auth.COOKIE])['at'] == old
+    session = client.cookies[auth.COOKIE]
+    assert client.post('/api/account/delete', json={'confirm': 'DELETE'},
+                       headers={'X-CSRF-Token': auth.csrf_token(session)}).status_code == 403
+    _, state = start(client)                                     # sign in again: fresh
+    assert finish(client, broker.assertion(state=state, email=BOB)).status_code == 303
+    session = client.cookies[auth.COOKIE]
+    r = client.post('/api/account/delete', json={'confirm': 'DELETE'}, headers={'X-CSRF-Token': auth.csrf_token(session)})
+    assert r.status_code == 200 and auth.identity(BOB) is None
+
+
+def test_r2_this_release_never_drops_a_table_an_older_build_still_uses(db):
+    with db.connect() as c:                                      # prod has it: the old container may still read it
+        c.execute('CREATE TABLE IF NOT EXISTS password_resets (token_hash TEXT PRIMARY KEY, owner_id TEXT, '
+                  'created DOUBLE PRECISION, expires_at DOUBLE PRECISION)')
+        c.execute("DO $$ BEGIN IF to_regclass('schema_ledger') IS NOT NULL THEN DELETE FROM schema_ledger; END IF; END $$")
+    db.initialize()                                              # every ledgered file runs again, as on a fresh deploy
+    with db.connect() as c:
+        assert c.execute("SELECT to_regclass('password_resets') IS NOT NULL AS there").fetchone()['there']
+
+
+def test_r3_session_and_csrf_cookies_are_host_prefixed_and_the_old_names_are_ignored(web, db):
+    auth.create_user(OPS, 'operator-password', 'admin')
+    anon = client_for()
+    page = anon.get('/login')
+    nonce = cookie_header(page, '__Host-reelsieve_csrf')
+    assert nonce and 'Secure' in nonce and 'Path=/;' in nonce + ';' and 'Domain' not in nonce
+    r = anon.post('/login', data={'csrf': csrf_of(page.text), 'user': OPS, 'password': 'operator-password'},
+                  follow_redirects=False)
+    session = cookie_header(r, '__Host-reelsieve_session')
+    assert r.status_code == 303 and 'Secure' in session and 'Path=/;' in session + ';' and 'Domain' not in session
+    old = TestClient(server.app, base_url='https://testserver')
+    old.cookies.set('reelsieve_session', auth.issue(OPS)[0])
+    assert old.get('/api/account').status_code == 401
+
+
+def test_r4_a_worker_never_migrates_and_refuses_to_start_on_an_older_schema(db, monkeypatch):
+    from app import database, start as entry
+    monkeypatch.setattr(database, 'initialize', lambda: pytest.fail('a worker ran the migrations'))
+    with db.connect() as c:
+        c.execute("DELETE FROM schema_ledger WHERE name='012_braivex_only.sql'")
+    with pytest.raises(SystemExit) as stop:
+        entry.prepare_schema(web=False, wait=0)
+    assert stop.value.code != 0 and '012_braivex_only.sql' in str(stop.value) and 'web' in str(stop.value)
+
+
+def test_r4_the_web_migrates_and_a_worker_on_the_same_schema_starts(db, monkeypatch):
+    from app import start as entry
+    entry.prepare_schema(web=True)
+    entry.prepare_schema(web=False, wait=0)                      # nothing missing: returns
+
+
+def test_r5_an_ipv4_mapped_address_counts_as_its_ipv4_address(monkeypatch):
+    monkeypatch.setenv('SESSION_SECRET', 'synthetic-test-session-secret-only')
+    assert auth._ip_key('::ffff:203.0.113.7') == auth._ip_key('203.0.113.7')
+    assert auth._ip_key('::ffff:203.0.113.7') != auth._ip_key('::ffff:198.51.100.7')
+    assert store.net_of('::ffff:203.0.113.7') == store.net_of('203.0.113.7') == '203.0.113.0/24'
+
+
+def test_r6_a_customer_hash_is_wiped_at_every_start_and_sessions_end_only_once(db, owners):
+    legacy_password(db, ALICE)                                    # e.g. an older build set one during the deploy
+    alice = owners['alice']
+    db.initialize()
+    with db.connect() as c:
+        assert c.execute('SELECT hash FROM users WHERE email=%s', (ALICE,)).fetchone()['hash'] == ''
+    assert auth.check(alice) == ALICE                             # the one-time sign-out already ran
+
+
+def test_r7_a_failed_link_leaves_the_account_holders_drive_connected(web, broker, db, owners, google, monkeypatch):
+    from fakes import connect
+    from app import gdrive
+    connect(owners, google)
+    client = client_for()
+    _, state = start(client)
+    assert finish(client, broker.assertion(state=state, email=ALICE)).headers['location'] == '/auth/braivex/claim'
+    page = client.get('/auth/braivex/claim').text
+    monkeypatch.setattr(auth, 'link_braivex', lambda *a: None)   # lost a race: someone else linked it first
+    assert client.post('/auth/braivex/claim', data={'csrf': csrf_of(page)}).status_code == 401
+    assert gdrive.status(ALICE)['connected'] and not [c for c in google.calls if c.url.path == '/revoke']
+
+
+def test_r8_the_per_request_session_check_and_the_google_revoke_run_off_the_event_loop(web, owners, google, monkeypatch):
+    from fakes import connect
+    from app import gdrive
+    connect(owners, google)
+    seen, check, disconnect = [], auth.check, gdrive.disconnect_owner
+    monkeypatch.setattr(auth, 'check', lambda t: seen.append(('check', on_the_loop())) or check(t))
+    monkeypatch.setattr(gdrive, 'disconnect_owner', lambda o: seen.append(('revoke', on_the_loop())) or disconnect(o))
+    r = web['alice'].post('/api/account/delete', json={'confirm': 'DELETE'},
+                          headers={'X-CSRF-Token': auth.csrf_token(owners['alice'])})
+    assert r.status_code == 200
+    assert ('check', False) in seen and ('revoke', False) in seen and not [s for s in seen if s[1]]
+
+
+def test_r9_a_ledgered_file_runs_once_and_an_edited_one_stops_the_start(db):
+    with db.connect() as c:
+        rows = c.execute('SELECT name,sha256 FROM schema_ledger').fetchall()
+    assert [r['name'] for r in rows] == ['012_braivex_only.sql'] and len(rows[0]['sha256']) == 64
+    with db.connect() as c:
+        c.execute("UPDATE schema_ledger SET sha256=repeat('0', 64) WHERE name='012_braivex_only.sql'")
+    with pytest.raises(RuntimeError, match='012_braivex_only.sql changed after it was applied'):
+        db.initialize()
+
+
+def test_an_existing_account_on_our_own_domains_links_without_a_claim_but_its_outbound_grants_go(web, broker, db, google):
+    """Controller ruling 04 Oct 2026, amended: accounts that exist at this release on braivex.com, wbj.team and
+    mokshabotanicals.in link with no Claim and keep their orders and invites. A domain does not prove the row was not
+    squatted, so on the first link of ANY older account the grants that deliver without a sign-in go: the Google
+    Drive connection (revoked at Google) and the business sender. Other domains keep the Claim path."""
+    from urllib.parse import parse_qs as qs, urlparse
+    from app import billing, gdrive, referrals
+    pat, guest, friend = 'pat@braivex.com', 'guest@gmail.com', 'friend@example.org'
+    for email in (pat, guest):
+        auth.create_user(email)
+        store.set_b2b_sender(email, 'Pat', 'Braivex', email)
+    tok = auth.issue(pat)[0]
+    url = gdrive.auth_url('https://app.test/callback', pat, tok)
+    gdrive.exchange('synthetic-code', qs(urlparse(url).query)['state'][0], 'https://app.test/callback', pat, tok)
+    order = billing.create_order(pat, 'starter')['ref']
+    code = referrals.code_for(pat)
+    auth.create_user(friend)
+    assert referrals.attribute(friend, code) == 'pending'
+    with db.connect() as c:                                      # these accounts exist when this release first starts
+        c.execute("DELETE FROM schema_ledger WHERE name='012_braivex_only.sql'")
+    db.initialize()
+    client = client_for()
+    legacy_password(db, pat)                                     # (set after the client's own start, which wipes it)
+    old = auth.issue(pat)[0]
+    _, state = start(client)
+    r = finish(client, broker.assertion(state=state, email=pat, sub='gid://shopify/Customer/41'))
+    assert r.status_code == 303 and r.headers['location'] == '/reels' and signed_in_as(client) == pat   # no Claim
+    assert not gdrive.status(pat)['connected'] and [c for c in google.calls if c.url.path == '/revoke']
+    assert store.get_account(pat)['b2b_sender'] is None
+    assert billing.get_order(order)['owner_id'] == db.user_id(pat) and referrals.code_for(pat) == code
+    with db.connect() as c:
+        assert c.execute('SELECT count(*) AS n FROM referrals WHERE referrer_id=%s', (db.user_id(pat),)).fetchone()['n'] == 1
+        assert c.execute('SELECT hash FROM users WHERE email=%s', (pat,)).fetchone()['hash'] == ''
+    assert auth.check(old) is None and braivex_id(db, pat) == 'gid://shopify/Customer/41'
+    other = client_for()                                         # gmail.com: still asked to claim
+    _, state = start(other)
+    r = finish(other, broker.assertion(state=state, email=guest, sub='gid://shopify/Customer/42'))
+    assert r.headers['location'] == '/auth/braivex/claim'

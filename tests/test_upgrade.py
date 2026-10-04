@@ -157,8 +157,8 @@ def test_checkout_session_is_priced_on_the_server(web, owners, stripe):
     assert json.loads(order['meta'])['stripe_session'] == 'cs_test_1'
     assert f['metadata[order_ref]'] == ref == f['client_reference_id']
     assert f['metadata[owner_id]'] == database.user_id(ALICE) and f['metadata[plan]'] == 'commercial'
-    assert f['success_url'] == f'http://testserver/upgrade/paid?ref={ref}&session_id={{CHECKOUT_SESSION_ID}}'
-    assert f['cancel_url'].startswith('http://testserver/upgrade?cancelled=1')
+    assert f['success_url'] == f'https://testserver/upgrade/paid?ref={ref}&session_id={{CHECKOUT_SESSION_ID}}'
+    assert f['cancel_url'].startswith('https://testserver/upgrade?cancelled=1')
     assert KEY not in json.dumps(out)
     for bad in ('free', 'enterprise', 'gold'):
         assert web['alice'].post('/api/billing/start', json={'plan': bad}, headers=csrf(owners['alice'])).status_code == 400

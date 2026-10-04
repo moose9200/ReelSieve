@@ -1,9 +1,9 @@
 # VENDORED, DO NOT EDIT. Everything below this header is byte-identical to
-#   braivex-accounts/packages/verify-py/braivex_verify.py at commit 7463ece
-#   (sha256 fe51ee42a4aa59b39f5152d9d77d788a67f69923d7aa9f1a5a8ad00f9464eb09).
+#   braivex-accounts/packages/verify-py/braivex_verify.py at commit e0a35ec
+#   (sha256 6d8ca8fb43861ea1e53e397ab7ade85c6f1b2ff06ea307a305a0b6228f3bd1f1).
 # To update: copy that file again under this header and change the commit and digest here and in
-# tests/test_braivex_sso.py. Its dependency, PyJWT[crypto], is pinned in requirements.txt (>=2.14 for the
-# 30-second refetch cooldown on an unknown kid). The product checks around it are in app/braivex_sso.py.
+# tests/test_braivex_sso.py. Its dependency, PyJWT[crypto] >= 2.8, is pinned in requirements.txt.
+# The product checks around it are in app/braivex_sso.py.
 
 """Braivex Accounts assertion verifier (Python).
 
@@ -24,6 +24,7 @@ assertion is a bearer token for 120 seconds and nothing here can detect reuse.
 from __future__ import annotations
 
 import os
+import time
 from typing import Any, Dict, Optional
 
 import jwt
@@ -33,6 +34,10 @@ from jwt import PyJWKClient
 CLOCK_TOLERANCE_SECONDS = 30
 #: How long a product must remember a jti to make replay impossible.
 JTI_TTL_SECONDS = 600
+#: How long a fetched JWKS is trusted. A key the broker withdraws stops verifying within this.
+JWKS_LIFESPAN_SECONDS = 300
+#: Minimum gap between JWKS fetches triggered by an unknown kid (an attacker can mint kids).
+JWKS_REFETCH_COOLDOWN_SECONDS = 30
 
 _CUSTOMER_GID_PREFIX = "gid://shopify/Customer/"
 
@@ -43,12 +48,39 @@ class BraivexAssertionError(Exception):
     """Raised for any assertion this service will not accept."""
 
 
+class _JWKClient(PyJWKClient):
+    """PyJWKClient with a refetch cooldown that works on every PyJWT >= 2.8.
+
+    PyJWT only gained ``cooldown_duration`` in 2.14; before that every unknown kid refetched.
+    """
+
+    _fetched_at = float("-inf")
+
+    def fetch_data(self) -> Any:
+        data = super().fetch_data()
+        self._fetched_at = time.monotonic()
+        return data
+
+    def get_signing_key(self, kid: str):  # type: ignore[override]
+        key = self.match_kid(self.get_signing_keys(), kid)
+        if key is None and time.monotonic() - self._fetched_at >= JWKS_REFETCH_COOLDOWN_SECONDS:
+            key = self.match_kid(self.get_signing_keys(refresh=True), kid)  # rotation: a new kid
+        if key is None:
+            raise jwt.PyJWKClientError(f'Unable to find a signing key that matches: "{kid}"')
+        return key
+
+
 def _jwk_client(issuer: str) -> PyJWKClient:
     client = _clients.get(issuer)
     if client is None:
-        # PyJWKClient caches keys and refetches on an unknown kid, which is what
-        # makes signing-key rotation invisible to the product.
-        client = PyJWKClient(f"{issuer}/.well-known/jwks.json", cache_keys=True, lifespan=300)
+        # cache_keys stays off: PyJWT's per-kid cache is an lru_cache with no expiry, so a key the
+        # broker withdrew would verify until restart. The JWK-set cache below does expire.
+        client = _JWKClient(
+            f"{issuer}/.well-known/jwks.json",
+            cache_keys=False,
+            cache_jwk_set=True,
+            lifespan=JWKS_LIFESPAN_SECONDS,
+        )
         _clients[issuer] = client
     return client
 

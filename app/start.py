@@ -93,10 +93,30 @@ def supervise(cmds, grace=25.0):
     return 1 if crashed and not stop else 0
 
 
+SCHEMA_WAIT = 120  # ponytail: a worker deployed before the web polls this long, then exits for Railway to restart it
+
+
+def prepare_schema(web, wait=SCHEMA_WAIT):
+    """Only the web service migrates. A worker never does: it waits for the schema this code needs and otherwise exits
+    non-zero, so Railway restarts it once the web service has migrated. Deploy the web service first, then the worker."""
+    if web:
+        database.initialize()
+        return
+    deadline = time.time() + wait
+    while True:
+        missing = database.missing_schema()
+        if not missing:
+            return
+        if time.time() >= deadline:
+            raise SystemExit('Worker not started: the database is behind this code (not applied: ' + ', '.join(missing)
+                             + '). Only the web service migrates: deploy it first, then this worker restarts.')
+        time.sleep(5)
+
+
 def main():
     from app import server
     server.validate_config()
-    database.initialize()
+    prepare_schema(os.getenv('WEB_ENABLED', '1') == '1')
     if os.getenv('LEGACY_MIGRATION_ENABLED') == '1':
         source = os.getenv('LEGACY_SOURCE_DIR')
         if not source:

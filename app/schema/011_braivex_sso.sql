@@ -17,3 +17,7 @@ CREATE TABLE IF NOT EXISTS braivex_sso_jti (
     expires_at DOUBLE PRECISION NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_braivex_sso_jti_expiry ON braivex_sso_jti(expires_at);
+
+-- 04 Oct 2026: customers have no password. Any customer hash is wiped at every start, including one written by an
+-- older build still serving during a rolling deploy, or after a rollback. Operators (admins) keep theirs.
+UPDATE users SET salt = '', hash = '' WHERE role <> 'admin' AND hash <> '';

@@ -25,8 +25,8 @@ def _key():
 def net_of(ip):
     """Group by network so a phone/office NAT isn't one identity per device, and IPv6 rotation doesn't defeat it."""
     try:
-        a=ipaddress.ip_address(ip)
-        return str(ipaddress.ip_network(f'{ip}/24',strict=False)) if a.version==4 else str(ipaddress.ip_network(f'{ip}/64',strict=False))
+        a=ipaddress.ip_address(ip);a=getattr(a,'ipv4_mapped',None) or a  # ::ffff:x.x.x.x is its IPv4 address
+        return str(ipaddress.ip_network(f'{a}/24',strict=False)) if a.version==4 else str(ipaddress.ip_network(f'{a}/64',strict=False))
     except Exception:return 'unknown'
 def h(value):
     if not value:return None

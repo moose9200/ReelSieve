@@ -1,4 +1,5 @@
 """Disposable PostgreSQL schemas only; never load the application's local environment."""
+import functools
 import os
 import threading
 import uuid
@@ -10,6 +11,11 @@ import pytest
 from cryptography.fernet import Fernet
 
 from fakes import Google
+from starlette.testclient import TestClient
+
+# Production is HTTPS only and its session and CSRF cookies are __Host- (Secure), which a client sends over HTTPS
+# only: tests talk HTTPS unless one passes base_url='http://...' to test plain HTTP on purpose.
+TestClient.__init__ = functools.partialmethod(TestClient.__init__, base_url='https://testserver')
 
 
 @pytest.fixture(autouse=True)

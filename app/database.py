@@ -5,10 +5,12 @@ connection found dead on its first statement (database restart) is discarded and
 so a restart costs a reconnect, not an error. Each `with connect()` block is one transaction: commit on exit, rollback on error.
 """
 from contextlib import contextmanager
+import hashlib
 import os
 from pathlib import Path
 import re
 import threading
+import time
 
 import psycopg
 from psycopg import sql
@@ -83,12 +85,43 @@ def transaction(conn=None):
             yield owned
 
 
+SCHEMA = Path(__file__).parent / 'schema'
+LEDGER_FROM = '012'  # files from 012 on run once and are recorded; earlier files are idempotent and re-run every start
+
+
 def initialize():
-    """Run ordered, idempotent schema files explicitly at application startup."""
+    """Apply the schema in one transaction. Only the web service calls this (app/start.py, the web lifespan); a worker
+    checks missing_schema() instead. Files before 012 are idempotent and re-run at every start. From 012 each file runs
+    once and its sha256 goes in schema_ledger, so destructive SQL never runs twice, and a file edited after it ran
+    stops the start instead of being skipped silently."""
     with connect() as conn:
         conn.execute('SELECT pg_advisory_xact_lock(hashtext(%s))', ('reelsieve-schema-' + schema_name(),))
-        for path in sorted((Path(__file__).parent / 'schema').glob('*.sql')):
-            conn.execute(path.read_text())
+        conn.execute('CREATE TABLE IF NOT EXISTS schema_ledger (name TEXT PRIMARY KEY, sha256 TEXT NOT NULL, '
+                     'applied_at DOUBLE PRECISION NOT NULL)')  # the runner's own bookkeeping
+        for path in sorted(SCHEMA.glob('*.sql')):
+            text = path.read_bytes()
+            if path.name < LEDGER_FROM:
+                conn.execute(text.decode())
+                continue
+            digest = hashlib.sha256(text).hexdigest()
+            row = conn.execute('SELECT sha256 FROM schema_ledger WHERE name=%s', (path.name,)).fetchone()
+            if row is None:
+                conn.execute(text.decode())
+                conn.execute('INSERT INTO schema_ledger(name,sha256,applied_at) VALUES(%s,%s,%s)', (path.name, digest, time.time()))
+            elif row['sha256'] != digest:
+                raise RuntimeError(f'{path.name} changed after it was applied: put the change in a new schema file')
+
+
+def missing_schema():
+    """The run-once schema files this code expects that the database has not applied yet (all of them before the
+    web service's first start with a ledger)."""
+    names = sorted(p.name for p in SCHEMA.glob('*.sql') if p.name >= LEDGER_FROM)
+    try:
+        with connect() as conn:
+            done = {r['name'] for r in conn.execute('SELECT name FROM schema_ledger').fetchall()}
+    except psycopg.errors.UndefinedTable:
+        done = set()
+    return [n for n in names if n not in done]
 
 
 def user_id(email, conn=None):

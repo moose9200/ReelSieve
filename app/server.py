@@ -35,7 +35,7 @@ from app import search as listing_search
 
 HERE = Path(__file__).resolve().parent
 REQUIRED = ('DATABASE_URL', 'SESSION_SECRET', 'TOKEN_ENCRYPTION_KEY')
-CSRF_COOKIE = 'reelsieve_csrf'
+CSRF_COOKIE = '__Host-reelsieve_csrf'  # Secure, Path=/, no Domain, like the session cookie
 PUBLIC_PREFIXES = ('/static/', '/oauth/google/callback', '/favicon.ico', '/api/billing/webhook/', '/r/', '/auth/braivex/')
 # /setup, /forgot and /reset no longer exist (04 Oct 2026). They stay public so an old link or bookmark gets a plain 404,
 # not a sign-in redirect.
@@ -157,6 +157,12 @@ def _role_admin(user):
     return bool(user) and auth.role(user) == 'admin'
 
 
+def _who(session):
+    """(signed-in email or None, is an operator). Blocking."""
+    user = auth.check(session)
+    return user, _role_admin(user)
+
+
 def _csrf_basis(request):
     """Signed-in: the session. Anonymous: a random per-browser nonce, never a shared constant."""
     return request.cookies.get(auth.COOKIE) or ('anon:' + getattr(request.state, 'csrf_nonce', ''))
@@ -187,9 +193,9 @@ class Gate(BaseHTTPMiddleware):
         fresh = '' if nonce else secrets.token_urlsafe(24)
         request.state.csrf_nonce = nonce or fresh
         session = request.cookies.get(auth.COOKIE, '')
-        user = auth.check(session) if session else None
+        # Database reads: in the thread pool, so a slow database never holds every other request on the event loop.
+        user, request.state.is_admin = await run_in_threadpool(_who, session) if session else (None, False)
         request.state.user = user
-        request.state.is_admin = _role_admin(user)
         if not user and not (path.startswith(PUBLIC_PREFIXES) or path in PUBLIC_EXACT):
             if path.startswith('/api/'):
                 return JSONResponse({'detail': 'Sign in required'}, status_code=401)
@@ -215,7 +221,7 @@ class Gate(BaseHTTPMiddleware):
                 return HTMLResponse('Invalid or expired form token — reload and try again', status_code=403)
         response = await call_next(request)
         if fresh:
-            response.set_cookie(CSRF_COOKIE, fresh, httponly=True, samesite='lax', secure=_secure(request), max_age=30 * 86400)
+            response.set_cookie(CSRF_COOKIE, fresh, httponly=True, samesite='lax', secure=True, path='/', max_age=30 * 86400)
         return response
 
 
@@ -266,9 +272,15 @@ async def _form(request):
     return request.scope['_form'] if '_form' in request.scope else await _small_form(request)
 
 
-def _set_session(resp, request, user, long=True):
-    tok, ttl = auth.issue(user, long)
-    resp.set_cookie(auth.COOKIE, tok, max_age=ttl, httponly=True, samesite='lax', secure=_secure(request))
+def _set_session(resp, request, user, long=True, auth_time=None):
+    """auth_time: when the person proved who they are (a Braivex assertion's iat); None is now (an operator password)."""
+    tok, ttl = auth.issue(user, long, auth_time)
+    resp.set_cookie(auth.COOKIE, tok, max_age=ttl, httponly=True, samesite='lax', secure=True, path='/')
+    return resp
+
+
+def _end_session(resp):
+    resp.delete_cookie(auth.COOKIE, path='/', secure=True, httponly=True, samesite='lax')
     return resp
 
 
@@ -421,9 +433,7 @@ async def login_post(request: Request):
 
 @app.post('/logout')
 def logout():
-    r = RedirectResponse('/login?notice=out', status_code=303)
-    r.delete_cookie(auth.COOKIE)
-    return r
+    return _end_session(RedirectResponse('/login?notice=out', status_code=303))
 
 
 def _ref(code):
@@ -519,31 +529,32 @@ def _braivex_finish(request, form):
     if not row:
         # Somebody Braivex has verified who has never had a ReelSieve account: name the business, then sign up.
         r = _drop(RedirectResponse('/auth/braivex/workspace', status_code=303), STATE_COOKIE)
-        return _flow_cookie(r, NEW_COOKIE, NEW_TTL, email=email, sub=sub, next=nxt, ref=ref)
+        return _flow_cookie(r, NEW_COOKIE, NEW_TTL, email=email, sub=sub, next=nxt, ref=ref, iat=claims['iat'])
     if row['role'] != 'member':
         # Braivex sign-in never grants operator rights, so an operator account keeps its own path.
         return _sso_refused(request, 'This account signs in with its password.', nxt)
     if row['braivex_customer_id'] not in (None, sub):  # sub never changes: a row linked to another is never re-pointed
         return _sso_refused(request, 'That Braivex account is already linked elsewhere. Email hello@braivex.com.', nxt)
-    if row['braivex_customer_id'] is None and store.has_data(row['email']):
+    if row['braivex_customer_id'] is None and not row['email_trusted'] and store.has_data(row['email']):
         # An account made with a password, which never proved the mailbox, that holds something: hand it over only
         # when the person Braivex just verified says so.
         r = _drop(RedirectResponse('/auth/braivex/claim', status_code=303), STATE_COOKIE)
-        return _flow_cookie(r, CLAIM_COOKIE, NEW_TTL, email=row['email'], sub=sub, next=nxt)
-    return _sign_in_linked(request, row, sub, nxt, STATE_COOKIE)
+        return _flow_cookie(r, CLAIM_COOKIE, NEW_TTL, email=row['email'], sub=sub, next=nxt, iat=claims['iat'])
+    return _sign_in_linked(request, row, sub, nxt, STATE_COOKIE, claims['iat'])
 
 
-def _sign_in_linked(request, row, sub, nxt, cookie):
+def _sign_in_linked(request, row, sub, nxt, cookie, auth_time):
     """Link (a takeover when the row has no Shopify customer yet), then sign in. Blocking."""
-    if row['braivex_customer_id'] is None:
-        try:  # the prior holder's Google Drive goes before the account changes hands
+    linked = auth.link_braivex(row['email'], sub)
+    if not linked:
+        return _sso_refused(request, 'That Braivex account is already linked elsewhere. Email hello@braivex.com.', nxt)
+    if linked != 'linked':  # a first link: an older account's Drive grant could deliver data without a sign-in
+        try:  # its stored grant is cleared here, then Google is asked to revoke it
             gdrive.disconnect_owner(database.user_id(row['email']))
         except RuntimeError:
             pass  # disconnected here; Google did not confirm the revocation, which only the prior holder can chase
-    if not auth.link_braivex(row['email'], sub):
-        return _sso_refused(request, 'That Braivex account is already linked elsewhere. Email hello@braivex.com.', nxt)
     store.note_signin(row['email'], _ip(request))
-    return _drop(_set_session(RedirectResponse(nxt, status_code=303), request, row['email'], True), cookie)
+    return _drop(_set_session(RedirectResponse(nxt, status_code=303), request, row['email'], True, auth_time), cookie)
 
 
 @app.get('/auth/braivex/claim', response_class=HTMLResponse)
@@ -565,7 +576,7 @@ def braivex_claim_post(request: Request):
     row, nxt = auth.identity(claim['email']), _safe_next(claim.get('next'))
     if not row or row['role'] != 'member' or row['braivex_customer_id'] not in (None, claim['sub']):
         return _sso_refused(request, 'That Braivex account is already linked elsewhere. Email hello@braivex.com.', nxt)
-    return _sign_in_linked(request, row, claim['sub'], nxt, CLAIM_COOKIE)
+    return _sign_in_linked(request, row, claim['sub'], nxt, CLAIM_COOKIE, claim.get('iat'))
 
 
 def _workspace_page(request, new, status=200, error=''):
@@ -606,13 +617,14 @@ def _braivex_create(request, f):
         # The same sign-up sent twice (a double click, two tabs) lost the race to the first request, which made the
         # account and does the rest: sign in to that one, never a second account and never a server error.
         return _drop(_set_session(RedirectResponse(_safe_next(new.get('next')), status_code=303), request,
-                                  made['email'], True), NEW_COOKIE)
+                                  made['email'], True, new.get('iat')), NEW_COOKIE)
     store.ensure_account(new['email'], 'free')
     store.note_signin(new['email'], ip)
     referrals.attribute(new['email'], new.get('ref'))
     if business:
         store.set_b2b_sender(new['email'], '', business, new['email'])
-    r = _set_session(RedirectResponse(_safe_next(new.get('next')), status_code=303), request, new['email'], True)
+    r = _set_session(RedirectResponse(_safe_next(new.get('next')), status_code=303), request, new['email'], True,
+                     new.get('iat'))
     return _drop(r, NEW_COOKIE)
 
 
@@ -630,20 +642,28 @@ def account_export(request: Request):
                     headers={'Content-Disposition': 'attachment; filename="reelsieve-my-data.json"', 'Cache-Control': 'private, no-store'})
 
 
+REAUTH_SECONDS = 600  # deleting an account needs a sign-in at most this old
+
+
 @app.post('/api/account/delete')
 async def account_delete(request: Request):
-    """Delete my account (Art 17 / DPDP s12) after a typed DELETE. Customers have no password to re-check: this
-    session and the page's CSRF token are what say it is them."""
+    """Delete my account (Art 17 / DPDP s12) after a typed DELETE and a sign-in from the last 10 minutes: customers
+    have no password to re-check, so a fresh Braivex sign-in (the assertion's iat, kept in the session) is the proof."""
     b = await request.json()
     if (b.get('confirm') or '').strip() != 'DELETE':
         raise HTTPException(400, 'Type DELETE to confirm')
+    signed = auth.unseal('session', request.cookies.get(auth.COOKIE, '')) or {}
+    if time.time() - signed.get('at', 0) > REAUTH_SECONDS:
+        if request.state.is_admin:
+            return JSONResponse({'detail': 'Sign out and sign in again with the operator password, then delete within '
+                                           '10 minutes.'}, status_code=403)
+        return JSONResponse({'detail': 'To confirm it is you, sign in with Braivex again, then delete within 10 minutes.',
+                             'reauth': '/auth/braivex/start?next=/settings'}, status_code=403)
     try:
-        warning = admin.erase(request.state.user, request.state.user)
+        warning = await run_in_threadpool(admin.erase, request.state.user, request.state.user)  # calls Google
     except ValueError as e:
         raise HTTPException(400, str(e))
-    resp = JSONResponse({'ok': True, 'warning': warning, 'redirect': '/login?notice=deleted'})
-    resp.delete_cookie(auth.COOKIE)
-    return resp
+    return _end_session(JSONResponse({'ok': True, 'warning': warning, 'redirect': '/login?notice=deleted'}))
 
 
 @app.post('/api/users/plan')
@@ -696,7 +716,7 @@ async def api_users_del(request: Request):
     _require_admin(request)
     target = ((await request.json()).get('user') or '').strip().lower()
     try:
-        warning = admin.deactivate(target, request.state.user)
+        warning = await run_in_threadpool(admin.deactivate, target, request.state.user)  # calls Google
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {'users': auth.users(), 'warning': warning}
@@ -708,7 +728,7 @@ async def api_users_erase(request: Request):
     _require_admin(request)
     target = ((await request.json()).get('user') or '').strip().lower()
     try:
-        warning = admin.erase(target, request.state.user)
+        warning = await run_in_threadpool(admin.erase, target, request.state.user)  # calls Google
     except ValueError as e:
         raise HTTPException(400, str(e))
     return {'users': auth.users(), 'warning': warning}

@@ -28,7 +28,7 @@
         if (!r.ok) {
           var msg = (data && (data.detail || data.error || data.message)) || ("Request failed (" + r.status + ")");
           if (typeof msg !== "string") msg = JSON.stringify(msg);
-          var err = new Error(msg); err.status = r.status;
+          var err = new Error(msg); err.status = r.status; err.data = data;
           throw err;
         }
         return data;
@@ -623,7 +623,10 @@
         out.textContent = "Account deleted." + (d.warning ? " " + d.warning : "");
         setTimeout(function () { window.location.href = d.redirect || "/login"; }, d.warning ? 5000 : 800);
       })
-      .catch(function (err) { out.textContent = err.message; out.classList.add("is-error"); delBtn.disabled = false; });
+      .catch(function (err) {
+        out.textContent = err.message; out.classList.add("is-error"); delBtn.disabled = false;
+        if (err.data && err.data.reauth) { var a = document.createElement("a"); a.href = err.data.reauth; a.textContent = "Sign in with Braivex again"; out.appendChild(document.createTextNode(" ")); out.appendChild(a); }
+      });
   });
   // Google consent opens in a new tab; when the person comes back here, show the new Drive status.
   var gdForm = document.getElementById("gdrive-form");

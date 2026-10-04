@@ -99,7 +99,8 @@ def test_public_form_posts_never_write_a_file_part_to_disk(owners, monkeypatch):
     monkeypatch.setattr(tf.SpooledTemporaryFile, 'rollover', lambda self: (rolled.append(1), original(self))[1])
     anon = client_for()
     anon.get('/login')
-    token = auth.csrf_token('anon:' + anon.cookies.get('reelsieve_csrf'))
+    from app import server
+    token = auth.csrf_token('anon:' + anon.cookies.get(server.CSRF_COOKIE))
     r = anon.post('/login', data={'csrf': token, 'user': 'x@example.test', 'password': 'y'},
                   files=[('junk', ('big.bin', b'0' * (3 * 1024 * 1024), 'application/octet-stream'))])
     assert r.status_code in (400, 413) and rolled == []

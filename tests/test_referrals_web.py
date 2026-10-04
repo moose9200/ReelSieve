@@ -33,7 +33,7 @@ def test_link_redirects_to_signup_with_the_code_and_stores_nothing_in_the_browse
     r = client_for().get('/r/' + code, follow_redirects=False)
     assert r.status_code == 303 and r.headers['location'] == '/signup?ref=' + code
     assert code not in ' '.join(r.headers.get_list('set-cookie'))
-    assert [c.split('=')[0] for c in r.headers.get_list('set-cookie')] == ['reelsieve_csrf']  # what the Account card says
+    assert [c.split('=')[0] for c in r.headers.get_list('set-cookie')] == ['__Host-reelsieve_csrf']  # what the Account card says
     assert client_for().get('/r/not-a-code!', follow_redirects=False).headers['location'] == '/signup'
     page = client_for().get('/signup?ref=' + code)
     assert f'&amp;ref={code}"' in page.text           # the code rides on the Continue with Braivex link
