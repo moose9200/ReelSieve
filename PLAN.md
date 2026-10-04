@@ -182,7 +182,8 @@ Baseline on 105a306: 638 collected, 637 passed + 1 timing flake (test_privacy_re
       (plus a folded "Operator sign-in"); /r/<code> ref rides the Continue link into the state cookie. Evidence:
       test_sign_in_and_sign_up_offer_only_continue_with_braivex_with_no_switch_set, test_an_invite_link_still_attributes...
 - [x] Customer password routes removed, 404: GET/POST /forgot, /reset, /setup, POST /signup (405 mapped to 404),
-      POST /api/account/password; app/mail.py, forgot/reset templates, password_resets (DROP in 012). Evidence: red
+      POST /api/account/password; app/mail.py, forgot/reset templates. password_resets is no longer used but NOT
+      dropped (review R2: the previous build reads it during a rolling deploy). Evidence: red
       first (200/303/400), then test_customer_password_routes_are_gone x7, test_changing_a_password_..._is_gone.
 - [x] Operator break-glass admin-only, 5 failures per network (/64) per 10 min, PBKDF2 in run_in_threadpool, delay
       as asyncio.sleep; admin create/set password hash in the thread pool too. Evidence: red first (verify and sleep seen
@@ -212,9 +213,38 @@ Baseline on 105a306: 638 collected, 637 passed + 1 timing flake (test_privacy_re
   0 px horizontal overflow on all 10.
 - [ ] Deploy impact (owner): every session ends once (new token format + migration 012); customers sign in with Braivex,
       operators with the operator form. RESEND_API_KEY on the web service is now unused and can be deleted.
-- [ ] Migration ledger: files re-run at every start and old files are edited in place (006_privacy.sql 7 commits,
-      007_airbnb_safeguards.sql 5). Add a run-once ledger with a checksum per file when the next schema change lands.
+- [x] Migration ledger (review round 1): from 012 each schema file runs once and its sha256 is kept in schema_ledger;
+      an edited one stops the start. Files before 012 stay idempotent and re-run (they were edited in place before:
+      006_privacy.sql 7 commits, 007_airbnb_safeguards.sql 5). Evidence: test_r9_a_ledgered_file_runs_once...
 - [ ] Sync database calls inside async routes still run on the event loop (the Gate's auth.check on every request and
       ~25 async handlers); only the password, key-fetch and sign-in paths moved to the thread pool.
-- [ ] Account deletion has no re-authentication now (typed DELETE + session + CSRF). A fresh Braivex sign-in before
-      erasure would close that; owner decision.
+- [x] Account deletion needs a sign-in at most 10 minutes old (review R1): the session carries auth_time (the
+      assertion's iat); older gets 403 and /auth/braivex/start?next=/settings. Evidence: test_r1_...; headless click
+      on /account: /Users/hemant/.braivex-audit/2026-10-04/shots/2026-10-04_reelsieve-r1-delete-reauth-{1440,390}.png.
+
+### Review round 1 (04 Oct 2026), commit 907a4ad
+- [x] R1 re-auth for deletion (above). R2 no DROP in 012. __Host-reelsieve_session and __Host-reelsieve_csrf (Secure,
+      Path=/, no Domain); old names ignored. IPv4-mapped addresses count as IPv4 (login limiter and network hashes).
+      Customer hashes wiped at every start (011); the session bump runs once (012). Drive revoked only after the link
+      succeeds. Gate session check and Google revokes in the thread pool. Ledger (above). Each red first, then green:
+      test_r1..test_r9 in tests/test_braivex_sso.py.
+- [x] Verifier re-vendored from braivex-accounts e0a35ec (sha256 6d8ca8fb...d1f1): withdrawn keys stop verifying within
+      the 300 s JWKS lifespan (cache_keys off), its own 30 s refetch cooldown, PyJWT[crypto]>=2.8. Red first: a withdrawn
+      key still verified (303) on the 7463ece copy.
+- [x] Controller ruling (amended): accounts on braivex.com, wbj.team, mokshabotanicals.in when 012 runs are
+      email_trusted: first Braivex sign-in links with no Claim and keeps orders and invites. Every first link of an
+      older account (trusted or not) ends its sessions, wipes the password, revokes its Google Drive grant and clears
+      the business sender: the owner reconnects Drive once. Other domains keep the Claim path. Evidence:
+      test_an_existing_account_on_our_own_domains_links_without_a_claim_but_its_outbound_grants_go.
+      Prod per the coordinator (read-only, 20:16 BST, not re-read here): 11 users, 5 with Drive connected.
+- Gate: compileall exit 0, node --check exit 0, pyflakes (touched files) exit 0, pytest exit 0, 653 passed.
+- [ ] Owner deploy order (Railway project listing-reel, production):
+      1. Set BRAIVEX_SSO=on on the ReelSieve (web) service first. This build ignores it; it makes the previous build
+         offer Continue with Braivex during the rolling deploy and after any rollback.
+      2. Deploy the web service. Its start runs the schema: ledger table, 011 (hash wipe), 012 once (every customer
+         signed out, own-domain accounts marked). Check /healthz shows this build's id.
+      3. Then deploy ReelSieve-worker. It never migrates: it waits up to 120 s for the schema, then exits non-zero for
+         Railway to restart it (restartPolicyMaxRetries 5).
+      4. Customers who had Drive connected reconnect it once after their first Braivex sign-in.
+- [ ] Next release: DROP TABLE IF EXISTS password_resets in a new ledgered file, once no build that reads it is serving.
+
