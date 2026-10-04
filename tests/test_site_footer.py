@@ -31,7 +31,7 @@ def footer_of(page):
     return page.split('<footer class="lp-footer">', 1)[1].split('</footer>', 1)[0]
 
 
-ANON_PAGES = ['/', '/login', '/signup', '/forgot', '/reset', '/privacy', '/terms', '/privacy/request']
+ANON_PAGES = ['/', '/login', '/signup', '/privacy', '/terms', '/privacy/request']
 
 
 @pytest.mark.parametrize('path', ANON_PAGES)

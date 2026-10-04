@@ -57,7 +57,6 @@ def run(now=None):
         out = {name: c.execute(q, (cutoff,)).rowcount for name, q, cutoff in [
             ('login_failures', 'DELETE FROM login_failures WHERE ts<%s', now - LOGIN_FAILURE_HOURS * 3600),
             ('drive_oauth_states', 'DELETE FROM drive_oauth_states WHERE expires_at<%s', now),
-            ('password_resets', 'DELETE FROM password_resets WHERE expires_at<%s', now),
             ('braivex_sso_jti', 'DELETE FROM braivex_sso_jti WHERE expires_at<%s', now),
             ('job_third_party', STRIP_JOBS, now - THIRD_PARTY_JOB_DAYS * DAY),
             ('outreach', 'DELETE FROM outreach WHERE GREATEST(ts,sent_at,updated)<%s', now - OUTREACH_MONTHS * YEAR / 12),

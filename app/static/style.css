@@ -553,7 +553,6 @@ select { width: 100%; color: var(--ink); background: var(--surface); border: 0; 
 .login-title { font-size: 24px; margin: 4px 0 6px; }
 .pw-row { display: flex; gap: 8px; align-items: center; } .pw-row input { flex: 1; min-width: 0; }
 .pw-toggle { border: 0; background: var(--surface); box-shadow: var(--raise-sm); border-radius: var(--radius-control); min-height: 44px; padding: 0 12px; color: var(--muted); font: inherit; font-size: 15px; font-weight: 700; cursor: pointer; }
-.login-opts { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
 .link-muted { color: var(--muted); font-size: 13px; text-decoration: none; } .link-muted:hover { color: var(--accent-text); }
 .btn-wide { width: 100%; min-height: 46px; }
 .login-foot { color: var(--muted); font-size: 13px; margin: 16px 0 0; text-align: center; } .login-foot a { color: var(--accent-text); text-decoration: none; font-weight: 600; }

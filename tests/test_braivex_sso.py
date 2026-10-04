@@ -1,25 +1,31 @@
-"""Continue with Braivex (29 Sep 2026): /auth/braivex/start, the callback and the sunset of customer passwords.
+"""Continue with Braivex: /auth/braivex/start, the callback, and (04 Oct 2026) the only customer sign-in.
 
-No network: accounts.braivex.com is an HTTPX MockTransport serving a JWKS built from an RSA key generated here,
-and every assertion is signed with that key. Real isolated PostgreSQL. Contract and claim checks:
-/Users/hemant/braivex-accounts/docs/PRODUCT-INTEGRATION.md and packages/verify-ts/index.ts.
+No network: accounts.braivex.com is a fake urllib opener serving a JWKS built from an RSA key generated here (the
+vendored verifier fetches keys with PyJWT's PyJWKClient, which uses urllib), and every assertion is signed with that
+key. Real isolated PostgreSQL. Contract and claim checks: braivex-accounts docs/PRODUCT-INTEGRATION.md and
+packages/verify-py/braivex_verify.py, vendored as app/braivex_verify.py.
 """
+import asyncio
 import base64
+import hashlib
+import io
 import itertools
 import json
 import re
+import secrets
 import time
+import urllib.error
+import urllib.request
 from urllib.parse import parse_qs, urlsplit
 
-import httpx
 import pytest
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from fastapi.testclient import TestClient
 
-from app import auth, braivex_sso, plans, server, store
+from app import auth, braivex_verify, plans, server, store
 
-ALICE, BOB = 'alice@example.test', 'bob@example.test'
+ALICE, BOB, OPS = 'alice@example.test', 'bob@example.test', 'ops@example.test'
 SAM, SUB = 'sam@example.test', 'gid://shopify/Customer/7712345678901'
 SITE = 'https://www.reelsieve.braivex.com'
 CALLBACK = SITE + '/auth/braivex/callback'
@@ -47,10 +53,13 @@ class Broker:
     def __init__(self):
         self.kid, self.key, self.fetches, self.status = 'test-key-1', KEY, 0, 200
 
-    def handle(self, req):
-        assert str(req.url) == BROKER + '/.well-known/jwks.json', str(req.url)
+    def open(self, req, timeout=None):
+        """What PyJWKClient calls on the opener it builds: one GET of the published keys."""
+        assert req.full_url == BROKER + '/.well-known/jwks.json', req.full_url
         self.fetches += 1
-        return httpx.Response(self.status, json={'keys': [jwk_of(self.key, self.kid)]})
+        if self.status != 200:
+            raise urllib.error.URLError(f'broker answered {self.status}')
+        return io.BytesIO(json.dumps({'keys': [jwk_of(self.key, self.kid)]}).encode())
 
     def assertion(self, kid=None, sign_with=None, **claims):
         now = int(time.time())
@@ -65,25 +74,23 @@ class Broker:
 
 @pytest.fixture(autouse=True)
 def fresh_key_cache():
-    braivex_sso._JWKS.clear()
+    braivex_verify._clients.clear()
     yield
-    braivex_sso._JWKS.clear()
+    braivex_verify._clients.clear()
 
 
 @pytest.fixture
 def broker(db, monkeypatch):
     fake = Broker()
-    original = httpx.Client
-    monkeypatch.setattr(httpx, 'Client', lambda **kw: original(transport=httpx.MockTransport(fake.handle), **kw))
-    monkeypatch.setenv('BRAIVEX_SSO', 'on')
+    monkeypatch.setattr(urllib.request, 'build_opener', lambda *handlers: fake)
     monkeypatch.setenv('BRAIVEX_ACCOUNTS_URL', BROKER)
     monkeypatch.setenv('PUBLIC_BASE_URL', SITE)
-    monkeypatch.delenv('BRAIVEX_PASSWORD_SUNSET', raising=False)
     return fake
 
 
 def client_for(session=None):
-    c = TestClient(server.app)
+    """Over HTTPS, as in production: the sign-in flow cookies are __Host- cookies, which are Secure."""
+    c = TestClient(server.app, base_url='https://testserver')
     c.__enter__()
     if session:
         c.cookies.set(auth.COOKIE, session)
@@ -115,8 +122,10 @@ def start(client, path='/auth/braivex/start?next=/reels', **kw):
     return r, state
 
 
-def finish(client, assertion):
-    return client.post('/auth/braivex/callback', data={'assertion': assertion}, follow_redirects=False)
+def finish(client, assertion, ip='198.51.100.1'):
+    """The broker's cross-site POST back here. ip: the network it comes from (refusals are counted per network)."""
+    return client.post('/auth/braivex/callback', data={'assertion': assertion}, headers={'x-forwarded-for': ip},
+                       follow_redirects=False)
 
 
 def signed_in_as(client):
@@ -137,29 +146,126 @@ def make_account(client, business=''):
                        follow_redirects=False)
 
 
-# ---------------- 1. with the switch off the product is exactly what it was ----------------
+# ---------------- 1. Braivex is the only way a customer signs in or up (04 Oct 2026) ----------------
 
-def test_with_the_switch_off_nothing_about_sign_in_changes(owners, db, monkeypatch):
+def legacy_password(db, email, pw='synthetic-password'):
+    """A customer account made with a password before 04 Oct 2026, hashed exactly as the old sign-up did."""
+    salt = secrets.token_hex(16)
+    with db.connect() as c:
+        c.execute('UPDATE users SET salt=%s,hash=%s,iterations=%s WHERE email=%s',
+                  (salt, auth._hash(pw, salt), auth.ITERATIONS, email))
+
+
+def test_sign_in_and_sign_up_offer_only_continue_with_braivex_with_no_switch_set(owners, monkeypatch):
     monkeypatch.delenv('BRAIVEX_SSO', raising=False)
+    monkeypatch.delenv('BRAIVEX_PASSWORD_SUNSET', raising=False)
     anon = client_for()
-    page = anon.get('/login').text
-    assert 'Continue with Braivex' not in page and '/auth/braivex/start' not in page
-    assert 'Continue with Braivex' not in anon.get('/signup').text and 'name="password"' in anon.get('/signup').text
-    assert anon.get('/auth/braivex/start?next=/app').status_code == 404
-    assert anon.get('/auth/braivex/workspace').status_code == 404
-    assert anon.post('/auth/braivex/callback', data={'assertion': 'x'}).status_code == 404
-    assert anon.get('/forgot').status_code == 200
-    r = anon.post('/login', data={'csrf': csrf_of(page), 'user': ALICE, 'password': 'synthetic-password'},
-                  follow_redirects=False)
-    assert r.status_code == 303 and auth.check(r.cookies[auth.COOKIE]) == ALICE
+    signup = anon.get('/signup').text
+    assert 'Continue with Braivex' in signup and 'type="password"' not in signup
+    login = anon.get('/login').text
+    assert 'Continue with Braivex' in login and '/forgot' not in login
+    # the one password field left is the operator's break-glass form, folded away under its own heading
+    assert login.count('type="password"') == 1 and login.index('Continue with Braivex') < login.index('Operator sign-in')
+    assert anon.get('/auth/braivex/start?next=/app', follow_redirects=False).status_code == 302
 
 
-def test_off_is_the_default_and_only_the_word_on_switches_it(monkeypatch):
-    monkeypatch.delenv('BRAIVEX_SSO', raising=False)
-    assert not braivex_sso.enabled() and braivex_sso.passwords_allowed()
-    for value in ('off', 'true', '1', 'ON ', 'on'):
-        monkeypatch.setenv('BRAIVEX_SSO', value)
-        assert braivex_sso.enabled() == (value.strip().lower() == 'on'), value
+REMOVED = [('get', '/forgot'), ('post', '/forgot'), ('get', '/reset'), ('post', '/reset'), ('get', '/setup'),
+           ('post', '/setup'), ('post', '/signup')]
+
+
+@pytest.mark.parametrize('method,path', REMOVED)
+def test_customer_password_routes_are_gone(owners, method, path):
+    anon = client_for()
+    token = csrf_of(anon.get('/login').text)       # a real form post: past the CSRF check, so the route itself answers
+    form = {'csrf': token, 'user': 'new@example.test', 'password': 'a-long-password', 'password2': 'a-long-password',
+            'token': 'x'}
+    r = getattr(anon, method)(path, follow_redirects=False, **({'data': form} if method == 'post' else {}))
+    assert r.status_code == 404, r.status_code
+    assert auth.identity('new@example.test') is None
+
+
+def test_changing_a_password_from_the_account_page_is_gone(web, owners):
+    r = web['alice'].post('/api/account/password', json={'current': 'synthetic-password', 'new': 'another-long-pass'},
+                          headers={'X-CSRF-Token': auth.csrf_token(owners['alice'])})
+    assert r.status_code == 404
+
+
+def test_a_customer_password_no_longer_signs_anyone_in(web, db):
+    legacy_password(db, ALICE)
+    anon = client_for()
+    r = anon.post('/login', data={'csrf': csrf_of(anon.get('/login').text), 'user': ALICE,
+                                  'password': 'synthetic-password'}, follow_redirects=False)
+    assert r.status_code == 401 and 'Wrong email or password' in r.text and signed_in_as(anon) is None
+    assert not auth.verify(ALICE, 'synthetic-password')
+
+
+def test_an_operator_signs_in_with_a_password_and_five_wrong_tries_close_the_form_for_that_network(web, db, monkeypatch):
+    monkeypatch.setattr(server, 'LOGIN_FAIL_DELAY', 0)
+    auth.create_user(OPS, 'operator-password', 'admin')
+    anon = client_for()
+    token = csrf_of(anon.get('/login').text)
+    net = {'x-forwarded-for': '198.51.100.7'}
+    for _ in range(5):
+        assert anon.post('/login', data={'csrf': token, 'user': OPS, 'password': 'wrong-password'}, headers=net).status_code == 401
+    assert anon.post('/login', data={'csrf': token, 'user': OPS, 'password': 'operator-password'}, headers=net).status_code == 429
+    r = anon.post('/login', data={'csrf': token, 'user': OPS, 'password': 'operator-password'},
+                  headers={'x-forwarded-for': '203.0.113.9'}, follow_redirects=False)
+    assert r.status_code == 303 and auth.check(r.cookies[auth.COOKIE]) == OPS
+    assert client_for(r.cookies[auth.COOKIE]).get('/api/users').status_code == 200
+
+
+def test_the_operator_password_check_and_its_delay_never_block_the_event_loop(web, db, monkeypatch):
+    def on_loop():
+        try:
+            asyncio.get_running_loop()
+            return True
+        except RuntimeError:
+            return False
+    seen, real_verify, real_sleep = [], auth.verify, time.sleep
+    monkeypatch.setattr(auth, 'verify', lambda u, p: seen.append(('verify', on_loop())) or real_verify(u, p))
+    monkeypatch.setattr(time, 'sleep', lambda s: seen.append(('sleep', on_loop())) or real_sleep(s))
+    anon = client_for()
+    r = anon.post('/login', data={'csrf': csrf_of(anon.get('/login').text), 'user': OPS, 'password': 'wrong-password'})
+    assert r.status_code == 401
+    assert ('verify', False) in seen and ('verify', True) not in seen and ('sleep', True) not in seen
+
+
+def test_a_customer_account_never_gets_a_password_and_only_operators_can_be_given_one(db):
+    with pytest.raises(ValueError, match='no password'):
+        auth.create_user('new@example.test', 'a-long-password')
+    auth.create_user('new@example.test')
+    with pytest.raises(ValueError, match='No such operator'):
+        auth.set_password('new@example.test', 'a-long-password')
+    with pytest.raises(ValueError, match='at least 8'):
+        auth.create_user(OPS, 'short', 'admin')
+    auth.create_user(OPS, 'operator-password', 'admin')
+    auth.set_password(OPS, 'another-operator-password')
+    assert auth.verify(OPS, 'another-operator-password') and not auth.verify('new@example.test', '')
+
+
+def test_an_admin_adds_customers_without_a_password_and_operators_only_with_one(web, db):
+    auth.create_user(OPS, 'operator-password', 'admin')
+    session = auth.issue(OPS)[0]
+    ops, head = client_for(session), {'X-CSRF-Token': auth.csrf_token(session)}
+    r = ops.post('/api/users', json={'user': 'new@example.test', 'password': 'typed-anyway', 'role': 'member'}, headers=head)
+    assert r.status_code == 200
+    with db.connect() as c:
+        assert c.execute("SELECT salt,hash FROM users WHERE email='new@example.test'").fetchone() == {'salt': '', 'hash': ''}
+    r = ops.post('/api/users/password', json={'user': 'new@example.test', 'password': 'a-long-password'}, headers=head)
+    assert r.status_code == 400 and 'No such operator' in r.text
+    assert ops.post('/api/users', json={'user': 'ops2@example.test', 'role': 'admin'}, headers=head).status_code == 400
+    assert auth.identity('ops2@example.test') is None
+
+
+VENDORED_SHA256 = 'fe51ee42a4aa59b39f5152d9d77d788a67f69923d7aa9f1a5a8ad00f9464eb09'   # verify-py at 7463ece
+
+
+def test_the_assertion_verifier_is_the_shared_one_byte_for_byte():
+    text = (server.HERE / 'braivex_verify.py').read_bytes()
+    body = text[text.index(b'"""Braivex Accounts assertion verifier (Python).'):]
+    assert hashlib.sha256(body).hexdigest() == VENDORED_SHA256
+    header = text[:text.index(body)]
+    assert b'7463ece' in header and b'packages/verify-py/braivex_verify.py' in header
 
 
 # ---------------- 2. starting the sign-in ----------------
@@ -173,16 +279,16 @@ def test_start_sets_this_browsers_state_cookie_and_redirects_with_the_registered
     q = parse_qs(url.query)
     assert q['client'] == ['reelsieve'] and q['return_to'] == [CALLBACK] and 'login_hint' not in q
     assert len(state) >= 16 and re.fullmatch(r'[A-Za-z0-9._~-]+', state)
-    cookie = cookie_header(r, 'braivex_sso_state')
-    assert 'HttpOnly' in cookie and 'Max-Age=600' in cookie and 'Path=/auth/braivex' in cookie
-    assert 'SameSite=lax' in cookie and 'Secure' not in cookie          # http here; https is its own test
-    assert anon.cookies['braivex_sso_state'] and state != start(anon)[1]  # a new 32-byte state every time
+    cookie = cookie_header(r, '__Host-braivex_sso_state')
+    assert 'HttpOnly' in cookie and 'Max-Age=600' in cookie and 'Path=/;' in cookie + ';' and 'Domain' not in cookie
+    assert 'SameSite=lax' in cookie and 'Secure' in cookie
+    assert anon.cookies['__Host-braivex_sso_state'] and state != start(anon)[1]  # a new 32-byte state every time
 
 
 def test_the_state_cookie_is_secure_over_https_and_the_callback_never_comes_from_the_host_header(web):
     r, _ = start(web['anon'], headers={'x-forwarded-proto': 'https', 'host': 'evil.example.test',
                                        'x-forwarded-host': 'evil.example.test'})
-    assert 'Secure' in cookie_header(r, 'braivex_sso_state')
+    assert 'Secure' in cookie_header(r, '__Host-braivex_sso_state')
     assert parse_qs(urlsplit(r.headers['location']).query)['return_to'] == [CALLBACK]
 
 
@@ -235,7 +341,7 @@ def test_the_state_cookie_is_spent_whether_the_sign_in_worked_or_not(web, broker
     client = client_for()
     _, state = start(client)
     assert finish(client, broker.assertion(state=state, aud='loculens')).status_code == 401
-    assert 'braivex_sso_state' not in client.cookies
+    assert '__Host-braivex_sso_state' not in client.cookies
     assert finish(client, broker.assertion(state=state)).status_code == 401  # the cookie is gone, so this is refused too
     assert signed_in_as(client) is None
 
@@ -280,11 +386,11 @@ def test_a_tampered_payload_and_a_key_the_broker_never_published_are_refused(web
     swapped = json.loads(base64.urlsafe_b64decode(body + '=='))
     swapped['email'] = 'someone-else@example.test'
     assert finish(client, f'{head}.{b64(json.dumps(swapped).encode())}.{sig}').status_code == 401
-    for make in (lambda s: broker.assertion(state=s, sign_with=OTHER_KEY),
-                 lambda s: broker.assertion(state=s, kid='never-published'),
-                 lambda s: 'not-a-jws', lambda s: '', lambda s: 'a.b.c'):
+    for i, make in enumerate((lambda s: broker.assertion(state=s, sign_with=OTHER_KEY),
+                              lambda s: broker.assertion(state=s, kid='never-published'),
+                              lambda s: 'not-a-jws', lambda s: '', lambda s: 'a.b.c')):
         _, state = start(client)
-        assert finish(client, make(state)).status_code == 401
+        assert finish(client, make(state), ip=f'203.0.113.{i}').status_code == 401
     assert signed_in_as(client) is None
 
 
@@ -296,7 +402,7 @@ def test_the_same_assertion_is_spent_once_and_a_replay_is_refused(web, broker, d
     # A second browser replaying the assertion it stole, holding a state cookie that matches it: the spent jti is
     # the only thing left to refuse it.
     second = client_for()
-    second.cookies.set('braivex_sso_state', server._seal(600, state=state, next='/app', ref=''), path='/auth/braivex')
+    second.cookies.set(server.STATE_COOKIE, auth.seal(server.STATE_COOKIE, 600, state=state, next='/app', ref=''), path='/')
     replay = finish(second, good)
     assert replay.status_code == 401 and 'already been used' in replay.text
     assert signed_in_as(second) is None
@@ -325,9 +431,9 @@ def test_the_key_set_is_fetched_once_and_again_only_when_a_kid_is_unknown(web, b
         client = client_for()
         _, state = start(client)
         assert finish(client, broker.assertion(state=state, email=ALICE)).status_code == 303
-    assert broker.fetches == 1                               # cached for ten minutes
+    assert broker.fetches == 1                               # cached (PyJWKClient: five minutes)
     broker.kid, broker.key = 'test-key-2', OTHER_KEY         # the broker rotates its signing key
-    braivex_sso._JWKS[BROKER]['at'] -= braivex_sso.JWKS_REFETCH_COOLDOWN + 1
+    braivex_verify._clients[BROKER]._last_successful_fetch -= 31   # past PyJWKClient's 30-second refetch cooldown
     client = client_for()
     _, state = start(client)
     assert finish(client, broker.assertion(state=state, email=ALICE)).status_code == 303
@@ -370,16 +476,42 @@ def test_a_returning_customer_is_found_by_their_shopify_customer_id_not_their_em
         assert c.execute('SELECT count(*) AS n FROM users').fetchone()['n'] == 3   # alice, bob, sam: nobody new
 
 
-def test_an_existing_password_account_is_linked_by_its_verified_email_and_keeps_everything(web, broker, db):
+def test_a_legacy_password_account_is_taken_over_by_the_braivex_sign_in_with_its_email(web, broker, db, owners):
+    legacy_password(db, ALICE)                                # nothing in it yet: taken over at once
+    assert auth.check(owners['alice']) == ALICE
+    client = client_for()
+    _, state = start(client)
+    r = finish(client, broker.assertion(state=state, email='Alice@Example.TEST'))
+    assert r.status_code == 303 and r.headers['location'] == '/reels'
+    assert signed_in_as(client) == ALICE and braivex_id(db, ALICE) == SUB
+    assert auth.check(owners['alice']) is None            # whoever signed up with that password is signed out
+    with db.connect() as c:
+        row = c.execute('SELECT salt,hash FROM users WHERE email=%s', (ALICE,)).fetchone()
+    assert row['salt'] == '' and row['hash'] == ''          # and the password is gone, not just unusable
+
+
+def test_a_claimed_legacy_account_keeps_its_plan_and_credits(web, broker, db, owners):
     store.ensure_account(ALICE, 'starter')
     store.add_credits(ALICE, 4)
     client = client_for()
     _, state = start(client)
-    r = finish(client, broker.assertion(state=state, email='Alice@Example.TEST'))
-    assert r.status_code == 303 and signed_in_as(client) == ALICE
-    assert braivex_id(db, ALICE) == SUB
+    assert finish(client, broker.assertion(state=state, email=ALICE)).headers['location'] == '/auth/braivex/claim'
+    page = client.get('/auth/braivex/claim').text
+    assert 'Starter plan' in page and 'Google Drive not connected' in page
+    r = client.post('/auth/braivex/claim', data={'csrf': csrf_of(page)}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers['location'] == '/reels' and signed_in_as(client) == ALICE
     assert store.get_account(ALICE)['plan'] == 'starter' and store.get_account(ALICE)['credits'] == 4
-    assert auth.verify(ALICE, 'synthetic-password')           # their password still works until the sunset
+    assert '__Host-braivex_sso_claim' not in client.cookies
+
+
+def test_a_linked_customer_signing_in_again_keeps_their_other_sessions(web, broker, db):
+    first = client_for()
+    _, state = start(first)
+    assert finish(first, broker.assertion(state=state, email=ALICE)).status_code == 303
+    again = client_for()
+    _, state = start(again)
+    assert finish(again, broker.assertion(state=state, email=ALICE)).status_code == 303
+    assert signed_in_as(first) == ALICE and signed_in_as(again) == ALICE
 
 
 def test_an_account_that_is_already_somebody_elses_shopify_customer_is_never_taken_over(web, broker, db):
@@ -422,20 +554,23 @@ def test_a_new_customer_is_asked_to_name_their_business_before_an_account_exists
     assert done.status_code == 303 and done.headers['location'] == '/reels'
     assert signed_in_as(client) == SAM and braivex_id(db, SAM) == SUB
     assert store.get_account(SAM)['b2b_sender']['business'] == 'Rowe Lets'
-    assert 'braivex_sso_new' not in client.cookies
+    with db.connect() as c:                                   # no network or device hash on the account row
+        assert c.execute('SELECT ip_hash,fp_hash FROM accounts WHERE owner_id=%s', (db.user_id(SAM),)).fetchone() == \
+            {'ip_hash': None, 'fp_hash': None}
+    assert '__Host-braivex_sso_new' not in client.cookies
 
 
-def test_the_new_account_matches_a_password_sign_up_exactly_but_has_no_usable_password(web, broker, db):
+def test_the_new_account_matches_one_made_before_braivex_exactly_and_has_no_password_at_all(web, broker, db):
     client, _ = new_customer(broker)
     assert make_account(client).status_code == 303
-    store.ensure_account(BOB, 'free')                         # the same product, created the old way
+    store.ensure_account(BOB, 'free')                         # the same product, an account made before Braivex
     sso, password = plans.account_view(SAM), plans.account_view(BOB)
     assert {k: v for k, v in sso.items() if k != 'user'} == {k: v for k, v in password.items() if k != 'user'}
     assert auth.role(SAM) == 'member' and client.get('/api/users').status_code == 403
     with db.connect() as c:
         row = c.execute('SELECT hash,salt,iterations,role FROM users WHERE email=%s', (SAM,)).fetchone()
-    assert row['hash'].startswith('braivex-sso:') and len(row['salt']) == 32 and row['role'] == 'member'
-    for guess in ('', 'synthetic-password', row['hash'], 'braivex-sso:'):
+    assert row['hash'] == '' and row['salt'] == '' and row['role'] == 'member'
+    for guess in ('', 'synthetic-password', 'braivex-sso:'):
         assert not auth.verify(SAM, guess), guess
 
 
@@ -446,16 +581,17 @@ def test_the_sign_up_page_offers_braivex_and_nothing_else(web):
     assert 'href="/auth/braivex/start?next=/upgrade%3Fplan%3Dstarter"' in page   # the plan survives the sign-in
 
 
-def test_the_session_a_braivex_sign_in_creates_is_the_one_a_password_creates(web, broker, db):
+def test_the_session_a_braivex_sign_in_creates_is_the_one_an_operator_password_creates(web, broker, db, monkeypatch):
     client, _ = new_customer(broker)
     sso = make_account(client)
+    auth.create_user(OPS, 'operator-password', 'admin')
     anon = client_for()
-    pw = anon.post('/login', data={'csrf': csrf_of(anon.get('/login').text), 'user': ALICE,
-                                   'password': 'synthetic-password', 'remember': '1'}, follow_redirects=False)
+    pw = anon.post('/login', data={'csrf': csrf_of(anon.get('/login').text), 'user': OPS,
+                                   'password': 'operator-password', 'remember': '1'}, follow_redirects=False)
     flags = lambda r: sorted(p.strip().split('=')[0].lower()                                        # noqa: E731
                              for p in cookie_header(r, auth.COOKIE).split(';')[1:])
-    assert flags(sso) == flags(pw) == ['httponly', 'max-age', 'path', 'samesite']
-    assert auth.check(sso.cookies[auth.COOKIE]) == SAM and auth.check(pw.cookies[auth.COOKIE]) == ALICE
+    assert flags(sso) == flags(pw) == ['httponly', 'max-age', 'path', 'samesite', 'secure']
+    assert auth.check(sso.cookies[auth.COOKIE]) == SAM and auth.check(pw.cookies[auth.COOKIE]) == OPS
     with db.connect() as c:                                   # and the same revocation: session_version ends it
         c.execute('UPDATE users SET session_version=session_version+1 WHERE email=%s', (SAM,))
     assert signed_in_as(client) is None
@@ -466,7 +602,7 @@ def test_the_step_cannot_be_reached_or_replayed_without_the_verified_claims(web,
     client, _ = new_customer(broker)
     page = client.get('/auth/braivex/workspace').text
     forged = client_for()
-    forged.cookies.set('braivex_sso_new', client.cookies['braivex_sso_new'] + 'x', path='/auth/braivex')
+    forged.cookies.set(server.NEW_COOKIE, client.cookies[server.NEW_COOKIE] + 'x', path='/')
     assert forged.get('/auth/braivex/workspace').status_code == 401
     assert client.post('/auth/braivex/workspace', data={'business': 'x'}).status_code == 403    # CSRF still applies
     assert auth.identity(SAM) is None
@@ -489,78 +625,23 @@ def test_an_invite_link_still_attributes_the_invite_when_braivex_creates_the_acc
     assert row['referrer_id'] == db.user_id(ALICE) and row['referee_id'] == db.user_id(SAM)
 
 
-# ---------------- 7. the sunset of customer passwords ----------------
+# ---------------- 7. sign-up guards and deleting an account without a password ----------------
 
-def yesterday():
-    return time.strftime('%Y-%m-%d', time.gmtime(time.time() - 86400))
-
-
-def tomorrow():
-    return time.strftime('%Y-%m-%d', time.gmtime(time.time() + 86400))
-
-
-def test_before_the_sunset_the_password_form_is_still_there_second(web, monkeypatch):
-    monkeypatch.setenv('BRAIVEX_PASSWORD_SUNSET', '2026-11-05')
-    anon = client_for()
-    page = anon.get('/login').text
-    assert page.index('Continue with Braivex') < page.index('Sign in with your password')
-    assert 'Password sign-in ends on 05 Nov 2026. Use Continue with Braivex.' in page
-    assert 'name="password"' in page and anon.get('/forgot').status_code == 200
-    r = anon.post('/login', data={'csrf': csrf_of(page), 'user': ALICE, 'password': 'synthetic-password'},
-                  follow_redirects=False)
-    assert r.status_code == 303 and auth.check(r.cookies[auth.COOKIE]) == ALICE
+def test_the_sign_up_guards_run_where_braivex_creates_the_account(web, broker, db, monkeypatch):
+    client, _ = new_customer(broker, email='someone@mailinator.com', sub='gid://shopify/Customer/5')
+    assert make_account(client).status_code == 400 and auth.identity('someone@mailinator.com') is None
+    monkeypatch.setattr(store, 'count_usage', lambda **kw: 10 ** 6)     # a network that made a lot of free videos
+    client, _ = new_customer(broker)
+    r = make_account(client)
+    assert r.status_code == 400 and 'This network has made a lot of free videos' in r.text and auth.identity(SAM) is None
 
 
-def test_on_the_sunset_day_a_customer_password_no_longer_signs_anyone_in(web, monkeypatch):
-    monkeypatch.setenv('BRAIVEX_PASSWORD_SUNSET', time.strftime('%Y-%m-%d', time.gmtime()))
-    anon = client_for()
-    page = anon.get('/login').text
-    assert 'Continue with Braivex' in page and 'name="password"' not in page and 'Forgot password?' not in page
-    r = anon.post('/login', data={'csrf': csrf_of(page), 'user': ALICE, 'password': 'synthetic-password'},
-                  follow_redirects=False)
-    assert r.status_code == 403 and 'Password sign-in has ended' in r.text
-    assert auth.COOKIE not in r.cookies and signed_in_as(anon) is None
+def test_deleting_my_account_needs_the_typed_word_not_a_password(web, owners):
+    head = {'X-CSRF-Token': auth.csrf_token(owners['bob'])}
+    assert web['bob'].post('/api/account/delete', json={'confirm': 'delete'}, headers=head).status_code == 400
+    r = web['bob'].post('/api/account/delete', json={'confirm': 'DELETE'}, headers=head)
+    assert r.status_code == 200 and auth.identity(BOB) is None
 
-
-def test_after_the_sunset_password_sign_up_and_password_recovery_are_closed(web, monkeypatch):
-    monkeypatch.setenv('BRAIVEX_PASSWORD_SUNSET', yesterday())
-    anon = client_for()
-    signup = anon.get('/signup')
-    assert 'name="password"' not in signup.text and 'Continue with Braivex' in signup.text
-    csrf = csrf_of(signup.text)
-    r = anon.post('/signup', data={'csrf': csrf, 'user': 'new@example.test', 'password': 'a-long-password'},
-                  follow_redirects=False)
-    assert r.status_code == 403 and auth.identity('new@example.test') is None
-    assert anon.get('/forgot', follow_redirects=False).headers['location'] == '/login'
-    assert anon.post('/forgot', data={'csrf': csrf, 'user': ALICE}, follow_redirects=False).headers['location'] == '/login'
-
-
-def test_an_operator_keeps_their_password_after_the_sunset(web, monkeypatch, db):
-    monkeypatch.setenv('BRAIVEX_PASSWORD_SUNSET', yesterday())
-    with db.connect() as c:
-        c.execute("UPDATE users SET role='admin' WHERE email=%s", (BOB,))
-    anon = client_for()
-    # The form is not offered any more, but an operator who posts to it still gets in: break-glass.
-    r = anon.post('/login', data={'csrf': csrf_of(anon.get('/login').text), 'user': BOB,
-                                  'password': 'synthetic-password'}, follow_redirects=False)
-    assert r.status_code == 303 and auth.check(r.cookies[auth.COOKIE]) == BOB
-    operator = client_for(r.cookies[auth.COOKIE])
-    assert operator.get('/api/users').status_code == 200
-
-
-def test_the_sunset_only_applies_once_braivex_sign_in_is_on(web, monkeypatch):
-    monkeypatch.setenv('BRAIVEX_PASSWORD_SUNSET', yesterday())
-    monkeypatch.delenv('BRAIVEX_SSO')
-    assert braivex_sso.passwords_allowed()
-    anon = client_for()
-    r = anon.post('/login', data={'csrf': csrf_of(anon.get('/login').text), 'user': ALICE,
-                                  'password': 'synthetic-password'}, follow_redirects=False)
-    assert r.status_code == 303
-    monkeypatch.setenv('BRAIVEX_SSO', 'on')
-    monkeypatch.setenv('BRAIVEX_PASSWORD_SUNSET', tomorrow())
-    assert braivex_sso.passwords_allowed()
-    monkeypatch.setenv('BRAIVEX_PASSWORD_SUNSET', 'not-a-date')
-    assert braivex_sso.passwords_allowed() and braivex_sso.sunset() is None
 
 
 # ---------------- 8. the callback is the only route the CSRF check skips ----------------
@@ -584,7 +665,7 @@ def test_the_export_shows_the_shopify_customer_number_and_erasure_removes_it(web
     client = client_for()
     _, state = start(client)
     assert finish(client, broker.assertion(state=state, email=ALICE)).status_code == 303
-    data = web['alice'].get('/api/account/export').json()
+    data = client.get('/api/account/export').json()       # her password-era session ended when Braivex took over
     assert data['users'][0]['braivex_customer_id'] == SUB
     admin.erase(ALICE, ALICE)
     with db.connect() as c:
@@ -593,3 +674,155 @@ def test_the_export_shows_the_shopify_customer_number_and_erasure_removes_it(web
     _, state = start(fresh)
     r = finish(fresh, broker.assertion(state=state))
     assert r.status_code == 303 and r.headers['location'] == '/auth/braivex/workspace'
+
+
+# ---------------- 10. one signed-token codec for sessions and the sign-in cookies ----------------
+
+def test_sessions_and_sign_in_cookies_share_one_codec_and_never_pass_for_each_other(web, broker, owners):
+    session = owners['alice']
+    assert auth.unseal('session', session)['v'] == 1 and auth.check(session) == ALICE
+    state = auth.seal(server.STATE_COOKIE, 600, state='s', next='/app', ref='')
+    assert auth.check(state) is None                                   # a sign-in cookie is never a session
+    client = client_for()
+    client.cookies.set(server.NEW_COOKIE, session, path='/')            # nor a session a sign-in cookie
+    assert client.get('/auth/braivex/workspace').status_code == 401
+    assert auth.unseal('session', auth.seal('session', -1, o='x', v=1)) is None   # expired
+
+
+def test_a_mangled_cookie_is_refused_not_a_server_error(web, broker):
+    for value in ('abc.\u00e9', '\u00e9.\u00e9', '.', 'x.y.z'):
+        raw = (server.NEW_COOKIE + '=' + value).encode('latin-1')            # a header byte no browser cookie jar would mint
+        assert client_for().get('/auth/braivex/workspace', headers={'cookie': raw}).status_code == 401, value
+        assert auth.check(value) is None
+
+
+# ---------------- 11. same classes, swept (04 Oct 2026) ----------------
+
+def test_a_non_ascii_csrf_token_or_webhook_signature_is_refused_not_a_server_error(web, owners, monkeypatch):
+    monkeypatch.setenv('BILLING_WEBHOOK_SECRET', 'synthetic-webhook-secret')   # secrets set, so the comparison runs
+    monkeypatch.setenv('STRIPE_WEBHOOK_SECRET', 'whsec_synthetic')
+    head = {'X-CSRF-Token': 'é'.encode('latin-1')}
+    assert web['alice'].post('/api/billing/request', json={'plan': 'starter'}, headers=head).status_code == 403
+    for provider, header, value in (('skydo', 'x-signature', 'é'), ('stripe', 'stripe-signature', f't={int(time.time())},v1=é')):
+        r = web['anon'].post(f'/api/billing/webhook/{provider}', content=b'{}', headers={header: value.encode('latin-1')})
+        assert 400 <= r.status_code < 500, (provider, r.status_code)
+
+
+def test_setting_or_creating_an_operator_password_never_hashes_on_the_event_loop(web, db, monkeypatch):
+    def on_loop():
+        try:
+            asyncio.get_running_loop()
+            return True
+        except RuntimeError:
+            return False
+    seen, real = [], auth._hash
+    monkeypatch.setattr(auth, '_hash', lambda *a: seen.append(on_loop()) or real(*a))
+    auth.create_user(OPS, 'operator-password', 'admin')
+    session = auth.issue(OPS)[0]
+    ops, head = client_for(session), {'X-CSRF-Token': auth.csrf_token(session)}
+    seen.clear()
+    assert ops.post('/api/users', json={'user': 'ops2@example.test', 'password': 'second-password', 'role': 'admin'},
+                    headers=head).status_code == 200
+    assert ops.post('/api/users/password', json={'user': 'ops2@example.test', 'password': 'third-password'},
+                    headers=head).status_code == 200
+    assert seen and True not in seen
+
+
+# ---------------- 12. classes confirmed in sibling products (04 Oct 2026) ----------------
+# (2) sub is immutable: test_an_account_that_is_already_somebody_elses_shopify_customer_is_never_taken_over.
+
+RELEASE = '2026-10-04 braivex-only'
+
+
+def test_the_braivex_only_release_ends_every_customer_session_and_password_once(db, owners):
+    legacy_password(db, ALICE)
+    auth.create_user(OPS, 'operator-password', 'admin')
+    with db.connect() as c:                                     # as it was before this release was deployed
+        c.execute('DELETE FROM migrations WHERE name=%s', (RELEASE,))
+    alice, bob, ops = auth.issue(ALICE)[0], auth.issue(BOB)[0], auth.issue(OPS)[0]
+    db.initialize()                                             # the deploy
+    assert auth.check(alice) is None and auth.check(bob) is None and auth.check(ops) == OPS
+    with db.connect() as c:
+        rows = {r['email']: r for r in c.execute('SELECT email,salt,hash FROM users').fetchall()}
+    assert rows[ALICE]['hash'] == '' == rows[ALICE]['salt'] and rows[OPS]['hash'] != ''
+    fresh = auth.issue(ALICE)[0]
+    db.initialize()                                             # every later start: nobody is signed out again
+    assert auth.check(fresh) == ALICE and auth.check(ops) == OPS
+
+
+def test_every_braivex_sign_in_leaves_the_account_without_a_usable_password(web, broker, db):
+    with db.connect() as c:
+        c.execute('UPDATE users SET braivex_customer_id=%s WHERE email=%s', (SUB, ALICE))
+    legacy_password(db, ALICE)                                   # linked, yet a hash is still there
+    old = auth.issue(ALICE)[0]
+    client = client_for()
+    _, state = start(client)
+    assert finish(client, broker.assertion(state=state, email=ALICE)).status_code == 303
+    with db.connect() as c:
+        assert c.execute('SELECT hash FROM users WHERE email=%s', (ALICE,)).fetchone()['hash'] == ''
+    assert auth.check(old) is None and signed_in_as(client) == ALICE
+
+
+def test_taking_over_an_account_with_data_needs_an_explicit_claim_and_clears_the_prior_holders_links(
+        web, broker, db, owners, google):
+    from fakes import connect
+    from app import gdrive, referrals
+    connect(owners, google)                                      # the prior holder's Google Drive
+    store.set_b2b_sender(ALICE, 'Prior Holder', 'Prior Lets', 'prior@example.test')
+    code_before = referrals.code_for(ALICE)
+    assert referrals.attribute(ALICE, referrals.code_for(BOB)) == 'pending'
+    client = client_for()
+    _, state = start(client)
+    r = finish(client, broker.assertion(state=state, email=ALICE))
+    assert r.status_code == 303 and r.headers['location'] == '/auth/braivex/claim'
+    assert braivex_id(db, ALICE) is None and signed_in_as(client) is None and auth.check(owners['alice']) == ALICE
+    page = client.get('/auth/braivex/claim')
+    assert page.status_code == 200 and 'Claim this account' in page.text and ALICE in page.text
+    assert client.post('/auth/braivex/claim', data={}).status_code == 403                      # CSRF still applies
+    r = client.post('/auth/braivex/claim', data={'csrf': csrf_of(page.text)}, follow_redirects=False)
+    assert r.status_code == 303 and signed_in_as(client) == ALICE and braivex_id(db, ALICE) == SUB
+    assert auth.check(owners['alice']) is None
+    assert not gdrive.status(ALICE)['connected'] and google.calls[-1].url.path == '/revoke'
+    assert store.get_account(ALICE)['b2b_sender'] is None and referrals.code_for(ALICE) != code_before
+    with db.connect() as c:
+        assert c.execute('SELECT count(*) AS n FROM referrals WHERE referee_id=%s', (db.user_id(ALICE),)).fetchone()['n'] == 0
+    assert client_for().get('/auth/braivex/claim').status_code == 401                            # no claim cookie
+
+
+def test_sign_in_flow_cookies_are_host_prefixed_and_next_never_holds_a_double_slash(web):
+    r, _ = start(client_for())
+    cookie = cookie_header(r, '__Host-braivex_sso_state')
+    assert 'Secure' in cookie and 'Path=/;' in cookie + ';' and 'HttpOnly' in cookie and 'Domain' not in cookie
+    for bad in ('/x//evil.example.test', '/app?\x00', '//evil.example.test', '/\\evil.example.test'):
+        assert server._safe_next(bad) == '/app', bad
+
+
+def test_a_double_submitted_first_sign_up_reuses_the_account_it_made(web, broker, db):
+    client, _ = new_customer(broker)
+    twin = client_for()
+    twin.cookies.set('__Host-braivex_sso_new', client.cookies['__Host-braivex_sso_new'], path='/')
+    page = twin.get('/auth/braivex/workspace').text
+    assert make_account(client).status_code == 303
+    r = twin.post('/auth/braivex/workspace', data={'csrf': csrf_of(page)}, follow_redirects=False)
+    assert r.status_code == 303 and signed_in_as(twin) == SAM
+    with db.connect() as c:
+        assert c.execute('SELECT count(*) AS n FROM users WHERE email=%s', (SAM,)).fetchone()['n'] == 1
+
+
+def test_refused_braivex_sign_ins_are_limited_per_ipv6_64(web, broker):
+    for i in range(5):
+        client = client_for()
+        _, state = start(client)
+        r = client.post('/auth/braivex/callback', data={'assertion': broker.assertion(state=state, aud='loculens')},
+                        headers={'x-forwarded-for': f'2001:db8:1:2::{i + 1}'})
+        assert r.status_code == 401
+    client = client_for()
+    _, state = start(client)
+    r = client.post('/auth/braivex/callback', data={'assertion': broker.assertion(state=state)},
+                    headers={'x-forwarded-for': '2001:db8:1:2::99'})                # same /64, another address
+    assert r.status_code == 429 and signed_in_as(client) is None
+    client = client_for()
+    _, state = start(client)
+    r = client.post('/auth/braivex/callback', data={'assertion': broker.assertion(state=state)},
+                    headers={'x-forwarded-for': '2001:db8:1:3::1'}, follow_redirects=False)  # another /64
+    assert r.status_code == 303

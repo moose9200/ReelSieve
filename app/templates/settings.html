@@ -11,11 +11,8 @@
 
 <section class="card">
   <div class="section-head"><h2>Your account</h2><span class="pill pill-done pill-plain">{{ request.state.user }}</span></div>
-  <div class="grid-2">
-    <div class="field"><label for="pw-current">Current password</label><input type="password" id="pw-current" autocomplete="current-password"></div>
-    <div class="field"><label for="pw-new">New password (min 8)</label><input type="password" id="pw-new" autocomplete="new-password"></div>
-  </div>
-  <div class="actions"><button type="button" class="btn btn-secondary" id="pw-btn">Change password</button><form method="post" action="/logout" class="inline-form"><input type="hidden" name="csrf" value="{{ csrf_for(request) }}"><button type="submit" class="btn btn-secondary">Log out</button></form><span class="form-status" id="pw-status" role="status" aria-live="polite"></span></div>
+  <p class="hint">Operators sign in with the operator password. Another operator can set it under Users, or run <code>python -m app.admin set-password</code>.</p>
+  <div class="actions"><form method="post" action="/logout" class="inline-form"><input type="hidden" name="csrf" value="{{ csrf_for(request) }}"><button type="submit" class="btn btn-secondary">Log out</button></form></div>
 </section>
 
 <section class="card" id="orders-card">
@@ -39,11 +36,11 @@
 
 <section class="card" id="users-card">
   <div class="section-head"><h2>Users</h2><span class="pill pill-skipped">Admin</span></div>
-  <p class="hint">People who can sign in. Remove deactivates their login, stops their reels in progress and disconnects their Google Drive; their history is kept for 30 days, then erased automatically. Erase deletes their personal data now; paid orders are kept for tax records.</p>
+  <p class="hint">People who can sign in. A member signs in with Continue with Braivex at their email and has no password; only admins have one. Remove deactivates their login, stops their reels in progress and disconnects their Google Drive; their history is kept for 30 days, then erased automatically. Erase deletes their personal data now; paid orders are kept for tax records.</p>
   <ul class="user-list" id="user-list"></ul>
   <div class="grid-3">
     <div class="field"><label for="nu-email">Email</label><input type="email" id="nu-email" placeholder="name@company.com" autocomplete="off"></div>
-    <div class="field"><label for="nu-pass">Temporary password</label><input type="text" id="nu-pass" placeholder="min 8 characters" autocomplete="off"></div>
+    <div class="field"><label for="nu-pass">Password (admins only)</label><input type="text" id="nu-pass" placeholder="min 8 characters" autocomplete="off"></div>
     <div class="field"><label for="nu-role">Role</label><select id="nu-role"><option value="member">Member</option><option value="admin">Admin</option></select></div>
   </div>
   <div class="actions"><button type="button" class="btn btn-primary" id="nu-btn">Add user</button><span class="form-status" id="nu-status" role="status" aria-live="polite"></span></div>

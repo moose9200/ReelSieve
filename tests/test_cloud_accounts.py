@@ -11,7 +11,7 @@ BOB = 'bob@example.test'
 
 def account(email=ALICE):
     from app import auth
-    auth.create_user(email, 'long-initial-password')
+    auth.create_user(email)
 
 
 def test_database_requires_postgresql(monkeypatch):
@@ -67,7 +67,7 @@ def test_schema_initialize_is_idempotent_and_text_is_utf8(db):
 
 def test_password_change_revokes_session(db):
     from app import auth
-    account()
+    auth.create_user(ALICE, 'long-initial-password', 'admin')   # only operators have a password (04 Oct 2026)
     cookie, _ = auth.issue(ALICE)
     assert auth.check(cookie) == ALICE
     auth.set_password(ALICE, 'long-new-password')
@@ -82,9 +82,9 @@ def test_legacy_password_hash_and_stable_identity(db, monkeypatch):
     with db.connect() as c:
         c.execute('INSERT INTO users(id,email,salt,hash,iterations,role,created) VALUES(%s,%s,%s,%s,%s,%s,%s)',
                   ('legacy-owner', ALICE, salt, auth._hash('legacy-password', salt, 200000), 200000, 'member', time.time()))
-    assert auth.verify(ALICE.upper(), 'legacy-password')
+    assert not auth.verify(ALICE.upper(), 'legacy-password')    # a customer's old password never signs in
     assert db.user_id(ALICE) == 'legacy-owner'
-    auth.set_password(ALICE, 'replacement-password')
+    assert auth.link_braivex(ALICE.upper(), 'gid://shopify/Customer/1')   # Braivex takes it over, same identity
     assert db.user_id(ALICE) == 'legacy-owner'
     monkeypatch.setenv('APP_USER', BOB)
     monkeypatch.setenv('APP_PASSWORD', 'emergency-password')
@@ -130,7 +130,7 @@ def test_removal_deactivates_identity_and_preserves_business_records(db):
     assert ALICE not in [u['user'] for u in auth.users()]
     with pytest.raises(ValueError, match='No such user'):
         auth.issue(ALICE)
-    with pytest.raises(ValueError, match='No such user'):
+    with pytest.raises(ValueError, match='No such operator'):
         auth.set_password(ALICE, 'replacement-password')
     with pytest.raises(ValueError, match='already has an account'):
         account()
@@ -309,7 +309,7 @@ def test_settle_concurrently_grants_once_and_rollback_is_atomic(db):
 
 def test_network_and_device_signals_expire_after_retention(db):
     from app import auth, store
-    auth.create_user('old@example.test', 'long-initial-password')
+    auth.create_user('old@example.test')
     store.ensure_account('old@example.test', 'free')
     store.record_usage('old@example.test', 'free', 'https://www.airbnb.co.uk/rooms/1', 'job-old', '203.0.113.9')
     with db.connect() as c:

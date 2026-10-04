@@ -148,7 +148,8 @@ def verify(provider,body,signature,secret=None):
     if not sec or not signature:return False
     mac=hmac.new(sec,body,hashlib.sha256)
     import base64
-    return any(hmac.compare_digest(signature.strip(),x) for x in (mac.hexdigest(),base64.b64encode(mac.digest()).decode()))
+    got=signature.strip().encode('utf-8','replace')  # bytes: a non-ASCII header is refused, not a 500
+    return any(hmac.compare_digest(got,x.encode()) for x in (mac.hexdigest(),base64.b64encode(mac.digest()).decode()))
 # ---------- Stripe Checkout (hosted) ----------
 # Docs checked 26 Sep 2026: docs.stripe.com/api/checkout/sessions/create, /webhooks (manual verification),
 # /checkout/fulfillment. Plain HTTPS through httpx; no SDK. Prices come from plans.PLANS, never the client.
@@ -211,7 +212,7 @@ def stripe_signature_ok(body, header, secret=None, now=None):
     if abs((time.time() if now is None else now) - int(ts[0])) > STRIPE_TOLERANCE:
         return False
     want = hmac.new(sec.encode(), ts[0].strip().encode() + b'.' + body, hashlib.sha256).hexdigest()
-    return any(hmac.compare_digest(want, s) for s in sigs)
+    return any(hmac.compare_digest(want.encode(), s.encode('utf-8', 'replace')) for s in sigs)  # bytes: non-ASCII refused, not a 500
 
 
 def fulfil_stripe_session(session, by='stripe'):

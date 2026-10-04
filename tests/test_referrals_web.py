@@ -1,17 +1,31 @@
 """Refer-a-host programme through the browser: invite link, signup attribution, Account card, admin totals, notice.
 PECR reg 6: no referral cookie or browser storage. ICO on refer-a-friend: a link and guidance, never a messaging tool."""
+import hashlib
 import re
 
 from app import admin, plans, referrals, store
-from test_privacy_rights import ALICE, BOB, client_for, web  # noqa: F401  (web is a fixture)
+from test_braivex_sso import Broker, broker, client_for, csrf_of, start  # noqa: F401  (broker is a fixture)
+from test_privacy_rights import ALICE, BOB, web  # noqa: F401  (web is a fixture)
 from test_referrals import bonus, new_user, referral_rows
 
 
-def signup(client, code, email, ip='198.51.100.20', password='long-enough-pass'):
-    page = client.get('/signup?ref=' + code).text
-    token = re.search(r'name="csrf" value="([0-9a-f]+)"', page).group(1)
-    return client.post('/signup', data={'csrf': token, 'user': email, 'password': password, 'ref': code},
+def braivex_sign_in(client, broker: Broker, email, ip, path='/auth/braivex/start?next=/app'):
+    """Continue with Braivex up to the point the account exists or is made: start, then the broker's callback."""
+    _, state = start(client, path)
+    sub = 'gid://shopify/Customer/' + str(int(hashlib.sha256(email.encode()).hexdigest()[:12], 16))
+    return client.post('/auth/braivex/callback', data={'assertion': broker.assertion(state=state, email=email, sub=sub)},
                        headers={'X-Forwarded-For': ip}, follow_redirects=False)
+
+
+def signup(client, code, email, broker, ip='198.51.100.20'):
+    """Sign up through an invite link the only way there is (04 Oct 2026): the page's Continue with Braivex link,
+    which carries the code, then the "name your business" step that creates the account."""
+    page = client.get('/signup?ref=' + code).text
+    href = re.search(r'href="(/auth/braivex/start\?[^"]+)"', page).group(1).replace('&amp;', '&')
+    assert braivex_sign_in(client, broker, email, ip, href).headers['location'] == '/auth/braivex/workspace'
+    form = client.get('/auth/braivex/workspace').text
+    return client.post('/auth/braivex/workspace', data={'csrf': csrf_of(form)}, headers={'X-Forwarded-For': ip},
+                       follow_redirects=False)
 
 
 def test_link_redirects_to_signup_with_the_code_and_stores_nothing_in_the_browser(web, db):
@@ -22,40 +36,40 @@ def test_link_redirects_to_signup_with_the_code_and_stores_nothing_in_the_browse
     assert [c.split('=')[0] for c in r.headers.get_list('set-cookie')] == ['reelsieve_csrf']  # what the Account card says
     assert client_for().get('/r/not-a-code!', follow_redirects=False).headers['location'] == '/signup'
     page = client_for().get('/signup?ref=' + code)
-    assert f'<input type="hidden" name="ref" value="{code}">' in page.text
+    assert f'&amp;ref={code}"' in page.text           # the code rides on the Continue with Braivex link
     assert code not in ' '.join(page.headers.get_list('set-cookie'))
     assert 'invited you' in page.text
     js = web['anon'].get('/static/app.js').text
     assert js.count('localStorage.setItem') == 1 and 'lr-theme' in js and 'document.cookie' not in js  # theme only
 
 
-def test_signup_through_the_link_records_who_invited_the_new_account(web, db):
+def test_signup_through_the_link_records_who_invited_the_new_account(web, db, broker):
     code = referrals.code_for(ALICE)
-    r = signup(client_for(), code, 'carol@example.org')
+    r = signup(client_for(), code, 'carol@example.org', broker)
     assert r.status_code == 303
     [row] = referral_rows(db)
     assert row['referrer_id'] == db.user_id(ALICE) and row['referee_id'] == db.user_id('carol@example.org')
     assert row['ts'] and row['rewarded_at'] is None and row['reward_reason'] is None
 
 
-def test_a_failed_signup_keeps_the_code_in_the_form(web, db):
+def test_a_refused_signup_records_no_invite(web, db, broker):
     code = referrals.code_for(ALICE)
-    r = signup(client_for(), code, 'carol@example.org', password='short')
-    assert r.status_code == 400 and f'name="ref" value="{code}"' in r.text and referral_rows(db) == []
+    r = signup(client_for(), code, 'carol@mailinator.com', broker)        # a disposable address: the guard refuses
+    assert r.status_code == 400 and referral_rows(db) == []
 
 
-def test_unknown_codes_and_deactivated_referrers_are_ignored(web, db):
-    assert signup(client_for(), 'aaaaaaaaaaaa', 'carol@example.org').status_code == 303
+def test_unknown_codes_and_deactivated_referrers_are_ignored(web, db, broker):
+    assert signup(client_for(), 'aaaaaaaaaaaa', 'carol@example.org', broker).status_code == 303
     code = referrals.code_for(BOB)
     admin.deactivate(BOB)
-    assert signup(client_for(), code, 'dave@example.org').status_code == 303
+    assert signup(client_for(), code, 'dave@example.org', broker).status_code == 303
     assert referral_rows(db) == []
 
 
-def test_signup_from_a_network_the_referrer_made_free_videos_on_is_never_rewarded(web, db):
+def test_signup_from_a_network_the_referrer_made_free_videos_on_is_never_rewarded(web, db, broker):
     plans.reserve(ALICE, 'https://www.airbnb.co.uk/rooms/1', 'aaaaaa000001', ip='203.0.113.7')
     carol = client_for()
-    signup(carol, referrals.code_for(ALICE), 'carol@example.org', ip='203.0.113.99')  # same /24
+    signup(carol, referrals.code_for(ALICE), 'carol@example.org', broker, ip='203.0.113.99')  # same /24
     [row] = referral_rows(db)
     assert row['reward_reason'] is None  # nothing decided at signup, so there is no instant answer to read
     [mine] = carol.get('/api/account/export').json()['referrals']
@@ -66,13 +80,10 @@ def test_signup_from_a_network_the_referrer_made_free_videos_on_is_never_rewarde
     assert bonus(db, ALICE) == 0 and bonus(db, 'carol@example.org') == 0
 
 
-def test_sign_in_and_sign_up_keep_a_network_hash_never_the_address(web, db):
-    page = client_for()
-    token = re.search(r'name="csrf" value="([0-9a-f]+)"', page.get('/login').text).group(1)
-    r = page.post('/login', data={'csrf': token, 'user': BOB, 'password': 'synthetic-password'},
-                  headers={'X-Forwarded-For': '198.51.100.77'}, follow_redirects=False)
-    assert r.status_code == 303
-    signup(client_for(), referrals.code_for(ALICE), 'carol@example.org', ip='203.0.113.5')
+def test_sign_in_and_sign_up_keep_a_network_hash_never_the_address(web, db, broker):
+    r = braivex_sign_in(client_for(), broker, BOB, '198.51.100.77')
+    assert r.status_code == 303 and r.headers['location'] == '/app'
+    signup(client_for(), referrals.code_for(ALICE), 'carol@example.org', broker, ip='203.0.113.5')
     with db.connect() as c:
         rows = c.execute('SELECT owner_id,ip_hash FROM signin_networks ORDER BY owner_id').fetchall()
     assert sorted((r['owner_id'], r['ip_hash']) for r in rows) == sorted(

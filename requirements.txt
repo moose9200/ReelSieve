@@ -16,3 +16,4 @@ higgsfield-client
 
 psycopg[binary,pool]>=3.2,<4
 cryptography>=43
+PyJWT[crypto]>=2.14,<3

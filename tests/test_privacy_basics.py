@@ -17,7 +17,7 @@ def test_privacy_notice_keeps_the_items_the_law_requires(db):
     from app import server
     text = TestClient(server.app).get('/privacy').text
     for required in ['Hemant Kumar Sain', 'Alwar, Rajasthan', 'hello@braivex.com', '/privacy/request',
-                     'Lawful basis', 'How long we keep it', 'Railway', 'Higgsfield', 'Stripe', 'Resend',
+                     'Lawful basis', 'How long we keep it', 'Railway', 'Higgsfield', 'Stripe', 'Braivex Accounts',
                      'International Data Transfer Addendum', 'Standard Contractual Clauses',
                      'ico.org.uk/make-a-complaint', 'within one month', 'Object to outreach',
                      'strictly necessary', 'Limited Use requirements', 'drive.file', 'under 18']:
@@ -70,7 +70,7 @@ def pages(owners, monkeypatch):
 
 def test_notice_pins_google_permissions_tokens_and_in_app_playback(pages):
     notice = pages('/privacy')
-    assert 'Last updated 29 Sep 2026' in notice
+    assert 'Last updated 04 Oct 2026' in notice
     ask = "your Google account's email address and ID to show which account is connected"
     assert 'drive.file' in notice and ask in notice                                                          # N4
     assert ask in pages('/account', 'alice') and ask in pages('/')                                           # N4 card, landing
@@ -163,38 +163,22 @@ def test_sign_in_throttle_counts_a_whole_ipv6_network_but_keeps_ipv4_addresses_a
     assert auth.too_many('203.0.113.7') and not auth.too_many('203.0.113.8')  # shared offices are not locked out
 
 
-def test_the_notice_names_resend_as_the_processor_that_sends_reset_emails(pages, monkeypatch):
-    """28 Sep 2026: self-service password reset. The notice says who sends that email, and when nobody does."""
-    for k in ('RESEND_API_KEY', 'RESEND_FROM'):
-        monkeypatch.delenv(k, raising=False)
-    notice = pages('/privacy')
-    assert 'Resend is the email service that delivers the password-reset email when you ask for one' in notice
-    assert 'it receives your email address and the reset link, only to send that message on our instructions' in notice
-    assert 'password-reset emails are switched off at the moment, so nothing is sent to Resend' in notice
-    monkeypatch.setenv('RESEND_API_KEY', 'synthetic-resend-key')
-    monkeypatch.setenv('RESEND_FROM', 'ReelSieve <no-reply@example.test>')
-    assert 'switched off at the moment' not in pages('/privacy')
-
-
-def test_the_notice_names_braivex_accounts_and_shopify_as_the_sign_in_provider(pages, monkeypatch):
-    """29 Sep 2026: Continue with Braivex. The notice says who runs sign-in, and when nobody does."""
+def test_the_notice_names_braivex_accounts_and_shopify_as_the_only_sign_in(pages, monkeypatch):
+    """04 Oct 2026: Continue with Braivex is the only customer sign-in, and nobody sends password-reset emails."""
     monkeypatch.delenv('BRAIVEX_SSO', raising=False)
-    off = pages('/privacy')
-    assert 'Braivex sign-in is not switched on, so nothing is sent to it' in off
-    assert 'We set these cookies, all strictly necessary' in off and 'Sign-in cookies:' not in off
-    assert 'You need to give us an email address and password to create an account' in off
-    monkeypatch.setenv('BRAIVEX_SSO', 'on')
     notice = pages('/privacy')
     assert ('Braivex Accounts provides "Continue with Braivex" sign-in using Shopify customer accounts, so when you '
             'sign in that way accounts.braivex.com and Shopify Inc. process your sign-in email address and the '
             'one-time 6-digit code Shopify emails you') in notice
     assert ('Braivex Accounts tells ReelSieve your email address, whether Shopify verified it, your Shopify customer '
             'number and your name') in notice
-    assert 'ReelSieve never sees your one-time code' in notice and 'is not switched on, so nothing is sent' not in notice
-    assert ('Your email address, a salted hash of your password if you have one, and, if you sign in with Braivex, '
-            'your Shopify customer number') in notice
+    assert 'ReelSieve never sees your one-time code' in notice and 'not switched on' not in notice
+    assert ('Your email address and your Shopify customer number from Braivex sign-in. ReelSieve holds no password for '
+            'you: passwords from before 04 Oct 2026 were deleted that day') in notice
+    assert 'or an older account already uses your email, a second cookie' in notice
     assert 'one cookie ties that sign-in to this browser for 10 minutes' in notice
-    assert 'You need to give us an email address and either a password or a Braivex sign-in' in notice
+    assert 'You need to give us an email address and a Braivex sign-in to create an account' in notice
+    assert 'Resend' not in notice and 'password-reset' not in notice and 'Customers have no ReelSieve password' in notice
 
 
 def test_default_host_message_does_not_claim_the_sender_runs_reelsieve():

@@ -71,7 +71,7 @@ def schema():
 
 def paid(email, plan='starter'):
     if email not in {u['user'] for u in auth.users()}:
-        auth.create_user(email, 'synthetic-password')
+        auth.create_user(email)
     return billing.settle(billing.create_order(email, plan)['ref'])
 
 
@@ -346,7 +346,7 @@ def test_csv_content_escaping_and_formula_guard():
 
 def test_only_paid_orders_are_exported(db):
     o = paid('payer@example.test')
-    auth.create_user('other@example.test', 'synthetic-password')
+    auth.create_user('other@example.test')
     billing.create_order('other@example.test', 'starter')  # pending
     billing.cancel(billing.create_order('other@example.test', 'starter')['ref'])
     text, n = invoices.export()

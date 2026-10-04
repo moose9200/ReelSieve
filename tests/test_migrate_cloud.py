@@ -75,7 +75,9 @@ def test_dry_run_counts_and_writes_nothing(legacy, db):
 def test_apply_preserves_identity_balances_and_ownership(legacy, db):
     out = migrate_cloud.run(legacy, apply=True)
     assert out['status'] == 'applied'
-    assert auth.verify('pat@example.test', 'legacy-password-pat') and not auth.verify('pat@example.test', 'wrong-password')
+    # hashes are carried over as they were; since 04 Oct 2026 only the operator's still signs in with one
+    assert auth.verify('ops@example.test', 'legacy-password-ops') and not auth.verify('ops@example.test', 'wrong-password')
+    assert not auth.verify('pat@example.test', 'legacy-password-pat')
     assert auth.role('ops@example.test') == 'admin' and auth.role('pat@example.test') == 'member'
     assert db.user_id('pat@example.test') == migrate_cloud.owner_id('pat@example.test')
     view = plans.account_view('pat@example.test')
@@ -142,10 +144,12 @@ def test_ambiguous_ownership_halts_before_any_write(legacy, db, break_it):
         (legacy / 'google-token.json').write_text(json.dumps({'refresh_token': 'shared'}))
     with pytest.raises(migrate_cloud.MigrationError):
         migrate_cloud.run(legacy, apply=True)
-    assert table_count(db, 'users') == 0 and table_count(db, 'migrations') == 0
+    with db.connect() as c:                                 # this import's marker; schema releases keep their own rows
+        mine = c.execute('SELECT count(*) AS n FROM migrations WHERE name=%s', (migrate_cloud.NAME,)).fetchone()['n']
+    assert table_count(db, 'users') == 0 and mine == 0
 
 
 def test_refuses_to_merge_into_a_populated_database(legacy, db):
-    auth.create_user('someone@example.test', 'synthetic-password')
+    auth.create_user('someone@example.test')
     with pytest.raises(migrate_cloud.MigrationError, match='already has accounts'):
         migrate_cloud.run(legacy, apply=True)

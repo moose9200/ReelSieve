@@ -1,7 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Create your account{% endblock %}
 {% block robots %}<link rel="canonical" href="{{ site_url() }}/signup">{% endblock %}
-{% set bx = braivex() %}
 {% block content %}
 <section class="login-wrap">
   <section class="card login-card">
@@ -9,28 +8,12 @@
     <h1 class="login-title">Create your ReelSieve account</h1>
     <p class="sub">{% if plan in ('starter','commercial') %}You'll set up payment after this step.{% else %}Two free videos. No card needed.{% endif %}</p>
     {% if error %}<p class="hint hint-warn" role="alert">{{ error }}</p>{% endif %}
-    {% if bx.on %}
     {% set nxt = ('/upgrade?plan=' ~ plan) if plan in ('starter','commercial') else (('/app?url=' ~ url|urlencode) if url else '/app') %}
     <a class="btn btn-primary btn-wide" href="/auth/braivex/start?next={{ nxt|urlencode }}{% if ref %}&amp;ref={{ ref|urlencode }}{% endif %}">Continue with Braivex</a>
     <p class="hint sso-note">Braivex sends a 6-digit code to your email — no password.</p>
     {% if url %}<p class="hint">First reel: <code>{{ url[:70] }}</code></p>{% endif %}
     {% if ref %}<p class="hint hint-ok">Another host invited you. When your first reel reaches your Google Drive, you each get a bonus video (<a href="/terms">conditions apply</a>).</p>{% endif %}
-    {% else %}
-    <form method="post" action="/signup" autocomplete="on" novalidate>
-      <input type="hidden" name="csrf" value="{{ csrf_for(request) }}">
-      <input type="hidden" name="plan" value="{{ plan }}">
-      <input type="hidden" name="url" value="{{ url }}">
-      {% if ref %}<input type="hidden" name="ref" value="{{ ref }}">{% endif %}
-      <div class="field"><label for="user">Work email</label><input type="email" id="user" name="user" value="{{ user or '' }}" autocomplete="email" inputmode="email" required autofocus></div>
-      <div class="field"><label for="password">Password</label>
-        <div class="pw-row"><input type="password" id="password" name="password" autocomplete="new-password" required minlength="8"><button type="button" class="pw-toggle" data-for="password" aria-label="Show password">Show</button></div>
-        <p class="hint">At least 8 characters.</p></div>
-      {% if url %}<p class="hint">First reel: <code>{{ url[:70] }}</code></p>{% endif %}
-      {% if ref %}<p class="hint hint-ok">Another host invited you. When your first reel reaches your Google Drive, you each get a bonus video (<a href="/terms">conditions apply</a>).</p>{% endif %}
-      <p class="hint">By creating an account you agree to the <a href="/terms">Terms</a> and confirm you have read the <a href="/privacy">Privacy notice</a>.</p>
-      <div class="actions"><button type="submit" class="btn btn-primary btn-wide">Create account</button></div>
-    </form>
-    {% endif %}
+    <p class="hint">By creating an account you agree to the <a href="/terms">Terms</a> and confirm you have read the <a href="/privacy">Privacy notice</a>.</p>
     <p class="login-foot">Already have an account? <a href="/login">Sign in</a></p>
   </section>
 </section>

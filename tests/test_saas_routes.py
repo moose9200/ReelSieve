@@ -60,30 +60,30 @@ def test_anonymous_is_rejected_and_health_checks_database(web):
     assert anon.get('/healthz').json()['db'] is True
 
 
-def test_public_setup_is_closed_and_signup_is_member(web, db):
+def test_public_setup_and_password_signup_are_gone(web, db):
+    # Braivex creates every customer account as a member: tests/test_braivex_sso.py.
     anon = web['anon']
-    assert anon.get('/setup', follow_redirects=False).headers['location'] == '/signup'
-    page = anon.get('/signup')
-    token = re.search(r'name="csrf" value="([0-9a-f]+)"', page.text).group(1)
+    assert anon.get('/setup', follow_redirects=False).status_code == 404
+    token = re.search(r'name="csrf" value="([0-9a-f]+)"', anon.get('/login').text).group(1)
     r = anon.post('/signup', data={'csrf': token, 'user': 'carol@example.org', 'password': 'long-enough-pass'}, follow_redirects=False)
-    assert r.status_code == 303 and auth.COOKIE in r.cookies
-    assert auth.role('carol@example.org') == 'member'
+    assert r.status_code == 404 and auth.COOKIE not in r.cookies and auth.identity('carol@example.org') is None
 
 
 def test_anonymous_forms_need_their_own_browser_nonce(web):
+    auth.create_user('alice-ops@example.test', 'synthetic-password', 'admin')   # the one password sign-in left
     fresh = client_for()
-    r = fresh.post('/login', data={'csrf': auth.csrf_token('anon:'), 'user': 'alice@example.test', 'password': 'synthetic-password'})
+    r = fresh.post('/login', data={'csrf': auth.csrf_token('anon:'), 'user': 'alice-ops@example.test', 'password': 'synthetic-password'})
     assert r.status_code == 403
     token = re.search(r'name="csrf" value="([0-9a-f]+)"', fresh.get('/login').text).group(1)
     other = client_for()
     other.get('/login')
-    assert other.post('/login', data={'csrf': token, 'user': 'alice@example.test', 'password': 'synthetic-password'}).status_code == 403
-    r = fresh.post('/login', data={'csrf': token, 'user': 'alice@example.test', 'password': 'synthetic-password',
+    assert other.post('/login', data={'csrf': token, 'user': 'alice-ops@example.test', 'password': 'synthetic-password'}).status_code == 403
+    r = fresh.post('/login', data={'csrf': token, 'user': 'alice-ops@example.test', 'password': 'synthetic-password',
                                    'next': '//evil.example/steal'}, follow_redirects=False)
     assert r.status_code == 303 and r.headers['location'] == '/app'
 
 
-@pytest.mark.parametrize('path', ['/api/jobs', '/api/account/password', '/api/gdrive/disconnect', '/api/outreach/queue',
+@pytest.mark.parametrize('path', ['/api/jobs', '/api/gdrive/disconnect', '/api/outreach/queue',
                                   '/api/billing/request', '/api/jobs/abcdef12/cancel', '/logout', '/oauth/google/start'])
 def test_every_mutation_requires_csrf(web, owners, path):
     alice = web['alice']
@@ -143,14 +143,6 @@ def test_cancel_queued_job_via_route(web, owners, google, db):
     assert again.json()['id'] == jid
     out = web['alice'].post(f'/api/jobs/{jid}/cancel', headers=csrf(owners['alice'])).json()
     assert out['status'] == 'cancelled' and not out['cancellable']
-
-
-def test_password_change_revokes_the_session(web, owners):
-    alice = web['alice']
-    r = alice.post('/api/account/password', json={'current': 'synthetic-password', 'new': 'another-long-pass'}, headers=csrf(owners['alice']))
-    assert r.json()['relogin'] == '/login?notice=pw'
-    stale = client_for(owners['alice'])
-    assert stale.get('/api/account').status_code == 401
 
 
 def test_oauth_start_is_post_and_callback_bound_to_session(web, owners, google):

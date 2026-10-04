@@ -15,7 +15,7 @@ YEAR = 365.25 * DAY
 
 
 def new_user(email):
-    auth.create_user(email, 'long-enough-pass')
+    auth.create_user(email)
     store.ensure_account(email)
     return email
 

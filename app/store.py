@@ -61,6 +61,20 @@ def note_signin(user, ip):
                   'ON CONFLICT (owner_id,ip_hash) DO UPDATE SET ts=EXCLUDED.ts', (database.user_id(user, c), ip_hash(ip), time.time()))
 
 
+def has_data(user):
+    """True when a takeover would hand anything over: reels, orders, outreach, a connected Google Drive, a paid plan,
+    credits or bonus videos, a business sender, or people it invited."""
+    with database.connect() as c:
+        o = database.user_id(user, c)
+        return c.execute(
+            "SELECT EXISTS(SELECT 1 FROM jobs WHERE owner_id=%(o)s) OR EXISTS(SELECT 1 FROM usage WHERE owner_id=%(o)s) "
+            'OR EXISTS(SELECT 1 FROM orders WHERE owner_id=%(o)s) OR EXISTS(SELECT 1 FROM outreach WHERE owner_id=%(o)s) '
+            "OR EXISTS(SELECT 1 FROM drive_connections WHERE owner_id=%(o)s AND status='connected') "
+            "OR EXISTS(SELECT 1 FROM accounts WHERE owner_id=%(o)s AND (plan<>'free' OR credits>0 OR bonus_videos>0 "
+            'OR b2b_sender IS NOT NULL)) OR EXISTS(SELECT 1 FROM referrals WHERE referrer_id=%(o)s) AS any',
+            {'o': o}).fetchone()['any']
+
+
 def get_account(user, conn=None):
     with database.transaction(conn) as c:
         return c.execute('SELECT a.*,u.email AS "user" FROM accounts a JOIN users u ON u.id=a.owner_id WHERE u.email=%s',
@@ -454,8 +468,6 @@ def export(user):
             'drive_uploads': rows('SELECT job_id,variant,file_id,status,name,web_view_link,size,sharing,created,confirmed_at '
                                   'FROM drive_uploads WHERE owner_id=%(o)s ORDER BY created'),
             'drive_oauth_states': rows('SELECT redirect_uri,created,expires_at FROM drive_oauth_states WHERE owner_id=%(o)s'),
-            # when a reset link was asked for and when it expires; never the token hash, which would let it be used
-            'password_resets': rows('SELECT created,expires_at FROM password_resets WHERE owner_id=%(o)s ORDER BY created'),
             'admin_events': rows('SELECT ts,action,detail,actor_id=%(o)s AS by_you,target_id=%(o)s AS about_you '
                                  'FROM admin_events WHERE actor_id=%(o)s OR target_id=%(o)s ORDER BY ts'),
             'signin_networks': rows('SELECT ip_hash,ts FROM signin_networks WHERE owner_id=%(o)s ORDER BY ts'),

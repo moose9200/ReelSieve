@@ -59,7 +59,7 @@ def owners(db, monkeypatch):
     monkeypatch.setenv('GOOGLE_CLIENT_SECRET', 'synthetic-secret')
     monkeypatch.setenv('TOKEN_ENCRYPTION_KEY', Fernet.generate_key().decode())
     for name in ('alice', 'bob'):
-        auth.create_user(name + '@example.test', 'synthetic-password')
+        auth.create_user(name + '@example.test')  # customers have no password: Braivex signs them in
     return {name: auth.issue(name + '@example.test')[0] for name in ('alice', 'bob')}
 
 

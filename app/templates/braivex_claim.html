@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Claim your account{% endblock %}
+{% block content %}
+<section class="login-wrap">
+  <section class="card login-card">
+    <p class="eyebrow">One more step</p>
+    <h1 class="login-title">Claim this account</h1>
+    <p class="sub">Braivex verified <strong>{{ email }}</strong>. A ReelSieve account with that email was made with a password before Braivex sign-in, and it holds:</p>
+    <ul class="steps">
+      <li>{{ account.plan_name }} plan, {{ account.used }} video{{ '' if account.used == 1 else 's' }} made{% if account.credits %}, {{ account.credits }} credit{{ '' if account.credits == 1 else 's' }} left{% endif %}</li>
+      <li>Google Drive {{ 'connected' if drive else 'not connected' }}</li>
+    </ul>
+    <p class="hint">If you claim it, you sign in to it with Braivex from now on. Anyone signed in to it is signed out, and its Google Drive connection, saved business details and invite link are removed: connect your own Drive again afterwards.</p>
+    <form method="post" action="/auth/braivex/claim">
+      <input type="hidden" name="csrf" value="{{ csrf_for(request) }}">
+      <div class="actions"><button type="submit" class="btn btn-primary btn-wide">Claim this account</button></div>
+    </form>
+    <p class="login-foot">Not yours? Email <a href="mailto:hello@braivex.com">hello@braivex.com</a> · <a href="/login">Back to sign in</a></p>
+  </section>
+</section>
+{% endblock %}

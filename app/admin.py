@@ -1,7 +1,7 @@
 """Operator console for accounts (there is no public admin setup).
 
-    python -m app.admin create-admin <email>     # password read from stdin
-    python -m app.admin set-password <email>     # password read from stdin; signs the account out everywhere
+    python -m app.admin create-admin <email>     # password read from stdin; operators are the only accounts with one
+    python -m app.admin set-password <email>     # an operator's password, read from stdin; signs them out everywhere
     python -m app.admin list                     # emails and roles only
     python -m app.admin set-plan <email> <plan> <credits>   # e.g. give free credits
     python -m app.admin deactivate <email>       # stops their jobs, revokes their Drive grant, keeps history
@@ -72,7 +72,7 @@ def erase(email, by=None, via=None):
             return warning  # another worker finished erasing it first
         address = row['email']
         store.admin_event('erase', by, address, conn=c, via=via)
-        for table in ('jobs', 'outreach', 'drive_uploads', 'drive_oauth_states', 'signin_networks', 'password_resets'):
+        for table in ('jobs', 'outreach', 'drive_uploads', 'drive_oauth_states', 'signin_networks'):
             c.execute(f'DELETE FROM {table} WHERE owner_id=%s', (owner,))
         # Referrals: a row with no reward holds nothing the other account needs, so it goes. A rewarded row keeps only
         # the other account's side (its own bonus). Nothing new is written about the erased account.

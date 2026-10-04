@@ -3,6 +3,7 @@ import base64
 import hashlib
 import hmac
 import ipaddress
+import json
 import os
 import re
 import secrets
@@ -36,11 +37,6 @@ def secret():
     return value
 
 
-def has_account():
-    with database.connect() as c:
-        return bool(c.execute('SELECT 1 FROM users WHERE active LIMIT 1').fetchone())
-
-
 def users():
     with database.connect() as c:
         return c.execute('SELECT email AS "user", role, created FROM users WHERE active ORDER BY email').fetchall()
@@ -53,39 +49,27 @@ def validate_password(pw):
         raise ValueError('Choose a less common password')
 
 
-def create_user(user, pw, role='member'):
+def create_user(user, pw=None, role='member', braivex_customer_id=None):
+    """The one way an account is made. A customer (member) signs in with Braivex and has no password at all: salt and
+    hash stay empty, which no PBKDF2 output equals. Only an operator (admin) has a password, for break-glass sign-in,
+    and Braivex sign-in never creates one."""
     user = norm(user)
     if not EMAIL.match(user):
         raise ValueError('Enter a valid email address')
-    validate_password(pw)
     if role not in ('member', 'admin'):
         raise ValueError('Unknown role')
-    salt = secrets.token_hex(16)
-    try:
-        with database.connect() as c:
-            c.execute('INSERT INTO users(id,email,salt,hash,iterations,role,created) VALUES(%s,%s,%s,%s,%s,%s,%s)',
-                      (str(uuid.uuid4()), user, salt, _hash(pw, salt), ITERATIONS, role, time.time()))
-    except UniqueViolation:
-        raise ValueError('That email already has an account') from None
-
-
-# A hash no PBKDF2 output can equal (those are 64 hex characters), so verify() can never match one: an account that
-# signs in with Braivex has no usable password until it asks for a reset link.
-SSO_ONLY_HASH = 'braivex-sso:'
-
-
-def create_sso_user(user, braivex_customer_id):
-    """A customer Braivex Accounts verified who has never had a ReelSieve account. Always a member: signing in with
-    Braivex never grants operator rights, whatever the address."""
-    user = norm(user)
-    if not EMAIL.match(user):
-        raise ValueError('Enter a valid email address')
+    if role == 'member' and pw is not None:
+        raise ValueError('Customers sign in with Braivex and have no password')
+    salt, digest = '', ''
+    if role == 'admin':
+        validate_password(pw or '')
+        salt = secrets.token_hex(16)
+        digest = _hash(pw, salt)
     try:
         with database.connect() as c:
             c.execute('INSERT INTO users(id,email,salt,hash,iterations,role,created,braivex_customer_id) '
                       'VALUES(%s,%s,%s,%s,%s,%s,%s,%s)',
-                      (str(uuid.uuid4()), user, secrets.token_hex(16), SSO_ONLY_HASH + secrets.token_hex(32),
-                       ITERATIONS, 'member', time.time(), braivex_customer_id))
+                      (str(uuid.uuid4()), user, salt, digest, ITERATIONS, role, time.time(), braivex_customer_id))
     except UniqueViolation:
         raise ValueError('That email already has an account') from None
 
@@ -105,13 +89,27 @@ def by_braivex(braivex_customer_id):
 
 
 def link_braivex(user, braivex_customer_id):
-    """Attach a Shopify customer id to an account that has none. False when the row already carries another one, or
-    another account claimed this id first: neither may be overwritten, so nobody can take over an account."""
+    """Every Braivex sign-in to an existing customer account goes through here, and leaves it linked to that Shopify
+    customer with no password: a hash still on the row is wiped and the sessions it may have made end.
+    A row with no Shopify customer yet was made with a password, which never proved the mailbox, so this is a takeover
+    by the person Braivex just verified: its sessions end, and the prior holder's business sender, invite attribution
+    and invite code go (the caller disconnects their Google Drive first: that is a call to Google).
+    False, changing nothing, for a row linked to another Shopify customer (sub never changes, so it is never
+    re-pointed), an operator (Braivex sign-in never grants operator rights), or a Shopify customer another row holds."""
     try:
         with database.connect() as c:
-            return bool(c.execute('UPDATE users SET braivex_customer_id=%s WHERE email=%s AND active '
-                                  'AND braivex_customer_id IS NULL RETURNING id',
-                                  (braivex_customer_id, norm(user))).fetchone())
+            row = c.execute("SELECT id,braivex_customer_id,hash FROM users WHERE email=%s AND active AND role='member' "
+                            'FOR UPDATE', (norm(user),)).fetchone()
+            if not row or row['braivex_customer_id'] not in (None, braivex_customer_id):
+                return False
+            takeover = row['braivex_customer_id'] is None
+            if takeover or row['hash']:
+                c.execute("UPDATE users SET braivex_customer_id=%s,salt='',hash='',changed=%s,"
+                          'session_version=session_version+1 WHERE id=%s', (braivex_customer_id, time.time(), row['id']))
+            if takeover:
+                c.execute('UPDATE accounts SET b2b_sender=NULL,referral_code=DEFAULT WHERE owner_id=%s', (row['id'],))
+                c.execute('DELETE FROM referrals WHERE referee_id=%s AND rewarded_at IS NULL', (row['id'],))
+            return True
     except UniqueViolation:
         return False
 
@@ -159,60 +157,15 @@ def begin_erase(user, by=None):
 
 
 def set_password(user, pw):
+    """An operator's break-glass password (admin console or another operator). Customers have none to set."""
     validate_password(pw)
     salt = secrets.token_hex(16)
     with database.connect() as c:
-        row = c.execute('UPDATE users SET salt=%s,hash=%s,iterations=%s,changed=%s,session_version=session_version+1 WHERE email=%s AND active RETURNING id',
+        row = c.execute("UPDATE users SET salt=%s,hash=%s,iterations=%s,changed=%s,session_version=session_version+1 "
+                        "WHERE email=%s AND active AND role='admin' RETURNING id",
                         (salt, _hash(pw, salt), ITERATIONS, time.time(), norm(user))).fetchone()
         if not row:
-            raise ValueError('No such user')
-        c.execute('DELETE FROM password_resets WHERE owner_id=%s', (row['id'],))  # a new password voids any reset link
-
-
-RESET_TTL = 60 * 60  # a reset link lives one hour
-
-
-def _reset_hash(token):
-    """The link carries the random bytes; the database keeps only this hash of them."""
-    return hashlib.sha256((token or '').encode()).hexdigest()
-
-
-def start_reset(user):
-    """A single-use reset token for an account that can sign in, or None. Asking again voids the earlier links."""
-    with database.connect() as c:
-        row = c.execute('SELECT id FROM users WHERE email=%s AND active', (norm(user),)).fetchone()
-        if not row:
-            return None
-        c.execute('DELETE FROM password_resets WHERE owner_id=%s', (row['id'],))
-        token, now = secrets.token_urlsafe(32), time.time()
-        c.execute('INSERT INTO password_resets(token_hash,owner_id,created,expires_at) VALUES(%s,%s,%s,%s)',
-                  (_reset_hash(token), row['id'], now, now + RESET_TTL))
-        return token
-
-
-def reset_token_live(token):
-    """True while that exact link is unused and unexpired. Nothing else about the account is revealed."""
-    with database.connect() as c:
-        return bool(c.execute('SELECT 1 FROM password_resets WHERE token_hash=%s AND expires_at>%s',
-                              (_reset_hash(token), time.time())).fetchone())
-
-
-def finish_reset(token, pw):
-    """Spend the link and set the password. Every session of that account ends (session_version), and every other
-    reset link it has is deleted. Raises ValueError for a weak password, or a used, expired or unknown link."""
-    validate_password(pw)
-    with database.connect() as c:
-        row = c.execute('DELETE FROM password_resets WHERE token_hash=%s AND expires_at>%s RETURNING owner_id',
-                        (_reset_hash(token), time.time())).fetchone()
-        if not row:
-            raise ValueError('That reset link has expired or has already been used. Ask for a new one.')
-        salt = secrets.token_hex(16)
-        done = c.execute('UPDATE users SET salt=%s,hash=%s,iterations=%s,changed=%s,session_version=session_version+1 '
-                         'WHERE id=%s AND active RETURNING email', (salt, _hash(pw, salt), ITERATIONS, time.time(), row['owner_id'])).fetchone()
-        c.execute('DELETE FROM password_resets WHERE owner_id=%s', (row['owner_id'],))
-        if not done:
-            raise ValueError('That account can no longer be reset here. Email hello@braivex.com.')
-        return done['email']
+            raise ValueError('No such operator')
 
 
 def role(user):
@@ -222,8 +175,11 @@ def role(user):
 
 
 def verify(user, pw):
+    """Operator break-glass only: True for an active admin's right password. A customer's old password never
+    verifies, whatever it is, and an unknown or customer address costs the same hash time as an operator's."""
     with database.connect() as c:
-        row = c.execute('SELECT id,salt,hash,iterations FROM users WHERE email=%s AND active', (norm(user),)).fetchone()
+        row = c.execute("SELECT id,salt,hash,iterations FROM users WHERE email=%s AND active AND role='admin'",
+                        (norm(user),)).fetchone()
     if not row:
         _hash(pw, '00' * 16)
         return False
@@ -267,31 +223,46 @@ def clear_fails(ip):
         c.execute('DELETE FROM login_failures WHERE ip_hash=%s', (_ip_key(ip),))
 
 
+def seal(purpose, ttl, **data):
+    """The one signed-token codec (sessions and the Braivex sign-in cookies): the values as JSON, then an HMAC of
+    them under SESSION_SECRET. purpose is signed in, so a token minted for one use is never accepted for another."""
+    body = base64.urlsafe_b64encode(json.dumps({**data, 'p': purpose, 'exp': int(time.time()) + ttl},
+                                               separators=(',', ':')).encode()).decode().rstrip('=')
+    return body + '.' + hmac.new(secret().encode(), body.encode(), hashlib.sha256).hexdigest()
+
+
+def unseal(purpose, token):
+    """What seal(purpose, ...) put there, or None: a wrong signature or purpose, a mangled token and an expired one
+    are all None, never an error."""
+    body, _, sig = (token or '').partition('.')
+    want = hmac.new(secret().encode(), body.encode('utf-8', 'replace'), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(want.encode(), sig.encode('utf-8', 'replace')):
+        return None
+    try:
+        data = json.loads(base64.urlsafe_b64decode(body + '=' * (-len(body) % 4)))
+    except (ValueError, TypeError, UnicodeError):
+        return None
+    ok = isinstance(data, dict) and data.get('p') == purpose and isinstance(data.get('exp'), int) and data['exp'] > time.time()
+    return data if ok else None
+
+
 def issue(user, long=True):
     with database.connect() as c:
         row = c.execute('SELECT id,session_version FROM users WHERE email=%s AND active', (norm(user),)).fetchone()
         if not row:
             raise ValueError('No such user')
     ttl = LONG_TTL if long else SHORT_TTL
-    payload = f"{row['id']}|{int(time.time()) + ttl}|{row['session_version']}|{secrets.token_hex(8)}"
-    sig = hmac.new(secret().encode(), payload.encode(), hashlib.sha256).hexdigest()
-    return base64.urlsafe_b64encode(f'{payload}|{sig}'.encode()).decode(), (ttl if long else None)
+    return seal('session', ttl, o=row['id'], v=row['session_version'], n=secrets.token_hex(8)), (ttl if long else None)
 
 
 def check(token):
-    key = secret().encode()
-    try:
-        owner, exp, version, nonce, sig = base64.urlsafe_b64decode(token.encode()).decode().split('|')
-        if int(exp) <= time.time():
-            return None
-        payload = f'{owner}|{exp}|{version}|{nonce}'
-        if not hmac.compare_digest(hmac.new(key, payload.encode(), hashlib.sha256).hexdigest(), sig):
-            return None
-        version = int(version)
-    except (ValueError, TypeError, AttributeError, UnicodeError):
+    """The signed-in email, or None. session_version is what ends every session at once (revocation)."""
+    data = unseal('session', token)
+    if not data:
         return None
     with database.connect() as c:
-        row = c.execute('SELECT email FROM users WHERE id=%s AND session_version=%s AND active', (owner, version)).fetchone()
+        row = c.execute('SELECT email FROM users WHERE id=%s AND session_version=%s AND active',
+                        (str(data.get('o')), int(data.get('v') or 0))).fetchone()
         return row['email'] if row else None
 
 
@@ -300,4 +271,5 @@ def csrf_token(session_token):
 
 
 def csrf_ok(session_token, submitted):
-    return bool(submitted) and hmac.compare_digest(csrf_token(session_token), submitted)
+    # bytes, not str: a non-ASCII header would make compare_digest raise (a 500) instead of refusing
+    return bool(submitted) and hmac.compare_digest(csrf_token(session_token).encode(), submitted.encode('utf-8', 'replace'))

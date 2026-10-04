@@ -308,7 +308,7 @@ def test_the_reel_shows_the_first_typed_quote_whatever_its_rating(tmp_path):
 
 def test_privacy_notice_covers_uploaded_photos_typed_details_drive_use_and_higgsfield(owners):
     page = client_for().get('/privacy').text
-    assert 'Last updated 29 Sep 2026' in page
+    assert 'Last updated 04 Oct 2026' in page
     assert 'Photos you upload' in page and 'Inputs folder' in page and 'scratch copies' in page
     assert 'Title, location, highlights and guest quotes you type' in page and '30 days' in page
     assert 'reads them back' in page and 'deletes them' in page  # drive.file: now also inputs, not only finished videos

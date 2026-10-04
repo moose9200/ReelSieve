@@ -35,6 +35,7 @@ Each test gets its own disposable PostgreSQL schema. Google is an HTTPX mock; re
 | `TOKEN_ENCRYPTION_KEY` | Fernet key for Drive credentials, separate from the session secret. Required. `TOKEN_ENCRYPTION_OLD_KEYS` (comma-separated) keeps old keys readable during rotation. |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | Web-application OAuth client customers connect their Drive through. |
 | `PUBLIC_BASE_URL` | Public address (OAuth redirect and payment return links). Falls back to `RAILWAY_PUBLIC_DOMAIN`. |
+| `BRAIVEX_ACCOUNTS_URL` | Optional. Issuer of Continue with Braivex, the only customer sign-in (default `https://accounts.braivex.com`). The callback registered there for `reelsieve` must equal `<PUBLIC_BASE_URL>/auth/braivex/callback`. |
 | `WORKER_ENABLED` | `1` (default) runs the render worker in the container; `0` for web-only staging. |
 | `RENDER_TMP_DIR` | Disposable scratch for renders (default `/tmp/reelsieve`). |
 | `HF_KEY` | Higgsfield `key-id:key-secret` — enables AI camera motion (billable). |
@@ -108,11 +109,11 @@ Gemini download quirk: the "Download full-sized image" button only fires when th
 The old app kept everything on the `/data` volume. With `LEGACY_MIGRATION_ENABLED=1` and `LEGACY_SOURCE_DIR=/data`, the first start imports it before web or worker run: accounts with their original password hashes, balances, orders, outreach, jobs (interrupted ones become failed) and Drive tokens (encrypted). Any record without exactly one known owner halts the start; nothing is assigned to "the first admin". A completion marker makes later starts a no-op, and a changed source is refused. Rehearse first: `python -m app.migrate_cloud /data --dry-run` prints counts only. The source files are never modified or deleted.
 
 ## Operator console
-No public admin setup exists. From a shell in the service (e.g. `railway ssh`):
+No public admin setup exists. Customers have no password: they sign in with Continue with Braivex. Only operators (admins) have one, for break-glass sign-in under "Operator sign-in" on /login. From a shell in the service (e.g. `railway ssh`):
 ```bash
 python -m app.admin list
 python -m app.admin set-plan someone@example.com starter 5   # plan + credits, e.g. free credits
-read -rs PW && printf '%s\n' "$PW" | python -m app.admin set-password someone@example.com   # keeps it out of shell history
+read -rs PW && printf '%s\n' "$PW" | python -m app.admin set-password operator@example.com   # operators only; keeps it out of shell history
 ```
 
 ## In-app listing picker (19 Sep 2026)

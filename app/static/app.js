@@ -582,9 +582,9 @@
             .catch(function (e) { nuStatus.textContent = e.message; nuStatus.classList.add("is-error"); })
             .then(function () { sv.disabled = false; });
         });
-        var rp = document.createElement("button"); rp.type = "button"; rp.className = "btn btn-secondary btn-sm"; rp.textContent = "Reset password";
-        rp.addEventListener("click", function () { var np = prompt("New password for " + u.user + " (min 8):"); if (!np) return; postJSON("/api/users/password", { user: u.user, password: np }).then(function () { nuStatus.textContent = "Password set for " + u.user; }).catch(function (e) { nuStatus.textContent = e.message; }); });
-        acts.appendChild(rp);
+        if (u.role === "admin") { var rp = document.createElement("button"); rp.type = "button"; rp.className = "btn btn-secondary btn-sm"; rp.textContent = "Reset password";
+          rp.addEventListener("click", function () { var np = prompt("New password for " + u.user + " (min 8):"); if (!np) return; postJSON("/api/users/password", { user: u.user, password: np }).then(function () { nuStatus.textContent = "Password set for " + u.user; }).catch(function (e) { nuStatus.textContent = e.message; }); });
+          acts.appendChild(rp); }
         if (u.user !== d.me) { var rm = document.createElement("button"); rm.type = "button"; rm.className = "btn btn-secondary btn-sm"; rm.textContent = "Remove";
           rm.addEventListener("click", function () { if (!confirm("Remove " + u.user + "?")) return; postJSON("/api/users/delete", { user: u.user }).then(function (dd) { getJSON("/api/users").then(renderUsers); nuStatus.textContent = dd.warning ? u.user + " removed. " + dd.warning : u.user + " removed; their Drive access was revoked."; }).catch(function (e) { nuStatus.textContent = e.message; }); });
           acts.appendChild(rm);
@@ -604,13 +604,6 @@
         .catch(function (e) { nuStatus.textContent = e.message; nuStatus.classList.add("is-error"); });
     });
   }
-  var pwBtn = document.getElementById("pw-btn");
-  if (pwBtn) pwBtn.addEventListener("click", function () {
-    var out = document.getElementById("pw-status"); out.className = "form-status";
-    postJSON("/api/account/password", { current: document.getElementById("pw-current").value, new: document.getElementById("pw-new").value })
-      .then(function (d) { out.textContent = "Password changed — signing you in again…"; setTimeout(function () { window.location.href = (d && d.relogin) || "/login"; }, 800); })
-      .catch(function (err) { out.textContent = err.message; out.classList.add("is-error"); });
-  });
   // Invite link: copy only. No share-to-email or messaging buttons (ICO: encouraging those messages is instigating them).
   var refBtn = document.getElementById("ref-copy");
   if (refBtn) refBtn.addEventListener("click", function () {
@@ -625,7 +618,7 @@
     out.className = "form-status";
     if (confirmed !== "DELETE") { out.textContent = "Type DELETE to confirm."; out.classList.add("is-error"); return; }
     delBtn.disabled = true; out.textContent = "Deleting your account…";
-    postJSON("/api/account/delete", { password: document.getElementById("del-password").value, confirm: confirmed })
+    postJSON("/api/account/delete", { confirm: confirmed })
       .then(function (d) {
         out.textContent = "Account deleted." + (d.warning ? " " + d.warning : "");
         setTimeout(function () { window.location.href = d.redirect || "/login"; }, d.warning ? 5000 : 800);

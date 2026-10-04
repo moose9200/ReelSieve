@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from app import auth, billing, server
 
-ALICE, BOB, ADMIN = 'alice@example.test', 'bob@example.test', 'operator@example.test'
+ALICE, BOB, ADMIN, OPS2 = 'alice@example.test', 'bob@example.test', 'operator@example.test', 'operator2@example.test'
 ORDER_VIEW = {'ref', 'ts', 'plan', 'amount_usd', 'provider', 'status', 'paid_at', 'pay_link', 'note', 'user'}
 
 
@@ -55,7 +55,7 @@ def test_new_orders_store_no_payer_ip(web, db, monkeypatch):
 
 
 def test_schema_strips_payer_ip_from_existing_orders_and_is_idempotent(db):
-    auth.create_user(ALICE, 'long-initial-password')
+    auth.create_user(ALICE)
     owner = db.user_id(ALICE)
     metas = {'RS-1': '{"ip": "203.0.113.5", "stripe_session": "cs_test_9"}', 'RS-2': '{"ip": "198.51.100.7"}',
              'RS-3': 'legacy "ip": 203.0.113.9 not json', 'RS-4': '"ip"', 'RS-5': '{"stripe_session": "cs_test_2"}', 'RS-6': None}
@@ -101,7 +101,6 @@ def seed(db, email, marker, drive=True):
     store.admin_event('plan', None, email, plan='starter', credits=3)
     store.note_signin(email, '198.51.100.' + str(len(marker)))
     store.add_privacy_request('access', email, None, 'Please send me a copy of my data.', user=email)  # sent while signed in
-    auth.start_reset(email)  # a live password-reset link
     with db.connect() as c:
         c.execute("INSERT INTO jobs(id,owner_id,idempotency_key,request_hash,url,params,status,log,meta,drive_generation,created,updated,"
                   "finished_at) VALUES(%s,%s,%s,'h','https://www.airbnb.co.uk/rooms/7',%s,'done',%s,%s,1,%s,%s,%s)",
@@ -174,7 +173,7 @@ def test_erase_removes_or_anonymises_every_table(web, owners, google, db):
         assert len(marks) == 2 and [m['owner_id'] for m in marks].count(None) == 1 and owner not in str(marks)
         usage = c.execute('SELECT listing_key,fp_hash FROM usage WHERE owner_id=%s', (owner,)).fetchall()
         assert usage and all(r['listing_key'] is None and r['fp_hash'] is None for r in usage)
-        for table in ('jobs', 'outreach', 'drive_uploads', 'drive_oauth_states', 'signin_networks', 'password_resets'):
+        for table in ('jobs', 'outreach', 'drive_uploads', 'drive_oauth_states', 'signin_networks'):
             assert c.execute(f'SELECT count(*) AS n FROM {table} WHERE owner_id=%s', (owner,)).fetchone()['n'] == 0, table
         d = c.execute('SELECT * FROM drive_connections WHERE owner_id=%s', (owner,)).fetchone()
         assert d['status'] == 'disconnected' and not any(d[k] for k in ('credentials', 'google_sub', 'google_email', 'folder_id', 'connected_at'))
@@ -186,40 +185,33 @@ def test_erase_removes_or_anonymises_every_table(web, owners, google, db):
         assert ev == {'actor_id': db.user_id(ADMIN), 'detail': {'via': 'admin'}}
     for table in ('jobs', 'outreach', 'orders', 'drive_uploads', 'drive_connections', 'drive_oauth_states'):
         assert before[table].count('bobmark') == after[table].count('bobmark'), table
-    assert not auth.verify(ALICE, 'synthetic-password')
-    auth.create_user(ALICE, 'a-fresh-password')
-    assert db.user_id(ALICE) != owner and auth.verify(ALICE, 'a-fresh-password')
+    auth.create_user(ALICE)                     # the address is free again, for a new account with a new identity
+    assert db.user_id(ALICE) != owner
     with pytest.raises(ValueError, match='No such user'):
         admin.erase(f'deleted-{owner}@erased.invalid')
 
 
-def test_self_service_deletion_needs_the_password_and_DELETE(web, db):
+def test_self_service_deletion_needs_the_typed_DELETE_and_no_password(web, db):
     alice = web['alice']
-    for body in ({'password': 'wrong-password', 'confirm': 'DELETE'}, {'password': 'synthetic-password', 'confirm': 'delete'}):
-        assert post(alice, '/api/account/delete', body).status_code == 400
-    assert auth.verify(ALICE, 'synthetic-password')
-    r = post(alice, '/api/account/delete', {'password': 'synthetic-password', 'confirm': 'DELETE'})
+    assert post(alice, '/api/account/delete', {'confirm': 'delete'}).status_code == 400
+    assert alice.get('/api/account').status_code == 200
+    r = post(alice, '/api/account/delete', {'confirm': 'DELETE'})
     assert r.status_code == 200 and r.json()['redirect'] == '/login?notice=deleted'
     assert alice.get('/api/account').status_code == 401
-    anon = web['anon']
-    page = anon.get('/login?notice=deleted').text
-    assert 'Your account has been deleted' in page
-    token = re.search(r'name="csrf" value="([0-9a-f]+)"', page).group(1)
-    assert anon.post('/login', data={'csrf': token, 'user': ALICE, 'password': 'synthetic-password'}).status_code == 401
-    r = anon.post('/signup', data={'csrf': token, 'user': ALICE, 'password': 'a-fresh-password'}, follow_redirects=False)
-    assert r.status_code == 303 and auth.verify(ALICE, 'a-fresh-password')
+    assert 'Your account has been deleted' in web['anon'].get('/login?notice=deleted').text
+    auth.create_user(ALICE)                     # Braivex can make a fresh account at that address
     with db.connect() as c:
         assert c.execute("SELECT detail FROM admin_events WHERE action='erase'").fetchone()['detail'] == {'via': 'self'}
 
 
 def test_the_last_admin_cannot_erase_themselves(web, db):
     from app import admin
-    r = post(web['admin'], '/api/account/delete', {'password': 'operator-password', 'confirm': 'DELETE'})
+    r = post(web['admin'], '/api/account/delete', {'confirm': 'DELETE'})
     assert r.status_code == 400 and 'admin' in r.json()['detail']
     with pytest.raises(ValueError, match='Keep at least one admin'):
         admin.erase(ADMIN)
     auth.create_user('second@example.test', 'second-password', 'admin')
-    assert post(web['admin'], '/api/account/delete', {'password': 'operator-password', 'confirm': 'DELETE'}).status_code == 200
+    assert post(web['admin'], '/api/account/delete', {'confirm': 'DELETE'}).status_code == 200
 
 
 def test_admin_erase_is_separate_from_remove_and_admin_only(web, db):
@@ -269,7 +261,7 @@ def test_two_workers_erasing_the_same_account_erase_it_once(owners, db):
 def test_account_page_offers_download_and_delete_and_settings_offers_erase(web):
     page = web['alice'].get('/account').text
     assert 'href="/api/account/export"' in page and 'Download my data' in page
-    assert all(f'id="{i}"' in page for i in ('del-password', 'del-confirm', 'del-btn')) and 'Delete my account' in page
+    assert all(f'id="{i}"' in page for i in ('del-confirm', 'del-btn')) and 'Delete my account' in page
     assert 'paid orders for 8 years' in page and 'subject=Delete' not in page  # no more "email us and we delete it within a day"
     js = web['alice'].get('/static/app.js').text
     assert '/api/account/delete' in js and '/api/users/erase' in js
@@ -301,7 +293,7 @@ def test_retention_removes_what_is_due_and_keeps_what_is_not(owners, db):
     from app import admin, retention, store
     now, alice = time.time(), db.user_id(ALICE)
     for who in ('gone@example.test', 'kept@example.test'):
-        auth.create_user(who, 'long-password-1')
+        auth.create_user(who)
         admin.deactivate(who)
     third_party = {'listing': {'host': 'Hostname', 'title': 'Flat', 'city': 'Leeds'}, 'message': 'Hi Hostname',
                    'review_used': {'stars': 5, 'text': 'Lovely'}, 'duration': 30}
@@ -453,16 +445,9 @@ def test_pages_load_listing_photos_through_the_proxy(web, db):
 
 # ---------------- 7. abuse signals: minimal, pseudonymised, described honestly ----------------
 
-def test_signup_stores_no_fingerprint_and_no_network_hash_on_the_account(web, db):
-    page = web['anon'].get('/signup').text
-    assert 'name="fp"' not in page
-    token = re.search(r'name="csrf" value="([0-9a-f]+)"', page).group(1)
-    r = web['anon'].post('/signup', data={'csrf': token, 'user': 'carol@example.org', 'password': 'long-enough-pass',
-                                          'fp': 'client-supplied-print'}, headers={'X-Forwarded-For': '203.0.113.9'},
-                         follow_redirects=False)
-    assert r.status_code == 303
-    with db.connect() as c:
-        assert c.execute('SELECT ip_hash,fp_hash FROM accounts').fetchall() == [{'ip_hash': None, 'fp_hash': None}]
+def test_signup_asks_for_no_fingerprint(web, db):
+    # The account Braivex creates keeps no network or device hash either: test_braivex_sso.py checks that row.
+    assert 'name="fp"' not in web['anon'].get('/signup').text
 
 
 def test_network_hash_is_stored_only_for_free_videos(owners, db):
@@ -486,7 +471,7 @@ def test_network_hash_uses_a_key_dedicated_to_that_purpose(db):
 
 
 def test_schema_clears_fingerprint_hashes_already_stored(db):
-    auth.create_user(ALICE, 'long-initial-password')
+    auth.create_user(ALICE)
     owner = db.user_id(ALICE)
     with db.connect() as c:
         c.execute("INSERT INTO accounts(owner_id,created,ip_hash,fp_hash) VALUES(%s,%s,'net','dev')", (owner, time.time()))
@@ -508,11 +493,12 @@ def test_account_page_describes_the_network_code_as_pseudonymised(web):
 
 def test_admin_actions_leave_an_accountability_trail(web, db):
     from app import store
+    auth.create_user(OPS2, 'second-operator-password', 'admin')   # only an operator has a password to set
     ref = post(web['alice'], '/api/billing/request', {'plan': 'starter'}).json()['order']['ref']
     ref2 = post(web['alice'], '/api/billing/request', {'plan': 'commercial'}).json()['order']['ref']
     admin = web['admin']
     for path, body in (('/api/users/plan', {'user': ALICE, 'plan': 'starter', 'credits': 5}),
-                       ('/api/users/password', {'user': ALICE, 'password': 'admin-set-password'}),
+                       ('/api/users/password', {'user': OPS2, 'password': 'admin-set-password'}),
                        ('/api/billing/link', {'ref': ref, 'url': 'https://pay.provider.test/one'}),
                        ('/api/billing/settle', {'ref': ref}), ('/api/billing/cancel', {'ref': ref2}),
                        ('/api/users/delete', {'user': BOB})):
@@ -522,7 +508,7 @@ def test_admin_actions_leave_an_accountability_trail(web, db):
                          'JOIN users a ON a.id=e.actor_id JOIN users t ON t.id=e.target_id ORDER BY e.id').fetchall()
         notes = str(c.execute('SELECT note FROM accounts UNION ALL SELECT note FROM orders').fetchall())
     assert [(r['action'], r['actor'], r['target']) for r in rows] == [
-        ('plan', ADMIN, ALICE), ('password_reset', ADMIN, ALICE), ('order_link', ADMIN, ALICE),
+        ('plan', ADMIN, ALICE), ('password_reset', ADMIN, OPS2), ('order_link', ADMIN, ALICE),
         ('order_settle', ADMIN, ALICE), ('order_cancel', ADMIN, ALICE), ('deactivate', ADMIN, BOB)]
     assert rows[0]['detail'] == {'plan': 'starter', 'credits': 5} and rows[3]['detail'] == {'ref': ref}
     assert 'admin-set-password' not in str(rows) and 'pay.provider.test' not in str(rows)
@@ -675,7 +661,7 @@ def test_outreach_page_carries_a_plain_pecr_notice(web):
 
 def test_new_password_hashes_use_the_owasp_pbkdf2_sha256_work_factor(db):
     # OWASP Password Storage Cheat Sheet, fetched 26 Sep 2026: "PBKDF2-HMAC-SHA256: 600,000 iterations (recommended)"
-    auth.create_user(ALICE, 'long-initial-password')
+    auth.create_user(ALICE, 'long-initial-password', 'admin')   # only operators have passwords (04 Oct 2026)
     with db.connect() as c:
         assert c.execute('SELECT iterations FROM users').fetchone()['iterations'] == 600_000
     auth.set_password(ALICE, 'another-long-password')
@@ -687,7 +673,7 @@ def test_old_hash_still_signs_in_and_is_upgraded_without_signing_anyone_out(db):
     salt = '02' * 16
     with db.connect() as c:
         c.execute('INSERT INTO users(id,email,salt,hash,iterations,role,created) VALUES(%s,%s,%s,%s,%s,%s,%s)',
-                  ('old-owner', ALICE, salt, auth._hash('old-password-1', salt, 200_000), 200_000, 'member', time.time()))
+                  ('old-owner', ALICE, salt, auth._hash('old-password-1', salt, 200_000), 200_000, 'admin', time.time()))
     cookie, _ = auth.issue(ALICE)
     assert not auth.verify(ALICE, 'wrong-password')
     with db.connect() as c:
