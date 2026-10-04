@@ -171,3 +171,50 @@ PRODUCT-INTEGRATION.md (read 29 Sep 2026, including "Login-CSRF binding"). Basel
   safeguard claim - where they sit and which tool covers them is Unknown.
 
 - 27 Sep 15:41 BST LIVE (293483f): web 1b2f065a build 245b44b7419d (= local fingerprint), worker 05f106ed (2 replicas running app.worker). S1-S4 and N1-N21 fixed on fix/final-review (538 passed) + sign-in /64 throttle and neutral host message (540 passed, 2 skipped). Live: public pages 200, /setup 303, /app 303 anon, export 401 anon, HSTS on, 0 Google/Airbnb asset refs, privacy form offers listing_removal; signed in: both reel modes, no required tick box, photos mode AI motion off with reason, Account invite/download (16 sections, no secrets)/delete, Plans buttons, Outreach companies + business email + consent copy. Companies House snapshot 2026-09-01 loaded: 140,010 rows (worker log 14:39:20Z).
+
+## Braivex is the only customer sign-in (04 Oct 2026, branch braivex/sso-only-2026-10-04, base 105a306 = prod)
+Plan: /Users/hemant/Braivex-Tree/2026-10-04_PLAN-braivex-sso-only.md (Task 4). Report: /Users/hemant/Braivex-Tree/.sdd/task-4-report.md.
+Baseline on 105a306: 638 collected, 637 passed + 1 timing flake (test_privacy_request_form_is_public..., passes alone).
+- [x] Prod drift reconciled. Evidence: /healthz build 72d7fb96e5b6 = app/server.py build_id() of 105a306 (git objects and
+      working tree, both 72d7fb96e5b6); Railway web deployment 03d6ee4a SUCCESS 2026-09-30T19:56:45Z, worker d822a251
+      19:57:03Z = main fast-forward to 105a306 at 20:56:40 BST. 13e754112ab1 reproduces from no commit or variant tried.
+- [x] SSO always on; BRAIVEX_SSO and BRAIVEX_PASSWORD_SUNSET removed. /login and /signup show only Continue with Braivex
+      (plus a folded "Operator sign-in"); /r/<code> ref rides the Continue link into the state cookie. Evidence:
+      test_sign_in_and_sign_up_offer_only_continue_with_braivex_with_no_switch_set, test_an_invite_link_still_attributes...
+- [x] Customer password routes removed, 404: GET/POST /forgot, /reset, /setup, POST /signup (405 mapped to 404),
+      POST /api/account/password; app/mail.py, forgot/reset templates, password_resets (DROP in 012). Evidence: red
+      first (200/303/400), then test_customer_password_routes_are_gone x7, test_changing_a_password_..._is_gone.
+- [x] Operator break-glass admin-only, 5 failures per network (/64) per 10 min, PBKDF2 in run_in_threadpool, delay
+      as asyncio.sleep; admin create/set password hash in the thread pool too. Evidence: red first (verify and sleep seen
+      on the loop), then test_the_operator_password_check_and_its_delay_never_block_the_event_loop,
+      test_setting_or_creating_an_operator_password_never_hashes_on_the_event_loop, test_an_operator_signs_in_... (429).
+- [x] Verifier = app/braivex_verify.py, byte-identical to braivex-accounts packages/verify-py/braivex_verify.py at 7463ece
+      (sha256 fe51ee42...eb09) under a header; PyJWT[crypto]>=2.14 (first version with the 30 s unknown-kid cooldown,
+      checked in the 2.10.1..2.15.0 wheels). Product checks kept: state, email_verified, jti single use.
+      Evidence: test_the_assertion_verifier_is_the_shared_one_byte_for_byte; 14 flawed-claim cases; forged-kid test.
+- [x] Sign-up guards (disposable domains, per-network free cap) on the Braivex account-creation step. Evidence:
+      test_the_sign_up_guards_run_where_braivex_creates_the_account.
+- [x] Legacy accounts: same-email Braivex sign-in links; an unlinked (unverified) account is taken over (hash wiped,
+      session_version bumped, prior holder's Drive revoked, business sender, unrewarded invite row and invite code
+      cleared); one with any data needs an explicit Claim (/auth/braivex/claim, CSRF). sub immutable. Release migration
+      012 deletes every customer hash and signs every customer out once (marker row in migrations). Evidence: red first,
+      then test_a_legacy_password_account_is_taken_over..., test_taking_over_an_account_with_data_needs_an_explicit_claim...,
+      test_the_braivex_only_release_ends_every_customer_session_and_password_once, test_every_braivex_sign_in_leaves...
+- [x] Sibling classes: __Host- flow cookies (Secure, Path=/); next rejects // in its path; double-submitted first sign-up
+      reuses its row; refused assertions limited per IPv6 /64; one purpose-bound codec (auth.seal/unseal) for sessions and
+      flow cookies; compare_digest on bytes (a non-ASCII CSRF token, cookie or webhook signature was a 500).
+- [x] Postgres: DATABASE_URL host postgres.railway.internal on ReelSieve and ReelSieve-worker (railway variable list,
+      host only printed); Postgres service has no RAILWAY_TCP_PROXY_DOMAIN; 0 CREATE/ALTER/DROP in app/*.py outside
+      app/schema; schema files run on every start (app/start.py and the web lifespan) under an advisory lock.
+- Gate 04 Oct: compileall exit 0, node --check exit 0, pytest exit 0, 641 passed (638 -14 password_reset -1 privacy_basics
+  -2 saas_routes -2 footer +22 braivex_sso). Headless screenshots (no visible browser, owner rule):
+  /Users/hemant/.braivex-audit/2026-10-04/shots/2026-10-04_reelsieve-sso-only-{login,signup,claim,account,settings}-{1440,390}.png,
+  0 px horizontal overflow on all 10.
+- [ ] Deploy impact (owner): every session ends once (new token format + migration 012); customers sign in with Braivex,
+      operators with the operator form. RESEND_API_KEY on the web service is now unused and can be deleted.
+- [ ] Migration ledger: files re-run at every start and old files are edited in place (006_privacy.sql 7 commits,
+      007_airbnb_safeguards.sql 5). Add a run-once ledger with a checksum per file when the next schema change lands.
+- [ ] Sync database calls inside async routes still run on the event loop (the Gate's auth.check on every request and
+      ~25 async handlers); only the password, key-fetch and sign-in paths moved to the thread pool.
+- [ ] Account deletion has no re-authentication now (typed DELETE + session + CSRF). A fresh Braivex sign-in before
+      erasure would close that; owner decision.
