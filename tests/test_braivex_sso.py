@@ -895,19 +895,20 @@ def test_r3_session_and_csrf_cookies_are_host_prefixed_and_the_old_names_are_ign
 
 
 def test_r4_a_worker_never_migrates_and_refuses_to_start_on_an_older_schema(db, monkeypatch):
-    from app import database, start as entry
+    from app import database
     monkeypatch.setattr(database, 'initialize', lambda: pytest.fail('a worker ran the migrations'))
     with db.connect() as c:
         c.execute("DELETE FROM schema_ledger WHERE name='012_braivex_only.sql'")
     with pytest.raises(SystemExit) as stop:
-        entry.prepare_schema(web=False, wait=0)
+        database.wait_for_schema(0)
     assert stop.value.code != 0 and '012_braivex_only.sql' in str(stop.value) and 'web' in str(stop.value)
 
 
-def test_r4_the_web_migrates_and_a_worker_on_the_same_schema_starts(db, monkeypatch):
-    from app import start as entry
-    entry.prepare_schema(web=True)
-    entry.prepare_schema(web=False, wait=0)                      # nothing missing: returns
+def test_r4_the_web_migrates_and_a_worker_on_the_same_schema_starts(db):
+    from app import database
+    with TestClient(server.app):                                 # the web process's lifespan migrates
+        pass
+    database.wait_for_schema(0)                                  # nothing missing: returns
 
 
 def test_r5_an_ipv4_mapped_address_counts_as_its_ipv4_address(monkeypatch):
@@ -1000,3 +1001,57 @@ def test_an_existing_account_on_our_own_domains_links_without_a_claim_but_its_ou
     _, state = start(other)
     r = finish(other, broker.assertion(state=state, email=guest, sub='gid://shopify/Customer/42'))
     assert r.headers['location'] == '/auth/braivex/claim'
+
+
+# ---------------- 14. review round 2 (05 Oct 2026) ----------------
+
+def test_n1_the_drive_grant_goes_with_the_link_even_when_the_google_revoke_blows_up(web, broker, db, owners, google,
+                                                                                    monkeypatch):
+    from fakes import connect
+    from app import gdrive
+    connect(owners, google)
+
+    def boom(*_a):
+        raise ValueError('synthetic failure after the link committed')
+    monkeypatch.setattr(gdrive, 'disconnect_owner', boom)
+    monkeypatch.setattr(gdrive, 'revoke', boom, raising=False)
+    client = client_for()
+    _, state = start(client)
+    assert finish(client, broker.assertion(state=state, email=ALICE)).headers['location'] == '/auth/braivex/claim'
+    page = client.get('/auth/braivex/claim').text
+    r = client.post('/auth/braivex/claim', data={'csrf': csrf_of(page)}, follow_redirects=False)
+    assert r.status_code == 303 and signed_in_as(client) == ALICE and braivex_id(db, ALICE) == SUB
+    with db.connect() as c:                                        # the grant went in the link's own transaction
+        rows = c.execute('SELECT status,credentials,google_sub FROM drive_connections WHERE owner_id=%s',
+                         (db.user_id(ALICE),)).fetchall()
+    assert all(r['credentials'] is None and r['google_sub'] is None and r['status'] != 'connected' for r in rows)
+    assert not gdrive.status(ALICE)['connected']
+    again = client_for()                                           # the retry is a plain, clean sign-in
+    _, state = start(again)
+    r = finish(again, broker.assertion(state=state, email=ALICE))
+    assert r.status_code == 303 and r.headers['location'] == '/reels' and signed_in_as(again) == ALICE
+
+
+def test_n2_only_the_web_process_migrates_whatever_the_environment(db, monkeypatch):
+    from app import database, start as entry, worker
+    monkeypatch.setattr(database, 'initialize', lambda: pytest.fail('migrated outside the web process'))
+    monkeypatch.setattr(entry, 'supervise', lambda cmds: 0)
+    monkeypatch.setattr(entry, 'health_server', lambda *a: None)
+    for web in ('1', '0'):                                         # the supervisor never migrates, either way
+        monkeypatch.setenv('WEB_ENABLED', web)
+        with pytest.raises(SystemExit) as done:
+            entry.main()
+        assert done.value.code == 0
+    with db.connect() as c:
+        c.execute("DELETE FROM schema_ledger WHERE name='012_braivex_only.sql'")
+    monkeypatch.setenv('WEB_ENABLED', '1')                         # a worker told it is the web still never migrates
+    monkeypatch.setattr(database, 'SCHEMA_WAIT', 0)
+    monkeypatch.setattr(worker, 'run_once', lambda *_a: (_ for _ in ()).throw(SystemExit('looped without a schema check')))
+    with pytest.raises(SystemExit) as stop:
+        worker.main()
+    assert stop.value.code != 0 and '012_braivex_only.sql' in str(stop.value) and 'web service' in str(stop.value)
+
+
+def test_n3_a_worker_waits_long_enough_to_span_railways_healthcheck_window():
+    from app import database
+    assert 270 <= database.SCHEMA_WAIT < 300

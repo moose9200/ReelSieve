@@ -15,7 +15,7 @@ FastAPI SaaS for property reels. Python 3.12; production on Railway.
 ## Commands
 
 - Tests: `TEST_DATABASE_URL=... .venv/bin/python -m pytest -q tests` (each test uses a disposable schema)
-- Run: `python -m app.start` (validates config, applies schema, optional one-time legacy import, supervises web + worker)
+- Run: `python -m app.start` (validates config, supervises web + worker). Only the web process migrates (its lifespan, plus the optional one-time legacy import); the worker and the consoles wait for the schema, never migrate
 - Legacy import rehearsal: `python -m app.migrate_cloud <dir> --dry-run` (counts only)
 - Operator console: `python -m app.admin list|create-admin|set-password` (password on stdin)
 - Syntax: `.venv/bin/python -m compileall -q app tests`

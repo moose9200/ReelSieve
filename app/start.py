@@ -1,13 +1,11 @@
 """Container entry point: python -m app.start
 
 1. Refuse to start without DATABASE_URL, SESSION_SECRET and a valid TOKEN_ENCRYPTION_KEY.
-2. Apply the schema.
-3. With LEGACY_MIGRATION_ENABLED=1 only: import LEGACY_SOURCE_DIR once (a completion marker
-   makes later starts a no-op; a changed source or any ownership doubt stops the start).
-4. Run the web process (WEB_ENABLED=1, default) and/or the render worker (WORKER_ENABLED=1,
+2. Run the web process (WEB_ENABLED=1, default) and/or the render worker (WORKER_ENABLED=1,
    default). A worker-only service (WEB_ENABLED=0) still answers /healthz for the platform.
    SIGTERM/SIGINT are passed on; if a child exits the others are stopped and the container
    exits non-zero. As PID 1 it also reaps orphaned render processes.
+It never touches the schema: the web process migrates in its lifespan and the worker process waits for that.
 """
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -18,7 +16,7 @@ import sys
 import threading
 import time
 
-from app import database, migrate_cloud
+from app import database
 
 
 def commands():
@@ -93,38 +91,11 @@ def supervise(cmds, grace=25.0):
     return 1 if crashed and not stop else 0
 
 
-SCHEMA_WAIT = 120  # ponytail: a worker deployed before the web polls this long, then exits for Railway to restart it
-
-
-def prepare_schema(web, wait=SCHEMA_WAIT):
-    """Only the web service migrates. A worker never does: it waits for the schema this code needs and otherwise exits
-    non-zero, so Railway restarts it once the web service has migrated. Deploy the web service first, then the worker."""
-    if web:
-        database.initialize()
-        return
-    deadline = time.time() + wait
-    while True:
-        missing = database.missing_schema()
-        if not missing:
-            return
-        if time.time() >= deadline:
-            raise SystemExit('Worker not started: the database is behind this code (not applied: ' + ', '.join(missing)
-                             + '). Only the web service migrates: deploy it first, then this worker restarts.')
-        time.sleep(5)
-
-
 def main():
+    """Supervisor only: it never touches the schema. The web process migrates in its lifespan (app/server.py) and the
+    worker process waits for that schema (app/worker.py), so a worker never migrates whatever its environment says."""
     from app import server
     server.validate_config()
-    prepare_schema(os.getenv('WEB_ENABLED', '1') == '1')
-    if os.getenv('LEGACY_MIGRATION_ENABLED') == '1':
-        source = os.getenv('LEGACY_SOURCE_DIR')
-        if not source:
-            sys.exit('LEGACY_MIGRATION_ENABLED=1 needs LEGACY_SOURCE_DIR')
-        try:
-            print(json.dumps({'legacy_migration': migrate_cloud.run(source, apply=True)}, sort_keys=True), flush=True)
-        except migrate_cloud.MigrationError as e:
-            sys.exit(str(e))
     cmds = commands()
     if os.getenv('WEB_ENABLED', '1') != '1':
         health_server(int(os.getenv('PORT', '8787')), server.BUILD)

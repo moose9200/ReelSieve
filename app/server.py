@@ -30,7 +30,7 @@ from starlette.formparsers import MultiPartException, MultiPartParser
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app import (admin, airbnb, auth, billing, braivex_sso, cohost, companies, database, fetch, gdrive, hostmsg, invoices,
-                 jobs, linkedin, photos, plans, referrals, retention, store)
+                 jobs, linkedin, migrate_cloud, photos, plans, referrals, retention, store)
 from app import search as listing_search
 
 HERE = Path(__file__).resolve().parent
@@ -109,8 +109,19 @@ def at_once(user, group):
 
 @asynccontextmanager
 async def lifespan(_app):
+    """The web process is the only one that migrates (the worker waits for the schema), and so the only one that runs
+    the one-time legacy import: with LEGACY_MIGRATION_ENABLED=1, LEGACY_SOURCE_DIR is imported once (a completion
+    marker makes later starts a no-op; a changed source or any ownership doubt stops the start)."""
     validate_config()
     database.initialize()
+    if os.getenv('LEGACY_MIGRATION_ENABLED') == '1':
+        if not os.getenv('LEGACY_SOURCE_DIR'):
+            raise SystemExit('LEGACY_MIGRATION_ENABLED=1 needs LEGACY_SOURCE_DIR')
+        try:
+            print(json.dumps({'legacy_migration': migrate_cloud.run(os.environ['LEGACY_SOURCE_DIR'], apply=True)},
+                             sort_keys=True), flush=True)
+        except migrate_cloud.MigrationError as e:
+            raise SystemExit(str(e))
     store._suppression_key()  # freeze the do-not-contact key before anything can rotate SESSION_SECRET
     yield
 
@@ -548,11 +559,13 @@ def _sign_in_linked(request, row, sub, nxt, cookie, auth_time):
     linked = auth.link_braivex(row['email'], sub)
     if not linked:
         return _sso_refused(request, 'That Braivex account is already linked elsewhere. Email hello@braivex.com.', nxt)
-    if linked != 'linked':  # a first link: an older account's Drive grant could deliver data without a sign-in
-        try:  # its stored grant is cleared here, then Google is asked to revoke it
-            gdrive.disconnect_owner(database.user_id(row['email']))
-        except RuntimeError:
-            pass  # disconnected here; Google did not confirm the revocation, which only the prior holder can chase
+    grant = linked[1]  # a first link already dropped the stored Drive grant with the link itself
+    if grant:
+        try:  # best effort: nothing here can bring the grant back; an unrevoked one is the prior holder's to remove
+            if not gdrive.revoke(grant):
+                print('{"drive": "revoke not confirmed after a first Braivex link"}', flush=True)
+        except Exception:
+            print('{"drive": "revoke failed after a first Braivex link"}', flush=True)
     store.note_signin(row['email'], _ip(request))
     return _drop(_set_session(RedirectResponse(nxt, status_code=303), request, row['email'], True, auth_time), cookie)
 

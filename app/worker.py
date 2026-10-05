@@ -20,7 +20,7 @@ import sys
 import threading
 import time
 
-from app import companies, gdrive, invoices, jobs, photos, retention, store
+from app import companies, database, gdrive, invoices, jobs, photos, retention, store
 
 LEASE = int(os.getenv('WORKER_LEASE_SECONDS', '90'))
 BEAT = max(1.0, LEASE / 6)
@@ -306,6 +306,7 @@ def run_once(worker, command=render_command):
 
 
 def main():
+    database.wait_for_schema()  # never migrates: only the web process does, whatever this process's environment says
     worker = f'{socket.gethostname()}-{os.getpid()}'
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: _stop.set())

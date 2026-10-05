@@ -92,11 +92,14 @@ def link_braivex(user, braivex_customer_id):
     """Every Braivex sign-in to an existing customer account goes through here, and leaves it linked to that Shopify
     customer with no password: a hash still on the row is wiped and the sessions it may have made end.
     The first link of an older account (no Shopify customer yet; made with a password, which never proved the
-    mailbox) also drops what could send data out without anyone signing in: the business sender here, and the Google
-    Drive connection, which the caller disconnects (a call to Google). The owner reconnects Drive once.
+    mailbox) also drops what could send data out without anyone signing in: the business sender and the stored Google
+    Drive grant, both in this transaction, so nothing can link the row and leave the grant. The owner reconnects Drive
+    once.
     Unless the row is email_trusted (on our own domains when Braivex became the only sign-in: 012), that first link is
     a takeover by the person Braivex just verified, so the prior holder's invite attribution and invite code go too.
-    Returns 'takeover', 'first' (a trusted first link), 'linked', or None (changing nothing) for a row linked to another
+    Returns (how, grant): how is 'takeover', 'first' (a trusted first link) or 'linked', and grant is the dropped Drive
+    token for the caller to revoke at Google afterwards (best effort), or None. Returns None, changing nothing, for a
+    row linked to another
     Shopify customer (sub never changes, so it is never re-pointed), an operator (Braivex sign-in never grants
     operator rights), or a Shopify customer another row holds."""
     try:
@@ -110,12 +113,15 @@ def link_braivex(user, braivex_customer_id):
             if first or row['hash']:
                 c.execute("UPDATE users SET braivex_customer_id=%s,salt='',hash='',changed=%s,"
                           'session_version=session_version+1 WHERE id=%s', (braivex_customer_id, time.time(), row['id']))
+            grant = None
             if first:
+                from app import gdrive  # here, not at the top: gdrive imports this module
+                grant = gdrive.drop_grant(c, row['id'])
                 c.execute('UPDATE accounts SET b2b_sender=NULL WHERE owner_id=%s', (row['id'],))
             if takeover:
                 c.execute('UPDATE accounts SET referral_code=DEFAULT WHERE owner_id=%s', (row['id'],))
                 c.execute('DELETE FROM referrals WHERE referee_id=%s AND rewarded_at IS NULL', (row['id'],))
-            return 'takeover' if takeover else 'first' if first else 'linked'
+            return ('takeover' if takeover else 'first' if first else 'linked'), grant
     except UniqueViolation:
         return None
 

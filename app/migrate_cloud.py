@@ -250,7 +250,7 @@ if __name__ == '__main__':
     if len(sys.argv) != 3 or sys.argv[2] not in ('--dry-run', '--apply'):
         sys.exit('usage: python -m app.migrate_cloud <legacy-dir> --dry-run|--apply')
     if sys.argv[2] == '--apply':
-        database.initialize()
+        database.wait_for_schema(0)  # never migrates here: only the web process does
     try:
         print(json.dumps(run(sys.argv[1], sys.argv[2] == '--apply'), sort_keys=True))
     except MigrationError as e:

@@ -299,29 +299,37 @@ def disconnect(user):
         disconnect_owner(row['owner_id'])
 
 
+def drop_grant(c, owner_id):
+    """Inside the caller's transaction: clear this owner's stored Drive grant. The row stays with a new generation, so
+    an upload still holding the old one is refused (a deleted row would restart at generation 1 on reconnect and let it
+    through). Returns the token to revoke at Google once that transaction has committed, or None."""
+    _owner_lock(c, owner_id)
+    row = c.execute('SELECT owner_id,generation,status,credentials FROM drive_connections WHERE owner_id=%s',
+                    (owner_id,)).fetchone()
+    if not row:
+        return None
+    tok = _decrypt(row) or {}
+    c.execute("UPDATE drive_connections SET generation=generation+1,status='disconnected',credentials=NULL,"
+              'google_sub=NULL,google_email=NULL,scope=NULL,folder_id=NULL,updated=%s WHERE owner_id=%s',
+              (time.time(), owner_id))
+    c.execute('DELETE FROM drive_oauth_states WHERE owner_id=%s', (owner_id,))
+    return tok.get('refresh_token') or tok.get('access_token')
+
+
+def revoke(grant):
+    """True when Google confirmed it revoked the grant."""
+    try:
+        with _client(15) as h:
+            return h.post(REVOKE, data={'token': grant}).status_code == 200
+    except httpx.HTTPError:
+        return False
+
+
 def disconnect_owner(owner_id):
     """Disconnect by durable owner ID, also for an account that has just been deactivated."""
     with database.connect() as c:
-        _owner_lock(c, owner_id)
-        row = c.execute('SELECT owner_id,generation,status,credentials FROM drive_connections WHERE owner_id=%s',
-                        (owner_id,)).fetchone()
-        if not row:
-            return
-        tok = _decrypt(row)
-        c.execute("UPDATE drive_connections SET generation=generation+1,status='disconnected',credentials=NULL,"
-                  'google_sub=NULL,google_email=NULL,scope=NULL,folder_id=NULL,updated=%s WHERE owner_id=%s',
-                  (time.time(), owner_id))
-        c.execute('DELETE FROM drive_oauth_states WHERE owner_id=%s', (owner_id,))
-    grant = (tok or {}).get('refresh_token') or (tok or {}).get('access_token')
-    if not grant:
-        return
-    try:
-        with _client(15) as h:
-            r = h.post(REVOKE, data={'token': grant})
-        revoked = r.status_code == 200
-    except httpx.HTTPError:
-        revoked = False
-    if not revoked:
+        grant = drop_grant(c, owner_id)
+    if grant and not revoke(grant):
         raise RuntimeError('Disconnected here, but Google did not confirm revocation — remove ReelSieve at '
                            'https://myaccount.google.com/permissions')
 

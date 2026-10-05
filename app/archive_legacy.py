@@ -114,7 +114,7 @@ def purge(say=print):
 
 
 if __name__ == '__main__':
-    database.initialize()
+    database.wait_for_schema(0)  # an operator console never migrates: only the web process does
     try:
         if len(sys.argv) == 3 and sys.argv[1] == '--restore':
             print(json.dumps(restore(sys.argv[2])))

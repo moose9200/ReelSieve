@@ -90,8 +90,8 @@ LEDGER_FROM = '012'  # files from 012 on run once and are recorded; earlier file
 
 
 def initialize():
-    """Apply the schema in one transaction. Only the web service calls this (app/start.py, the web lifespan); a worker
-    checks missing_schema() instead. Files before 012 are idempotent and re-run at every start. From 012 each file runs
+    """Apply the schema in one transaction. Only the web process calls this (its lifespan in app/server.py); the worker
+    process and the operator consoles call wait_for_schema() instead, whatever their environment says. Files before 012 are idempotent and re-run at every start. From 012 each file runs
     once and its sha256 goes in schema_ledger, so destructive SQL never runs twice, and a file edited after it ran
     stops the start instead of being skipped silently."""
     with connect() as conn:
@@ -110,6 +110,23 @@ def initialize():
                 conn.execute('INSERT INTO schema_ledger(name,sha256,applied_at) VALUES(%s,%s,%s)', (path.name, digest, time.time()))
             elif row['sha256'] != digest:
                 raise RuntimeError(f'{path.name} changed after it was applied: put the change in a new schema file')
+
+
+SCHEMA_WAIT = 280  # seconds a worker waits for the web to migrate: one run spans Railway's 300 s healthcheck window
+
+
+def wait_for_schema(wait=None):
+    """For everything but the web process: never migrate, wait until the schema this code needs is applied, else exit
+    non-zero so the platform restarts it once the web service has migrated."""
+    deadline = time.time() + (SCHEMA_WAIT if wait is None else wait)
+    while True:
+        missing = missing_schema()
+        if not missing:
+            return
+        if time.time() >= deadline:
+            raise SystemExit('Not started: the database is behind this code (not applied: ' + ', '.join(missing)
+                             + '). Only the web service migrates: deploy it first, then this restarts.')
+        time.sleep(5)
 
 
 def missing_schema():
