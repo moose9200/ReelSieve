@@ -1,6 +1,6 @@
 # VENDORED, DO NOT EDIT. Everything below this header is byte-identical to
-#   braivex-accounts/packages/verify-py/braivex_verify.py at commit e0a35ec
-#   (sha256 6d8ca8fb43861ea1e53e397ab7ade85c6f1b2ff06ea307a305a0b6228f3bd1f1).
+#   braivex-accounts/packages/verify-py/braivex_verify.py at commit cf9abb7
+#   (sha256 18d694351eaa62629df290aee0dc00e830a66916333aa192804147792a8b4794).
 # To update: copy that file again under this header and change the commit and digest here and in
 # tests/test_braivex_sso.py. Its dependency, PyJWT[crypto] >= 2.8, is pinned in requirements.txt.
 # The product checks around it are in app/braivex_sso.py.
@@ -75,11 +75,14 @@ def _jwk_client(issuer: str) -> PyJWKClient:
     if client is None:
         # cache_keys stays off: PyJWT's per-kid cache is an lru_cache with no expiry, so a key the
         # broker withdrew would verify until restart. The JWK-set cache below does expire.
+        # Own User-Agent: Cloudflare in front of accounts.braivex.com answers urllib's
+        # default "Python-urllib/3.x" with 403, which failed every sign-in (05 Oct 2026).
         client = _JWKClient(
             f"{issuer}/.well-known/jwks.json",
             cache_keys=False,
             cache_jwk_set=True,
             lifespan=JWKS_LIFESPAN_SECONDS,
+            headers={"User-Agent": "braivex-verify-py/1"},
         )
         _clients[issuer] = client
     return client

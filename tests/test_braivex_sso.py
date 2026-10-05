@@ -257,7 +257,7 @@ def test_an_admin_adds_customers_without_a_password_and_operators_only_with_one(
     assert auth.identity('ops2@example.test') is None
 
 
-VENDORED_SHA256 = '6d8ca8fb43861ea1e53e397ab7ade85c6f1b2ff06ea307a305a0b6228f3bd1f1'   # verify-py at e0a35ec
+VENDORED_SHA256 = '18d694351eaa62629df290aee0dc00e830a66916333aa192804147792a8b4794'   # verify-py at cf9abb7
 
 
 def test_the_assertion_verifier_is_the_shared_one_byte_for_byte():
@@ -265,7 +265,7 @@ def test_the_assertion_verifier_is_the_shared_one_byte_for_byte():
     body = text[text.index(b'"""Braivex Accounts assertion verifier (Python).'):]
     assert hashlib.sha256(body).hexdigest() == VENDORED_SHA256
     header = text[:text.index(body)]
-    assert b'e0a35ec' in header and b'packages/verify-py/braivex_verify.py' in header
+    assert b'cf9abb7' in header and b'packages/verify-py/braivex_verify.py' in header
 
 
 # ---------------- 2. starting the sign-in ----------------
@@ -1118,3 +1118,25 @@ def test_p3_the_web_start_logs_an_error_when_production_has_the_wrong_public_add
     monkeypatch.delenv('PUBLIC_BASE_URL')
     server.check_public_base()
     assert capsys.readouterr().out == ''
+
+
+def test_the_bare_apex_redirects_to_www_so_a_sign_in_can_finish(monkeypatch):
+    """05 Oct 2026: reelsieve.braivex.com served the app, but the broker always posts back to www, so a sign-in
+    started on the apex left its host-only state cookie behind and every callback was refused."""
+    monkeypatch.setenv('PUBLIC_BASE_URL', SITE)
+    apex = TestClient(server.app, base_url='https://reelsieve.braivex.com', follow_redirects=False)
+    r = apex.get('/auth/braivex/start?next=/app')
+    assert r.status_code == 308 and r.headers['location'] == SITE + '/auth/braivex/start?next=/app'
+    assert apex.post('/auth/braivex/callback').headers['location'] == SITE + '/auth/braivex/callback'
+    www = TestClient(server.app, base_url=SITE, follow_redirects=False)
+    assert www.get('/healthz').status_code != 308  # the canonical host itself is served, not bounced
+
+
+def test_a_refused_assertion_logs_why_without_the_token(web, broker, capsys):
+    client = client_for()
+    _, state = start(client)
+    token = broker.assertion(state=state, jti=None)
+    assert finish(client, token).status_code == 401
+    out = capsys.readouterr().out
+    assert '"braivex_sso_refused"' in out and 'jti' in out
+    assert token not in out and '@' not in out.split('braivex_sso_refused', 1)[1].split('\n', 1)[0]

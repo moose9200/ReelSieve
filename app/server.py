@@ -250,7 +250,22 @@ class Gate(BaseHTTPMiddleware):
 
 app.add_middleware(Gate)
 
-SECURITY_HEADERS = {'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'strict-origin-when-cross-origin',
+
+@app.middleware('http')
+async def canonical_host(request, call_next):
+    """The bare apex is routed here too, but Braivex sign-in always returns to the canonical www host, so a sign-in
+    started on the apex left its host-only state cookie behind and could never finish (05 Oct 2026). Registered
+    after Gate so it runs first; 308 keeps a POST a POST."""
+    canon = site_url()
+    canon_host = canon.split('://', 1)[-1]
+    host = (request.headers.get('host') or '').split(':')[0].lower()
+    if canon_host.startswith('www.') and host == canon_host[4:]:
+        query = request.url.query
+        return RedirectResponse(canon + request.url.path + ('?' + query if query else ''), status_code=308)
+    return await call_next(request)
+
+
+SECURITY_HEADERS ={'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'strict-origin-when-cross-origin',
                     'X-Frame-Options': 'DENY'}
 
 
@@ -546,7 +561,9 @@ def _braivex_finish(request, form):
     nxt, ref = _safe_next(sealed.get('next')), _ref(sealed.get('ref'))
     try:
         claims = braivex_sso.verify(form.get('assertion') or '', sealed.get('state') or '')
-    except braivex_sso.BraivexAssertionError:
+    except braivex_sso.BraivexAssertionError as e:
+        # The reason only (PyJWT/verifier wording, never the token or an address): the 05 Oct outage was invisible here.
+        print(json.dumps({'braivex_sso_refused': str(e)[:200]}), flush=True)
         auth.record_fail(ip, 'sso')
         return _sso_refused(request, 'Braivex could not sign you in. Try again.', nxt)
     if not braivex_sso.spend_jti(claims['jti']):
