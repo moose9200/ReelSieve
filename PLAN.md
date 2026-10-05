@@ -243,8 +243,21 @@ Baseline on 105a306: 638 collected, 637 passed + 1 timing flake (test_privacy_re
          offer Continue with Braivex during the rolling deploy and after any rollback.
       2. Deploy the web service. Its start runs the schema: ledger table, 011 (hash wipe), 012 once (every customer
          signed out, own-domain accounts marked). Check /healthz shows this build's id.
-      3. Then deploy ReelSieve-worker. It never migrates: it waits up to 120 s for the schema, then exits non-zero for
-         Railway to restart it (restartPolicyMaxRetries 5).
+      3. Then deploy ReelSieve-worker. It never migrates (round 2: decided by process, not by WEB_ENABLED): it waits up
+         to 280 s for the schema, then exits non-zero for Railway to restart it (restartPolicyMaxRetries 5).
       4. Customers who had Drive connected reconnect it once after their first Braivex sign-in.
 - [ ] Next release: DROP TABLE IF EXISTS password_resets in a new ledgered file, once no build that reads it is serving.
+
+### Review round 2 (05 Oct 2026), commit 53511c0
+- [x] N1 a first link drops the stored Drive grant and the business sender inside link_braivex's own transaction; the
+      Google revoke afterwards is best effort (any error logged, never raised). The row keeps a new generation instead
+      of being deleted: exchange() restarts at generation 1 when no row exists, which would let an upload fenced on the
+      old generation through. Evidence: red first (ValueError after the link committed), then
+      test_n1_the_drive_grant_goes_with_the_link_even_when_the_google_revoke_blows_up.
+- [x] Only the web process migrates (its lifespan; the one-time legacy import moved there too). app/start.py never
+      touches the schema; the worker process and the consoles (admin, archive_legacy, migrate_cloud --apply) call
+      database.wait_for_schema(), whatever WEB_ENABLED says. Evidence: test_n2_only_the_web_process_migrates_whatever...
+- [x] SCHEMA_WAIT 280 s (test_n3). Gate: compileall 0, node --check 0, pyflakes 0, pytest 0, 656 passed.
+- Rule: never edit an applied migration. From 012 on, schema files are ledgered (sha256 in schema_ledger) and an edited
+  one stops the web start; put every change in a new numbered file. Files before 012 are the idempotent re-run tier.
 
