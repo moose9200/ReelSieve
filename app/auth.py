@@ -225,6 +225,27 @@ def too_many(ip, purpose='login'):
                          (_ip_key(ip, purpose), time.time() - 600)).fetchone()['n'] >= 5
 
 
+def reserve_attempt(ip, purpose='login'):
+    """Count an attempt BEFORE it is checked: under a lock on this address's key, refuse at 5 in 10 minutes, else insert
+    its row now. Parallel guesses cannot all pass the count and then all be hashed. Returns a handle for
+    release_attempt, or None when the limit is reached. A failed attempt simply keeps its row."""
+    key, now = _ip_key(ip, purpose), time.time()
+    with database.connect() as c:
+        c.execute('SELECT pg_advisory_xact_lock(hashtext(%s))', (key,))
+        if c.execute('SELECT count(*) AS n FROM login_failures WHERE ip_hash=%s AND ts>%s',
+                     (key, now - 600)).fetchone()['n'] >= 5:
+            return None
+        c.execute('DELETE FROM login_failures WHERE ts<%s', (now - 600,))
+        c.execute('INSERT INTO login_failures(ip_hash,ts) VALUES(%s,%s)', (key, now))
+        return key, now
+
+
+def release_attempt(handle):
+    """Give back a reserved attempt that never got an answer (an error while checking it)."""
+    with database.connect() as c:
+        c.execute('DELETE FROM login_failures WHERE ip_hash=%s AND ts=%s', handle)
+
+
 def record_fail(ip, purpose='login'):
     with database.connect() as c:
         c.execute('DELETE FROM login_failures WHERE ts<%s', (time.time() - 600,))

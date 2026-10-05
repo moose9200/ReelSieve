@@ -1055,3 +1055,66 @@ def test_n2_only_the_web_process_migrates_whatever_the_environment(db, monkeypat
 def test_n3_a_worker_waits_long_enough_to_span_railways_healthcheck_window():
     from app import database
     assert 270 <= database.SCHEMA_WAIT < 300
+
+
+# ---------------- 15. final review (05 Oct 2026) ----------------
+
+def test_p10_twenty_parallel_operator_guesses_from_one_network_hash_at_most_five(web, db, monkeypatch):
+    """The probe from the final review: the attempt is counted before the password is hashed, under a per-network lock."""
+    import concurrent.futures as cf
+    import threading
+    monkeypatch.setattr(server, 'LOGIN_FAIL_DELAY', 0)
+    auth.create_user(OPS, 'operator-password', 'admin')
+    hashed, lock, real = [], threading.Lock(), auth.verify
+
+    def counting_verify(u, p):
+        with lock:
+            hashed.append(1)
+        return real(u, p)
+    monkeypatch.setattr(auth, 'verify', counting_verify)
+    anon = client_for()
+    token = csrf_of(anon.get('/login').text)
+    net = {'x-forwarded-for': '198.51.100.7'}
+
+    def guess(i):
+        return anon.post('/login', data={'csrf': token, 'user': OPS, 'password': f'wrong-{i}'}, headers=net).status_code
+    with cf.ThreadPoolExecutor(20) as ex:
+        codes = list(ex.map(guess, range(20)))
+    assert len(hashed) <= 5 and codes.count(401) <= 5 and codes.count(429) >= 15, sorted(codes)
+
+
+def test_p10_an_attempt_that_errors_gives_its_slot_back(web, db, monkeypatch):
+    monkeypatch.setattr(server, 'LOGIN_FAIL_DELAY', 0)
+    auth.create_user(OPS, 'operator-password', 'admin')
+
+    def broken(*_a):
+        raise RuntimeError('synthetic database failure')
+    anon = TestClient(server.app, raise_server_exceptions=False)
+    token = csrf_of(anon.get('/login').text)
+    net = {'x-forwarded-for': '198.51.100.8'}
+    real = auth.verify
+    monkeypatch.setattr(auth, 'verify', broken)
+    for _ in range(6):
+        assert anon.post('/login', data={'csrf': token, 'user': OPS, 'password': 'x'}, headers=net).status_code == 500
+    monkeypatch.setattr(auth, 'verify', real)
+    r = anon.post('/login', data={'csrf': token, 'user': OPS, 'password': 'operator-password'}, headers=net,
+                  follow_redirects=False)
+    assert r.status_code == 303
+
+
+def test_p3_the_web_start_logs_an_error_when_production_has_the_wrong_public_address(monkeypatch, capsys):
+    monkeypatch.setenv('RAILWAY_ENVIRONMENT_NAME', 'production')
+    for value in (None, 'https://reelsieve.braivex.com', 'http://www.reelsieve.braivex.com'):
+        if value is None:
+            monkeypatch.delenv('PUBLIC_BASE_URL', raising=False)
+        else:
+            monkeypatch.setenv('PUBLIC_BASE_URL', value)
+        server.check_public_base()
+        assert 'PUBLIC_BASE_URL' in capsys.readouterr().out, value
+    monkeypatch.setenv('PUBLIC_BASE_URL', 'https://www.reelsieve.braivex.com')
+    server.check_public_base()
+    assert capsys.readouterr().out == ''
+    monkeypatch.setenv('RAILWAY_ENVIRONMENT_NAME', 'staging')
+    monkeypatch.delenv('PUBLIC_BASE_URL')
+    server.check_public_base()
+    assert capsys.readouterr().out == ''

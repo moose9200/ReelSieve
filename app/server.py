@@ -107,12 +107,24 @@ def at_once(user, group):
                 del _running[key]
 
 
+CANONICAL = 'https://www.reelsieve.braivex.com'
+
+
+def check_public_base():
+    """Production must name its own address: OAuth, payment and Braivex return links are built from it. Logs an error
+    and lets the start go on: a wrong value breaks those links, refusing to start would break everything."""
+    if os.getenv('RAILWAY_ENVIRONMENT_NAME') == 'production' and \
+            (os.getenv('PUBLIC_BASE_URL') or '').strip().rstrip('/') != CANONICAL:
+        print(json.dumps({'error': f'PUBLIC_BASE_URL must be {CANONICAL} in production'}), flush=True)
+
+
 @asynccontextmanager
 async def lifespan(_app):
     """The web process is the only one that migrates (the worker waits for the schema), and so the only one that runs
     the one-time legacy import: with LEGACY_MIGRATION_ENABLED=1, LEGACY_SOURCE_DIR is imported once (a completion
     marker makes later starts a no-op; a changed source or any ownership doubt stops the start)."""
     validate_config()
+    check_public_base()
     database.initialize()
     if os.getenv('LEGACY_MIGRATION_ENABLED') == '1':
         if not os.getenv('LEGACY_SOURCE_DIR'):
@@ -424,11 +436,16 @@ def _operator_login(request, f):
     ip = _ip(request)
     ctx = lambda err, code: tpl.TemplateResponse(request, 'login.html', {'next': nxt, 'user': u, 'error': err, 'operator': True},  # noqa: E731
                                                  status_code=code)
-    if auth.too_many(ip):
+    attempt = auth.reserve_attempt(ip)  # counted before the hash, so parallel guesses cannot outrun the limit
+    if attempt is None:
         return ctx('Too many attempts — wait 10 minutes', 429), False
-    if not auth.verify(u, p):  # operators only: a customer's old password never verifies
-        auth.record_fail(ip)
-        return ctx('Wrong email or password', 401), True
+    try:
+        ok = auth.verify(u, p)  # operators only: a customer's old password never verifies
+    except BaseException:
+        auth.release_attempt(attempt)
+        raise
+    if not ok:
+        return ctx('Wrong email or password', 401), True  # the reserved row stays as the failure
     auth.clear_fails(ip)
     store.note_signin(u, ip)
     return _set_session(RedirectResponse(nxt, status_code=303), request, u, f.get('remember') == '1'), False

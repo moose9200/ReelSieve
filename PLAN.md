@@ -238,14 +238,7 @@ Baseline on 105a306: 638 collected, 637 passed + 1 timing flake (test_privacy_re
       test_an_existing_account_on_our_own_domains_links_without_a_claim_but_its_outbound_grants_go.
       Prod per the coordinator (read-only, 20:16 BST, not re-read here): 11 users, 5 with Drive connected.
 - Gate: compileall exit 0, node --check exit 0, pyflakes (touched files) exit 0, pytest exit 0, 653 passed.
-- [ ] Owner deploy order (Railway project listing-reel, production):
-      1. Set BRAIVEX_SSO=on on the ReelSieve (web) service first. This build ignores it; it makes the previous build
-         offer Continue with Braivex during the rolling deploy and after any rollback.
-      2. Deploy the web service. Its start runs the schema: ledger table, 011 (hash wipe), 012 once (every customer
-         signed out, own-domain accounts marked). Check /healthz shows this build's id.
-      3. Then deploy ReelSieve-worker. It never migrates (round 2: decided by process, not by WEB_ENABLED): it waits up
-         to 280 s for the schema, then exits non-zero for Railway to restart it (restartPolicyMaxRetries 5).
-      4. Customers who had Drive connected reconnect it once after their first Braivex sign-in.
+- [ ] Owner deploy order (Railway project listing-reel, production). Superseded by the final-review runbook below.
 - [ ] Next release: DROP TABLE IF EXISTS password_resets in a new ledgered file, once no build that reads it is serving.
 
 ### Review round 2 (05 Oct 2026), commit 53511c0
@@ -260,4 +253,30 @@ Baseline on 105a306: 638 collected, 637 passed + 1 timing flake (test_privacy_re
 - [x] SCHEMA_WAIT 280 s (test_n3). Gate: compileall 0, node --check 0, pyflakes 0, pytest 0, 656 passed.
 - Rule: never edit an applied migration. From 012 on, schema files are ledgered (sha256 in schema_ledger) and an edited
   one stops the web start; put every change in a new numbered file. Files before 012 are the idempotent re-run tier.
+
+### Final review (05 Oct 2026)
+- [x] P10 operator login counts the attempt before hashing: auth.reserve_attempt inserts the login_failures row under
+      pg_advisory_xact_lock(hashtext(ip key)) together with the 5-in-10-minutes count; a success clears it, an error
+      gives it back (release_attempt). Evidence: red first (20/20 parallel guesses hashed), then 5 hashed / 15 x 429:
+      test_p10_twenty_parallel_operator_guesses_from_one_network_hash_at_most_five and the review's probe
+      (PROBE ... hashed guesses (401): 5); test_p10_an_attempt_that_errors_gives_its_slot_back.
+- [ ] Same check-then-record pattern, deferred: refused Braivex assertions ('sso') and privacy-form submissions
+      ('privacy') can exceed 5 under parallel requests. Neither guards a secret (an assertion needs the broker's
+      signature); move both to reserve_attempt when either is abused.
+- [x] P3 the web start logs {"error": "PUBLIC_BASE_URL must be https://www.reelsieve.braivex.com in production"} when
+      RAILWAY_ENVIRONMENT_NAME is production and PUBLIC_BASE_URL is unset or different; the start goes on.
+      Evidence: red first, then test_p3_the_web_start_logs_an_error_when_production_has_the_wrong_public_address.
+- [ ] Owner: a Cloudflare redirect from https://reelsieve.braivex.com (apex) to https://www.reelsieve.braivex.com.
+- [ ] Owner runbook (replaces the earlier deploy order). Leave BRAIVEX_SSO UNSET on every service: with it on, the
+      previous build would link rows without dropping their Drive grant and business sender.
+      0. Pre-check on the production database: SELECT count(*) FROM users WHERE braivex_customer_id IS NOT NULL;
+         expect 0 (no row linked by the previous build). Anything else: stop and review those rows first.
+      1. Take a manual Postgres backup of the Railway Postgres service.
+      2. Deploy the web service: railway up <checkout> --path-as-root --service ReelSieve --environment production.
+         Its start migrates: ledger, 011 (hash wipe), 012 once (customers signed out, own-domain rows marked).
+      3. Check https://www.reelsieve.braivex.com/healthz: ok true, db true, and build = this branch's build id
+         (python -c "from app import server; print(server.BUILD)" in the checkout).
+      4. Deploy ReelSieve-worker the same way (--service ReelSieve-worker). It never migrates; it waits up to 280 s for
+         the schema, then exits non-zero for Railway to restart it.
+      5. The 5 customers with Google Drive connected reconnect it once after their first Braivex sign-in.
 
